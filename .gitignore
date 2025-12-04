@@ -1,0 +1,13 @@
+# Env
+.env
+
+# Binary
+main
+server
+*.exe
+
+# Helper/Scripts
+.access_token
+
+# OS specific
+.DS_Store
