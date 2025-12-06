@@ -65,7 +65,7 @@ type DashboardStats struct {
 }
 
 type DashboardResponse struct {
-	User            *UserInfo       `json:"user"`
+	User            UserInfo        `json:"user"`
 	Areas           []Area          `json:"areas"`
 	TodaysRoutines  []Routine       `json:"todays_routines"`
 	TodayIntentions *TodayIntention `json:"today_intentions"`
@@ -101,15 +101,12 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	// 1. User Profile
-	var user UserInfo
-	err := h.db.QueryRow(ctx,
-		"SELECT id, full_name FROM public.users WHERE id = $1",
+	// 1. User Profile (always set user ID, full_name may be null)
+	response.User.ID = userID
+	h.db.QueryRow(ctx,
+		"SELECT full_name FROM public.users WHERE id = $1",
 		userID,
-	).Scan(&user.ID, &user.FullName)
-	if err == nil {
-		response.User = &user
-	}
+	).Scan(&response.User.FullName)
 
 	// 2. Areas
 	areaRows, err := h.db.Query(ctx,
