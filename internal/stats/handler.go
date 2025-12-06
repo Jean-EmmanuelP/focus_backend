@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
+	"time"
 
 	"firelevel-backend/internal/auth"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -62,12 +63,26 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 
 // --- Handlers ---
 
-// GetDashboard - GET /dashboard
-// All daily routines, streak (focus sessions), sessions last 7 days
+// GetDashboard - GET /dashboard?date=YYYY-MM-DD
+// All daily routines, streak (focus sessions), sessions this week
 func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 	ctx := r.Context()
-	
+
+	// Get user's local date from query param (required for timezone accuracy)
+	userDateStr := r.URL.Query().Get("date")
+	var userDate time.Time
+	var err error
+	if userDateStr != "" {
+		userDate, err = time.Parse("2006-01-02", userDateStr)
+		if err != nil {
+			http.Error(w, "Invalid date format. Use YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+	} else {
+		userDate = time.Now() // Fallback to server time
+	}
+
 	var wg sync.WaitGroup
 	dashboard := DashboardData{}
 	errChan := make(chan error, 6)
@@ -109,13 +124,13 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		defer wg.Done()
 		// Focused Today
 		var minutes *int
-		err := h.db.QueryRow(ctx, "SELECT SUM(duration_minutes) FROM public.focus_sessions WHERE user_id = $1 AND status = 'completed' AND started_at >= CURRENT_DATE", userID).Scan(&minutes)
+		err := h.db.QueryRow(ctx, "SELECT SUM(duration_minutes) FROM public.focus_sessions WHERE user_id = $1 AND status = 'completed' AND DATE(started_at) = $2", userID, userDate).Scan(&minutes)
 		if err == nil && minutes != nil {
 			dashboard.Stats.FocusedToday = *minutes
 		}
 
 		// Streak Calculation (Consecutive days with at least one completed focus session)
-		// Use a recursive CTE to count backwards from today
+		// Use a recursive CTE to count backwards from user's current date
 		streakQuery := `
 			WITH daily_activity AS (
 				SELECT DISTINCT date(started_at) as activity_date
@@ -125,7 +140,7 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 			streak AS (
 				SELECT activity_date, 1 as streak_val
 				FROM daily_activity
-				WHERE activity_date = CURRENT_DATE OR activity_date = CURRENT_DATE - 1
+				WHERE activity_date = $2::date OR activity_date = $2::date - 1
 				UNION ALL
 				SELECT da.activity_date, s.streak_val + 1
 				FROM daily_activity da
@@ -134,7 +149,7 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 			SELECT MAX(streak_val) FROM streak
 		`
 		var streak *int
-		err = h.db.QueryRow(ctx, streakQuery, userID).Scan(&streak)
+		err = h.db.QueryRow(ctx, streakQuery, userID, userDate).Scan(&streak)
 		if err == nil && streak != nil {
 			dashboard.Stats.StreakDays = *streak
 		}
@@ -145,19 +160,19 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer wg.Done()
 		query := `
-			SELECT 
+			SELECT
 				r.id, r.title, r.icon, r.frequency,
 				EXISTS (
-					SELECT 1 FROM public.routine_completions rc 
-					WHERE rc.routine_id = r.id 
-					AND rc.user_id = r.user_id 
-					AND rc.completed_at >= CURRENT_DATE
+					SELECT 1 FROM public.routine_completions rc
+					WHERE rc.routine_id = r.id
+					AND rc.user_id = r.user_id
+					AND DATE(rc.completed_at) = $2
 				) as completed
 			FROM public.routines r
 			WHERE r.user_id = $1
 			ORDER BY r.created_at
 		`
-		rows, err := h.db.Query(ctx, query, userID)
+		rows, err := h.db.Query(ctx, query, userID, userDate)
 		if err != nil { errChan <- err; return }
 		defer rows.Close()
 
@@ -176,7 +191,7 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		dashboard.TodaysRoutines = routines
 	}()
 
-	// 6. Focus Sessions This Week (Monday to Sunday)
+	// 6. Focus Sessions This Week (Monday to Sunday based on user's date)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -188,11 +203,11 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 			FROM public.focus_sessions
 			WHERE user_id = $1
 			  AND status = 'completed'
-			  AND started_at >= date_trunc('week', CURRENT_DATE)
+			  AND started_at >= date_trunc('week', $2::date)
 			GROUP BY date
 			ORDER BY date ASC
 		`
-		rows, err := h.db.Query(ctx, query, userID)
+		rows, err := h.db.Query(ctx, query, userID, userDate)
 		if err != nil { errChan <- err; return }
 		defer rows.Close()
 
@@ -214,23 +229,23 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// 7. Today's Intentions
+	// 7. Today's Intentions (based on user's date)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 
-		// Get daily intention for today
+		// Get daily intention for user's current date
 		query := `
 			SELECT id, date, mood_rating, mood_emoji, sleep_rating, sleep_emoji
 			FROM public.daily_intentions
-			WHERE user_id = $1 AND date = CURRENT_DATE
+			WHERE user_id = $1 AND date = $2
 		`
 
 		var id, moodEmoji, sleepEmoji string
 		var date interface{}
 		var moodRating, sleepRating int
 
-		err := h.db.QueryRow(ctx, query, userID).Scan(&id, &date, &moodRating, &moodEmoji, &sleepRating, &sleepEmoji)
+		err := h.db.QueryRow(ctx, query, userID, userDate).Scan(&id, &date, &moodRating, &moodEmoji, &sleepRating, &sleepEmoji)
 		if err != nil {
 			// No intention for today - that's OK
 			dashboard.TodayIntentions = nil

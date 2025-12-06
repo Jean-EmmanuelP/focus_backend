@@ -101,18 +101,32 @@ func (h *Handler) GetByDate(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(di)
 }
 
-// GetToday - GET /intentions/today
+// GetToday - GET /intentions/today?date=YYYY-MM-DD
 func (h *Handler) GetToday(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
+
+	// Get user's local date from query param
+	userDateStr := r.URL.Query().Get("date")
+	var userDate time.Time
+	var err error
+	if userDateStr != "" {
+		userDate, err = time.Parse("2006-01-02", userDateStr)
+		if err != nil {
+			http.Error(w, "Invalid date format. Use YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+	} else {
+		userDate = time.Now() // Fallback to server time
+	}
 
 	query := `
 		SELECT id, date, mood_rating, mood_emoji, sleep_rating, sleep_emoji
 		FROM public.daily_intentions
-		WHERE user_id = $1 AND date = CURRENT_DATE
+		WHERE user_id = $1 AND date = $2
 	`
 
 	var di DailyIntention
-	err := h.db.QueryRow(r.Context(), query, userID).Scan(
+	err = h.db.QueryRow(r.Context(), query, userID, userDate).Scan(
 		&di.ID, &di.Date, &di.MoodRating, &di.MoodEmoji, &di.SleepRating, &di.SleepEmoji,
 	)
 
