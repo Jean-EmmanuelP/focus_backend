@@ -13,8 +13,10 @@ import (
 // --- Response Structures ---
 
 type UserInfo struct {
-	ID       string  `json:"id"`
-	FullName *string `json:"full_name"`
+	ID        string  `json:"id"`
+	Email     *string `json:"email,omitempty"`
+	FullName  *string `json:"full_name"`
+	AvatarURL *string `json:"avatar_url,omitempty"`
 }
 
 type Area struct {
@@ -113,12 +115,18 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	// 1. User Profile (always set user ID, full_name may be null)
+	// 1. User Profile (always set user ID, other fields may be null)
 	response.User.ID = userID
-	h.db.QueryRow(ctx,
-		"SELECT full_name FROM public.users WHERE id = $1",
+	err := h.db.QueryRow(ctx,
+		"SELECT email, full_name, avatar_url FROM public.users WHERE id = $1",
 		userID,
-	).Scan(&response.User.FullName)
+	).Scan(&response.User.Email, &response.User.FullName, &response.User.AvatarURL)
+	if err != nil {
+		fmt.Printf("❌ Dashboard: User profile query error: %v\n", err)
+	} else {
+		fmt.Printf("✅ Dashboard: User profile loaded - email=%v, full_name=%v, avatar_url=%v\n",
+			response.User.Email, response.User.FullName, response.User.AvatarURL)
+	}
 
 	// 2. Areas
 	fmt.Printf("📦 Dashboard: Fetching areas for user %s\n", userID)
