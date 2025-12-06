@@ -71,6 +71,8 @@ func main() {
 		// Users
 		r.Get("/me", usersHandler.GetProfile)
 		r.Patch("/me", usersHandler.UpdateProfile)
+		r.Post("/me/avatar", usersHandler.UploadAvatar)
+		r.Delete("/me/avatar", usersHandler.DeleteAvatar)
 
 		// Areas
 		r.Get("/areas", areasHandler.List)
