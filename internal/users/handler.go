@@ -264,8 +264,8 @@ func (h *Handler) UploadAvatar(w http.ResponseWriter, r *http.Request) {
 // uploadToSupabaseStorage uploads a file to Supabase Storage
 func uploadToSupabaseStorage(path string, data []byte, contentType string) (string, error) {
 	supabaseURL := os.Getenv("SUPABASE_URL")
-	supabaseKey := os.Getenv("SUPABASE_SERVICE_KEY")
-	bucketName := "user-content" // You'll need to create this bucket in Supabase
+	supabaseKey := os.Getenv("SUPABASE_KEY") // Service Role key to bypass RLS
+	bucketName := "user-content"             // Create this bucket in Supabase Dashboard > Storage
 
 	if supabaseURL == "" || supabaseKey == "" {
 		return "", fmt.Errorf("missing Supabase configuration")
