@@ -2,6 +2,7 @@ package stats
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -70,17 +71,9 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Get user's local date from query param (required for timezone accuracy)
-	userDateStr := r.URL.Query().Get("date")
-	var userDate time.Time
-	var err error
-	if userDateStr != "" {
-		userDate, err = time.Parse("2006-01-02", userDateStr)
-		if err != nil {
-			http.Error(w, "Invalid date format. Use YYYY-MM-DD", http.StatusBadRequest)
-			return
-		}
-	} else {
-		userDate = time.Now() // Fallback to server time
+	userDate := r.URL.Query().Get("date")
+	if userDate == "" {
+		userDate = time.Now().Format("2006-01-02") // Fallback to server date
 	}
 
 	var wg sync.WaitGroup
@@ -93,7 +86,7 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		defer wg.Done()
 		var u struct { ID string `json:"id"`; FullName *string `json:"full_name"` }
 		err := h.db.QueryRow(ctx, "SELECT id, full_name FROM public.users WHERE id = $1", userID).Scan(&u.ID, &u.FullName)
-		if err != nil { errChan <- err; return }
+		if err != nil { fmt.Println("User profile error:", err); errChan <- err; return }
 		dashboard.User = u
 	}()
 
@@ -102,7 +95,7 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer wg.Done()
 		rows, err := h.db.Query(ctx, "SELECT id, name, slug, icon FROM public.areas WHERE user_id = $1 ORDER BY created_at DESC", userID)
-		if err != nil { errChan <- err; return }
+		if err != nil { fmt.Println("Areas error:", err); errChan <- err; return }
 		defer rows.Close()
 		
 		areas := []map[string]interface{}{}
@@ -173,7 +166,7 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 			ORDER BY r.created_at
 		`
 		rows, err := h.db.Query(ctx, query, userID, userDate)
-		if err != nil { errChan <- err; return }
+		if err != nil { fmt.Println("Routines error:", err); errChan <- err; return }
 		defer rows.Close()
 
 		routines := []map[string]interface{}{}
@@ -208,7 +201,7 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 			ORDER BY date ASC
 		`
 		rows, err := h.db.Query(ctx, query, userID, userDate)
-		if err != nil { errChan <- err; return }
+		if err != nil { fmt.Println("Week sessions error:", err); errChan <- err; return }
 		defer rows.Close()
 
 		sessions := []map[string]interface{}{}
@@ -294,9 +287,10 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 
 	wg.Wait()
 
-	// Check for errors (optional: log them instead of failing entire req)
+	// Check for errors
 	select {
-	case <-errChan:
+	case err := <-errChan:
+		fmt.Println("Dashboard error:", err)
 		http.Error(w, "Failed to load dashboard", http.StatusInternalServerError)
 		return
 	default:
