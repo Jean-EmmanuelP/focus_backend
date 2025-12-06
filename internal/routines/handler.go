@@ -13,11 +13,11 @@ import (
 )
 
 type Routine struct {
-	ID        string `json:"id"`
-	AreaID    string `json:"area_id"`
-	Title     string `json:"title"`
-	Frequency string `json:"frequency"`
-	Icon      string `json:"icon"`
+	ID        string  `json:"id"`
+	AreaID    *string `json:"area_id,omitempty"`
+	Title     string  `json:"title"`
+	Frequency string  `json:"frequency"`
+	Icon      string  `json:"icon,omitempty"`
 }
 
 type CreateRoutineRequest struct {
@@ -70,6 +70,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		var rt Routine
 		var icon *string
 		if err := rows.Scan(&rt.ID, &rt.AreaID, &rt.Title, &rt.Frequency, &icon); err != nil {
+			fmt.Println("Scan error:", err)
 			continue
 		}
 		if icon != nil {
@@ -103,7 +104,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 
 	var rt Routine
 	var icon *string
-	err := h.db.QueryRow(r.Context(), query, userID, req.AreaID, req.Title, req.Frequency, req.Icon).Scan(
+	var areaID *string
+	if req.AreaID != "" {
+		areaID = &req.AreaID
+	}
+	err := h.db.QueryRow(r.Context(), query, userID, areaID, req.Title, req.Frequency, req.Icon).Scan(
 		&rt.ID, &rt.AreaID, &rt.Title, &rt.Frequency, &icon,
 	)
 	if err != nil {
