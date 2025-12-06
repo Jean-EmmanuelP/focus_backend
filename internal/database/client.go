@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -19,6 +20,10 @@ func NewPool(ctx context.Context) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
+
+	// Disable prepared statement cache to avoid conflicts with connection poolers
+	// (like PgBouncer/Supavisor) and multiple server instances
+	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 
 	// Create the connection pool
 	pool, err := pgxpool.NewWithConfig(ctx, config)
