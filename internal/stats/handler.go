@@ -19,11 +19,10 @@ type DashboardStats struct {
 type DashboardData struct {
 	User            interface{}    `json:"user"`
 	Areas           interface{}    `json:"areas"`
-	ActiveQuests    interface{}    `json:"active_quests"`
 	TodaysRoutines  interface{}    `json:"todays_routines"`
 	TodayIntentions interface{}    `json:"today_intentions"`
 	Stats           DashboardStats `json:"stats"`
-	SessionsLast7   interface{}    `json:"sessions_last_7"` // Focus sessions last 7 days
+	WeekSessions    interface{}    `json:"week_sessions"` // Focus sessions this week (Mon-Sun)
 }
 
 type FireModeData struct {
@@ -71,7 +70,7 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 	
 	var wg sync.WaitGroup
 	dashboard := DashboardData{}
-	errChan := make(chan error, 7) // Increased buffer
+	errChan := make(chan error, 6)
 
 	// 1. User Profile
 	wg.Add(1)
@@ -104,25 +103,7 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		dashboard.Areas = areas
 	}()
 
-	// 3. Active Quests (Limit 5)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		rows, err := h.db.Query(ctx, "SELECT id, title, current_value, target_value FROM public.quests WHERE user_id = $1 AND status = 'active' LIMIT 5", userID)
-		if err != nil { errChan <- err; return }
-		defer rows.Close()
-
-		quests := []map[string]interface{}{}
-		for rows.Next() {
-			var id, title string
-			var cur, tgt int
-			rows.Scan(&id, &title, &cur, &tgt)
-			quests = append(quests, map[string]interface{}{"id": id, "title": title, "current_value": cur, "target_value": tgt})
-		}
-		dashboard.ActiveQuests = quests
-	}()
-
-	// 4. Stats: Focused Today & Streak
+	// 3. Stats: Focused Today & Streak
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -195,19 +176,19 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		dashboard.TodaysRoutines = routines
 	}()
 
-	// 6. Focus Sessions Last 7 Days
+	// 6. Focus Sessions This Week (Monday to Sunday)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		query := `
-			SELECT 
+			SELECT
 				to_char(started_at, 'YYYY-MM-DD') as date,
 				SUM(duration_minutes) as minutes,
 				COUNT(id) as sessions
 			FROM public.focus_sessions
-			WHERE user_id = $1 
+			WHERE user_id = $1
 			  AND status = 'completed'
-			  AND started_at >= CURRENT_DATE - INTERVAL '7 days'
+			  AND started_at >= date_trunc('week', CURRENT_DATE)
 			GROUP BY date
 			ORDER BY date ASC
 		`
@@ -216,13 +197,21 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		defer rows.Close()
 
 		sessions := []map[string]interface{}{}
+		totalMinutes := 0
+		totalSessions := 0
 		for rows.Next() {
 			var date string
 			var mins, sess int
 			rows.Scan(&date, &mins, &sess)
 			sessions = append(sessions, map[string]interface{}{"date": date, "minutes": mins, "sessions": sess})
+			totalMinutes += mins
+			totalSessions += sess
 		}
-		dashboard.SessionsLast7 = sessions
+		dashboard.WeekSessions = map[string]interface{}{
+			"total_minutes":  totalMinutes,
+			"total_sessions": totalSessions,
+			"days":           sessions,
+		}
 	}()
 
 	// 7. Today's Intentions
