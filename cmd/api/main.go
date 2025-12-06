@@ -14,6 +14,7 @@ import (
 	"firelevel-backend/internal/auth"
 	"firelevel-backend/internal/database"
 	"firelevel-backend/internal/focus"
+	"firelevel-backend/internal/intentions"
 	"firelevel-backend/internal/quests"
 	"firelevel-backend/internal/reflections"
 	"firelevel-backend/internal/routines"
@@ -50,6 +51,7 @@ func main() {
 	reflectionsHandler := reflections.NewHandler(pool)
 	completionsHandler := routines.NewCompletionHandler(pool)
 	focusHandler := focus.NewHandler(pool)
+	intentionsHandler := intentions.NewHandler(pool)
 	statsHandler := stats.NewHandler(pool)
 
 	// 4. Setup Router
@@ -100,6 +102,12 @@ func main() {
 		r.Get("/reflections", reflectionsHandler.List)
 		r.Get("/reflections/{date}", reflectionsHandler.GetByDate)
 		r.Put("/reflections/{date}", reflectionsHandler.Upsert)
+
+		// Daily Intentions (Start Day)
+		r.Get("/intentions", intentionsHandler.List)
+		r.Get("/intentions/today", intentionsHandler.GetToday)
+		r.Get("/intentions/{date}", intentionsHandler.GetByDate)
+		r.Put("/intentions/{date}", intentionsHandler.Upsert)
 
 		// Focus Sessions
 		r.Get("/focus-sessions", focusHandler.List)
