@@ -55,9 +55,20 @@ type DaySession struct {
 }
 
 type WeekSessions struct {
-	TotalMinutes  int          `json:"total_minutes"`
-	TotalSessions int          `json:"total_sessions"`
-	Days          []DaySession `json:"days"`
+	TotalMinutes  int            `json:"total_minutes"`
+	TotalSessions int            `json:"total_sessions"`
+	Days          []DaySession   `json:"days"`
+	Sessions      []FocusSession `json:"sessions,omitempty"`
+}
+
+type FocusSession struct {
+	ID              string     `json:"id"`
+	QuestID         *string    `json:"quest_id,omitempty"`
+	Description     *string    `json:"description,omitempty"`
+	DurationMinutes int        `json:"duration_minutes"`
+	Status          string     `json:"status"`
+	StartedAt       time.Time  `json:"started_at"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
 }
 
 type DashboardStats struct {
@@ -198,7 +209,7 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		response.Stats.StreakDays = *streak
 	}
 
-	// 6. Week Sessions (Monday to Sunday)
+	// 6. Week Sessions (Monday to Sunday) - Summary by day
 	sessionRows, err := h.db.Query(ctx, `
 		SELECT
 			to_char(started_at, 'YYYY-MM-DD') as date,
@@ -221,6 +232,37 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 				response.WeekSessions.TotalSessions += ds.Sessions
 			}
 		}
+	}
+
+	// 6b. Individual sessions for the week (for detailed display)
+	fmt.Printf("📊 Dashboard: Fetching individual sessions for user %s\n", userID)
+	individualSessionRows, err := h.db.Query(ctx, `
+		SELECT id, quest_id, description, duration_minutes, status, started_at, completed_at
+		FROM public.focus_sessions
+		WHERE user_id = $1
+		  AND status = 'completed'
+		  AND started_at >= date_trunc('week', $2::date)
+		ORDER BY started_at DESC
+		LIMIT 50
+	`, userID, userDate)
+	if err != nil {
+		fmt.Printf("❌ Dashboard: Individual sessions query error: %v\n", err)
+	} else {
+		defer individualSessionRows.Close()
+		for individualSessionRows.Next() {
+			var s FocusSession
+			var questID, description *string
+			var completedAt *time.Time
+			if err := individualSessionRows.Scan(&s.ID, &questID, &description, &s.DurationMinutes, &s.Status, &s.StartedAt, &completedAt); err != nil {
+				fmt.Printf("❌ Dashboard: Session scan error: %v\n", err)
+			} else {
+				s.QuestID = questID
+				s.Description = description
+				s.CompletedAt = completedAt
+				response.WeekSessions.Sessions = append(response.WeekSessions.Sessions, s)
+			}
+		}
+		fmt.Printf("✅ Dashboard: Found %d individual sessions\n", len(response.WeekSessions.Sessions))
 	}
 
 	// 7. Today's Intentions

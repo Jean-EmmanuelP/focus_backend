@@ -26,6 +26,7 @@ type StartSessionRequest struct {
 	QuestID         *string `json:"quest_id"`
 	Description     *string `json:"description"`
 	DurationMinutes int     `json:"duration_minutes"`
+	Status          *string `json:"status"` // Optional: "active" or "completed", defaults to "active"
 }
 
 type UpdateSessionRequest struct {
@@ -56,16 +57,36 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := `
-		INSERT INTO public.focus_sessions (user_id, quest_id, description, duration_minutes, status, started_at)
-		VALUES ($1, $2, $3, $4, 'active', now())
-		RETURNING id, quest_id, description, duration_minutes, status, started_at, completed_at
-	`
+	// Default status to "active" if not provided
+	status := "active"
+	if req.Status != nil && (*req.Status == "active" || *req.Status == "completed") {
+		status = *req.Status
+	}
 
+	// If status is completed, also set completed_at
+	var query string
 	var s FocusSession
-	err := h.db.QueryRow(r.Context(), query, userID, req.QuestID, req.Description, req.DurationMinutes).Scan(
-		&s.ID, &s.QuestID, &s.Description, &s.DurationMinutes, &s.Status, &s.StartedAt, &s.CompletedAt,
-	)
+	var err error
+
+	if status == "completed" {
+		query = `
+			INSERT INTO public.focus_sessions (user_id, quest_id, description, duration_minutes, status, started_at, completed_at)
+			VALUES ($1, $2, $3, $4, $5, now(), now())
+			RETURNING id, quest_id, description, duration_minutes, status, started_at, completed_at
+		`
+		err = h.db.QueryRow(r.Context(), query, userID, req.QuestID, req.Description, req.DurationMinutes, status).Scan(
+			&s.ID, &s.QuestID, &s.Description, &s.DurationMinutes, &s.Status, &s.StartedAt, &s.CompletedAt,
+		)
+	} else {
+		query = `
+			INSERT INTO public.focus_sessions (user_id, quest_id, description, duration_minutes, status, started_at)
+			VALUES ($1, $2, $3, $4, $5, now())
+			RETURNING id, quest_id, description, duration_minutes, status, started_at, completed_at
+		`
+		err = h.db.QueryRow(r.Context(), query, userID, req.QuestID, req.Description, req.DurationMinutes, status).Scan(
+			&s.ID, &s.QuestID, &s.Description, &s.DurationMinutes, &s.Status, &s.StartedAt, &s.CompletedAt,
+		)
+	}
 
 	if err != nil {
 		fmt.Println("Start session error:", err)
