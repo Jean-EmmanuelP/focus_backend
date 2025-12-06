@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"firelevel-backend/internal/auth"
 	"github.com/go-chi/chi/v5"
@@ -12,7 +13,8 @@ import (
 
 type DailyIntention struct {
 	ID           string      `json:"id"`
-	Date         string      `json:"date"`
+	Date         time.Time   `json:"-"`
+	DateStr      string      `json:"date"`
 	MoodRating   int         `json:"mood_rating"`
 	MoodEmoji    string      `json:"mood_emoji"`
 	SleepRating  int         `json:"sleep_rating"`
@@ -69,6 +71,7 @@ func (h *Handler) GetByDate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
+	di.DateStr = di.Date.Format("2006-01-02")
 
 	// Get the intentions for this day
 	intentionsQuery := `
@@ -117,6 +120,7 @@ func (h *Handler) GetToday(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
+	di.DateStr = di.Date.Format("2006-01-02")
 
 	// Get the intentions
 	intentionsQuery := `
@@ -202,6 +206,7 @@ func (h *Handler) Upsert(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to save intention", http.StatusInternalServerError)
 		return
 	}
+	di.DateStr = di.Date.Format("2006-01-02")
 
 	// Delete existing intention items for this day
 	_, err = tx.Exec(r.Context(), "DELETE FROM public.intention_items WHERE daily_intention_id = $1", di.ID)
@@ -272,6 +277,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&di.ID, &di.Date, &di.MoodRating, &di.MoodEmoji, &di.SleepRating, &di.SleepEmoji); err != nil {
 			continue
 		}
+		di.DateStr = di.Date.Format("2006-01-02")
 
 		// Get intention items for each day
 		itemsQuery := `
