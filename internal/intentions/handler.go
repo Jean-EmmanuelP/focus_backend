@@ -106,31 +106,24 @@ func (h *Handler) GetToday(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 
 	// Get user's local date from query param
-	userDateStr := r.URL.Query().Get("date")
-	var userDate time.Time
-	var err error
-	if userDateStr != "" {
-		userDate, err = time.Parse("2006-01-02", userDateStr)
-		if err != nil {
-			http.Error(w, "Invalid date format. Use YYYY-MM-DD", http.StatusBadRequest)
-			return
-		}
-	} else {
-		userDate = time.Now() // Fallback to server time
+	userDate := r.URL.Query().Get("date")
+	if userDate == "" {
+		userDate = time.Now().Format("2006-01-02") // Fallback to server date
 	}
 
 	query := `
 		SELECT id, date, mood_rating, mood_emoji, sleep_rating, sleep_emoji
 		FROM public.daily_intentions
-		WHERE user_id = $1 AND date = $2
+		WHERE user_id = $1 AND date = $2::date
 	`
 
 	var di DailyIntention
-	err = h.db.QueryRow(r.Context(), query, userID, userDate).Scan(
+	err := h.db.QueryRow(r.Context(), query, userID, userDate).Scan(
 		&di.ID, &di.Date, &di.MoodRating, &di.MoodEmoji, &di.SleepRating, &di.SleepEmoji,
 	)
 
 	if err != nil {
+		// Not found is normal - user hasn't set intentions today
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}

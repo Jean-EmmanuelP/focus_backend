@@ -42,13 +42,13 @@ func (h *CompletionHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	if fromDate != "" {
 		argCount++
-		query += fmt.Sprintf(" AND completed_at >= $%d", argCount)
+		query += fmt.Sprintf(" AND DATE(completed_at) >= $%d::date", argCount)
 		args = append(args, fromDate)
 	}
 
 	if toDate != "" {
 		argCount++
-		query += fmt.Sprintf(" AND completed_at <= $%d", argCount)
+		query += fmt.Sprintf(" AND DATE(completed_at) <= $%d::date", argCount)
 		args = append(args, toDate)
 	}
 
@@ -56,6 +56,7 @@ func (h *CompletionHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(r.Context(), query, args...)
 	if err != nil {
+		fmt.Println("List completions error:", err)
 		http.Error(w, "Failed to list completions", http.StatusInternalServerError)
 		return
 	}
@@ -65,6 +66,7 @@ func (h *CompletionHandler) List(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var c Completion
 		if err := rows.Scan(&c.ID, &c.RoutineID, &c.CompletedAt); err != nil {
+			fmt.Println("Scan completion error:", err)
 			continue
 		}
 		completions = append(completions, c)

@@ -13,11 +13,10 @@ import (
 )
 
 type Area struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Slug         string `json:"slug"`
-	Icon         string `json:"icon"`
-	Completeness int    `json:"completeness"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Slug string `json:"slug,omitempty"`
+	Icon string `json:"icon,omitempty"`
 }
 
 type CreateAreaRequest struct {
@@ -43,9 +42,10 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 
-	query := `SELECT id, name, slug, icon, completeness FROM public.areas WHERE user_id = $1 ORDER BY created_at DESC`
+	query := `SELECT id, name, slug, icon FROM public.areas WHERE user_id = $1 ORDER BY created_at DESC`
 	rows, err := h.db.Query(r.Context(), query, userID)
 	if err != nil {
+		fmt.Println("List areas error:", err)
 		http.Error(w, "Failed to list areas", http.StatusInternalServerError)
 		return
 	}
@@ -56,7 +56,8 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		var a Area
 		var slug, icon *string
 
-		if err := rows.Scan(&a.ID, &a.Name, &slug, &icon, &a.Completeness); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &slug, &icon); err != nil {
+			fmt.Println("Scan area error:", err)
 			continue
 		}
 		if slug != nil {
@@ -82,16 +83,16 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := `
-		INSERT INTO public.areas (user_id, name, slug, icon) 
-		VALUES ($1, $2, $3, $4) 
-		RETURNING id, name, slug, icon, completeness
+		INSERT INTO public.areas (user_id, name, slug, icon)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, name, slug, icon
 	`
 
 	var a Area
 	var slug, icon *string
 
 	err := h.db.QueryRow(r.Context(), query, userID, req.Name, req.Slug, req.Icon).Scan(
-		&a.ID, &a.Name, &slug, &icon, &a.Completeness,
+		&a.ID, &a.Name, &slug, &icon,
 	)
 	if err != nil {
 		// 1. Check if the error is a Postgres "Unique Violation"
@@ -154,7 +155,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 
 	args = append(args, userID, areaID)
 	query := fmt.Sprintf(
-		"UPDATE public.areas SET %s WHERE user_id = $%d AND id = $%d RETURNING id, name, slug, icon, completeness",
+		"UPDATE public.areas SET %s WHERE user_id = $%d AND id = $%d RETURNING id, name, slug, icon",
 		strings.Join(setParts, ", "),
 		argId,
 		argId+1,
@@ -163,7 +164,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	var a Area
 	var slug, icon *string
 	err := h.db.QueryRow(r.Context(), query, args...).Scan(
-		&a.ID, &a.Name, &slug, &icon, &a.Completeness,
+		&a.ID, &a.Name, &slug, &icon,
 	)
 	if err != nil {
 		// 1. Check if the error is a Postgres "Unique Violation" (for name or slug)

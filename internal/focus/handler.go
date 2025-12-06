@@ -163,6 +163,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(r.Context(), query, args...)
 	if err != nil {
+		fmt.Println("List sessions error:", err)
 		http.Error(w, "Failed to list sessions", http.StatusInternalServerError)
 		return
 	}
@@ -172,6 +173,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var s FocusSession
 		if err := rows.Scan(&s.ID, &s.QuestID, &s.Description, &s.DurationMinutes, &s.Status, &s.StartedAt, &s.CompletedAt); err != nil {
+			fmt.Println("Scan session error:", err)
 			continue
 		}
 		sessions = append(sessions, s)
