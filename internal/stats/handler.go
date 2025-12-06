@@ -2,6 +2,7 @@ package stats
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -109,21 +110,31 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 	).Scan(&response.User.FullName)
 
 	// 2. Areas
+	fmt.Printf("📦 Dashboard: Fetching areas for user %s\n", userID)
 	areaRows, err := h.db.Query(ctx,
 		"SELECT id, name, slug, icon FROM public.areas WHERE user_id = $1 ORDER BY created_at DESC",
 		userID,
 	)
-	if err == nil {
+	if err != nil {
+		fmt.Printf("❌ Dashboard: Areas query error: %v\n", err)
+	} else {
 		defer areaRows.Close()
 		for areaRows.Next() {
 			var a Area
-			if err := areaRows.Scan(&a.ID, &a.Name, &a.Slug, &a.Icon); err == nil {
+			var slug, icon *string
+			if err := areaRows.Scan(&a.ID, &a.Name, &slug, &icon); err != nil {
+				fmt.Printf("❌ Dashboard: Area scan error: %v\n", err)
+			} else {
+				a.Slug = slug
+				a.Icon = icon
 				response.Areas = append(response.Areas, a)
 			}
 		}
+		fmt.Printf("✅ Dashboard: Found %d areas\n", len(response.Areas))
 	}
 
 	// 3. Today's Routines with completion status
+	fmt.Printf("📋 Dashboard: Fetching routines for user %s, date %s\n", userID, userDate)
 	routineRows, err := h.db.Query(ctx, `
 		SELECT
 			r.id, r.title, r.icon, r.frequency,
@@ -137,14 +148,21 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		WHERE r.user_id = $1
 		ORDER BY r.created_at
 	`, userID, userDate)
-	if err == nil {
+	if err != nil {
+		fmt.Printf("❌ Dashboard: Routines query error: %v\n", err)
+	} else {
 		defer routineRows.Close()
 		for routineRows.Next() {
 			var rt Routine
-			if err := routineRows.Scan(&rt.ID, &rt.Title, &rt.Icon, &rt.Frequency, &rt.Completed); err == nil {
+			var icon *string
+			if err := routineRows.Scan(&rt.ID, &rt.Title, &icon, &rt.Frequency, &rt.Completed); err != nil {
+				fmt.Printf("❌ Dashboard: Routine scan error: %v\n", err)
+			} else {
+				rt.Icon = icon
 				response.TodaysRoutines = append(response.TodaysRoutines, rt)
 			}
 		}
+		fmt.Printf("✅ Dashboard: Found %d routines\n", len(response.TodaysRoutines))
 	}
 
 	// 4. Stats: Focused Today
@@ -235,7 +253,9 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 			defer itemRows.Close()
 			for itemRows.Next() {
 				var item IntentionItem
-				if err := itemRows.Scan(&item.ID, &item.AreaID, &item.Content, &item.Position); err == nil {
+				var areaID *string
+				if err := itemRows.Scan(&item.ID, &areaID, &item.Content, &item.Position); err == nil {
+					item.AreaID = areaID
 					intention.Intentions = append(intention.Intentions, item)
 				}
 			}
