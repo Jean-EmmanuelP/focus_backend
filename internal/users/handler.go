@@ -18,17 +18,31 @@ import (
 
 // 1. The Model: Represents the database row in 'public.users'
 type User struct {
-	ID        string  `json:"id"`
-	Email     *string `json:"email"` // Use pointer for nullable fields if necessary, or string if always present
-	FullName  *string `json:"full_name"`
-	AvatarURL *string `json:"avatar_url"`
+	ID          string  `json:"id"`
+	Email       *string `json:"email"`
+	Pseudo      *string `json:"pseudo"`       // Display name / username
+	FirstName   *string `json:"first_name"`
+	LastName    *string `json:"last_name"`
+	Gender      *string `json:"gender"`       // male, female, other, prefer_not_to_say
+	Age         *int    `json:"age"`
+	Description *string `json:"description"`  // Bio / tagline
+	Hobbies     *string `json:"hobbies"`      // Comma-separated or free text
+	LifeGoal    *string `json:"life_goal"`    // What they want to achieve
+	AvatarURL   *string `json:"avatar_url"`
 }
 
 // 2. The DTO: Represents what a user is ALLOWED to update
 // The DTO needs pointers to distinguish between "empty string" and "missing field"
 type UpdateUserRequest struct {
-	FullName  *string `json:"full_name"`
-	AvatarURL *string `json:"avatar_url"`
+	Pseudo      *string `json:"pseudo"`
+	FirstName   *string `json:"first_name"`
+	LastName    *string `json:"last_name"`
+	Gender      *string `json:"gender"`
+	Age         *int    `json:"age"`
+	Description *string `json:"description"`
+	Hobbies     *string `json:"hobbies"`
+	LifeGoal    *string `json:"life_goal"`
+	AvatarURL   *string `json:"avatar_url"`
 }
 
 // 3. The Handler: Holds dependencies (the database client)
@@ -47,19 +61,26 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 
-	// RAW SQL Query
+	// RAW SQL Query with all profile fields
 	query := `
-		SELECT id, email, full_name, avatar_url 
-		FROM public.users 
+		SELECT id, email, pseudo, first_name, last_name, gender, age,
+		       description, hobbies, life_goal, avatar_url
+		FROM public.users
 		WHERE id = $1
 	`
 
 	var user User
-	// QueryRow scans directly into variables
 	err := h.db.QueryRow(r.Context(), query, userID).Scan(
 		&user.ID,
 		&user.Email,
-		&user.FullName,
+		&user.Pseudo,
+		&user.FirstName,
+		&user.LastName,
+		&user.Gender,
+		&user.Age,
+		&user.Description,
+		&user.Hobbies,
+		&user.LifeGoal,
 		&user.AvatarURL,
 	)
 
@@ -85,16 +106,56 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Dynamic SQL Builder
-	// We only want to update fields that were actually sent (not nil)
-	
+	// Dynamic SQL Builder - only update fields that were sent
 	setParts := []string{}
 	args := []interface{}{}
 	argId := 1
 
-	if req.FullName != nil {
-		setParts = append(setParts, fmt.Sprintf("full_name = $%d", argId))
-		args = append(args, *req.FullName)
+	if req.Pseudo != nil {
+		setParts = append(setParts, fmt.Sprintf("pseudo = $%d", argId))
+		args = append(args, *req.Pseudo)
+		argId++
+	}
+
+	if req.FirstName != nil {
+		setParts = append(setParts, fmt.Sprintf("first_name = $%d", argId))
+		args = append(args, *req.FirstName)
+		argId++
+	}
+
+	if req.LastName != nil {
+		setParts = append(setParts, fmt.Sprintf("last_name = $%d", argId))
+		args = append(args, *req.LastName)
+		argId++
+	}
+
+	if req.Gender != nil {
+		setParts = append(setParts, fmt.Sprintf("gender = $%d", argId))
+		args = append(args, *req.Gender)
+		argId++
+	}
+
+	if req.Age != nil {
+		setParts = append(setParts, fmt.Sprintf("age = $%d", argId))
+		args = append(args, *req.Age)
+		argId++
+	}
+
+	if req.Description != nil {
+		setParts = append(setParts, fmt.Sprintf("description = $%d", argId))
+		args = append(args, *req.Description)
+		argId++
+	}
+
+	if req.Hobbies != nil {
+		setParts = append(setParts, fmt.Sprintf("hobbies = $%d", argId))
+		args = append(args, *req.Hobbies)
+		argId++
+	}
+
+	if req.LifeGoal != nil {
+		setParts = append(setParts, fmt.Sprintf("life_goal = $%d", argId))
+		args = append(args, *req.LifeGoal)
 		argId++
 	}
 
@@ -109,20 +170,28 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add the WHERE clause
+	// Add WHERE clause and RETURNING all fields
 	args = append(args, userID)
 	query := fmt.Sprintf(
-		"UPDATE public.users SET %s WHERE id = $%d RETURNING id, email, full_name, avatar_url",
+		`UPDATE public.users SET %s WHERE id = $%d
+		 RETURNING id, email, pseudo, first_name, last_name, gender, age, description, hobbies, life_goal, avatar_url`,
 		strings.Join(setParts, ", "),
 		argId,
 	)
 
-	// Execute and Scan back the updated user
+	// Execute and scan back the updated user
 	var updatedUser User
 	err := h.db.QueryRow(r.Context(), query, args...).Scan(
 		&updatedUser.ID,
 		&updatedUser.Email,
-		&updatedUser.FullName,
+		&updatedUser.Pseudo,
+		&updatedUser.FirstName,
+		&updatedUser.LastName,
+		&updatedUser.Gender,
+		&updatedUser.Age,
+		&updatedUser.Description,
+		&updatedUser.Hobbies,
+		&updatedUser.LifeGoal,
 		&updatedUser.AvatarURL,
 	)
 
