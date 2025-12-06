@@ -17,12 +17,13 @@ type DashboardStats struct {
 }
 
 type DashboardData struct {
-	User           interface{}   `json:"user"`
-	Areas          interface{}   `json:"areas"`
-	ActiveQuests   interface{}   `json:"active_quests"`
-	TodaysRoutines interface{}   `json:"todays_routines"`
-	Stats          DashboardStats `json:"stats"`
-	SessionsLast7  interface{}   `json:"sessions_last_7"` // Focus sessions last 7 days
+	User            interface{}    `json:"user"`
+	Areas           interface{}    `json:"areas"`
+	ActiveQuests    interface{}    `json:"active_quests"`
+	TodaysRoutines  interface{}    `json:"todays_routines"`
+	TodayIntentions interface{}    `json:"today_intentions"`
+	Stats           DashboardStats `json:"stats"`
+	SessionsLast7   interface{}    `json:"sessions_last_7"` // Focus sessions last 7 days
 }
 
 type FireModeData struct {
@@ -70,7 +71,7 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 	
 	var wg sync.WaitGroup
 	dashboard := DashboardData{}
-	errChan := make(chan error, 6) // Increased buffer
+	errChan := make(chan error, 7) // Increased buffer
 
 	// 1. User Profile
 	wg.Add(1)
@@ -222,6 +223,69 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 			sessions = append(sessions, map[string]interface{}{"date": date, "minutes": mins, "sessions": sess})
 		}
 		dashboard.SessionsLast7 = sessions
+	}()
+
+	// 7. Today's Intentions
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		// Get daily intention for today
+		query := `
+			SELECT id, date, mood_rating, mood_emoji, sleep_rating, sleep_emoji
+			FROM public.daily_intentions
+			WHERE user_id = $1 AND date = CURRENT_DATE
+		`
+
+		var id, moodEmoji, sleepEmoji string
+		var date interface{}
+		var moodRating, sleepRating int
+
+		err := h.db.QueryRow(ctx, query, userID).Scan(&id, &date, &moodRating, &moodEmoji, &sleepRating, &sleepEmoji)
+		if err != nil {
+			// No intention for today - that's OK
+			dashboard.TodayIntentions = nil
+			return
+		}
+
+		// Get intention items
+		itemsQuery := `
+			SELECT id, area_id, content, position
+			FROM public.intention_items
+			WHERE daily_intention_id = $1
+			ORDER BY position ASC
+		`
+
+		itemRows, err := h.db.Query(ctx, itemsQuery, id)
+		if err != nil {
+			dashboard.TodayIntentions = nil
+			return
+		}
+		defer itemRows.Close()
+
+		intentions := []map[string]interface{}{}
+		for itemRows.Next() {
+			var itemID, content string
+			var areaID *string
+			var position int
+			itemRows.Scan(&itemID, &areaID, &content, &position)
+			item := map[string]interface{}{
+				"id": itemID, "content": content, "position": position,
+			}
+			if areaID != nil {
+				item["area_id"] = *areaID
+			}
+			intentions = append(intentions, item)
+		}
+
+		dashboard.TodayIntentions = map[string]interface{}{
+			"id":            id,
+			"mood_rating":   moodRating,
+			"mood_emoji":    moodEmoji,
+			"sleep_rating":  sleepRating,
+			"sleep_emoji":   sleepEmoji,
+			"intentions":    intentions,
+		}
 	}()
 
 	wg.Wait()
