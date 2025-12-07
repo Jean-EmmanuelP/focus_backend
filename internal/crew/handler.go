@@ -787,15 +787,22 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 		WHERE r.user_id = $1
 		ORDER BY completed DESC, r.title ASC
 	`
-	allRoutineRows, _ := h.db.Query(r.Context(), allRoutinesQuery, memberID, dateStr)
+	allRoutineRows, err := h.db.Query(r.Context(), allRoutinesQuery, memberID, dateStr)
+	if err != nil {
+		fmt.Println("Get all routines error:", err)
+	}
 	defer allRoutineRows.Close()
 
 	allRoutines := []CrewRoutine{}
 	for allRoutineRows.Next() {
 		var cr CrewRoutine
-		allRoutineRows.Scan(&cr.ID, &cr.Title, &cr.Icon, &cr.Completed, &cr.CompletedAt)
+		if err := allRoutineRows.Scan(&cr.ID, &cr.Title, &cr.Icon, &cr.Completed, &cr.CompletedAt); err != nil {
+			fmt.Println("Scan routine error:", err)
+			continue
+		}
 		allRoutines = append(allRoutines, cr)
 	}
+	fmt.Printf("Found %d routines for user %s on %s\n", len(allRoutines), memberID, dateStr)
 
 	day := CrewMemberDay{
 		User:              &user,
