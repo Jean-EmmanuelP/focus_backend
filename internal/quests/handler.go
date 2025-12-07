@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"firelevel-backend/internal/auth"
 	"github.com/go-chi/chi/v5"
@@ -12,18 +13,20 @@ import (
 )
 
 type Quest struct {
-	ID           string `json:"id"`
-	AreaID       string `json:"area_id"`
-	Title        string `json:"title"`
-	Status       string `json:"status"`
-	CurrentValue int    `json:"current_value"`
-	TargetValue  int    `json:"target_value"`
+	ID           string     `json:"id"`
+	AreaID       string     `json:"area_id"`
+	Title        string     `json:"title"`
+	Status       string     `json:"status"`
+	CurrentValue int        `json:"current_value"`
+	TargetValue  int        `json:"target_value"`
+	TargetDate   *time.Time `json:"target_date,omitempty"`
 }
 
 type CreateQuestRequest struct {
-	AreaID      string `json:"area_id"`
-	Title       string `json:"title"`
-	TargetValue int    `json:"target_value"`
+	AreaID      string  `json:"area_id"`
+	Title       string  `json:"title"`
+	TargetValue int     `json:"target_value"`
+	TargetDate  *string `json:"target_date"` // ISO date string YYYY-MM-DD
 }
 
 type UpdateQuestRequest struct {
@@ -31,6 +34,7 @@ type UpdateQuestRequest struct {
 	Status       *string `json:"status"`
 	CurrentValue *int    `json:"current_value"`
 	TargetValue  *int    `json:"target_value"`
+	TargetDate   *string `json:"target_date"` // ISO date string YYYY-MM-DD
 }
 
 type Handler struct {
@@ -45,7 +49,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 	areaID := r.URL.Query().Get("area_id")
 
-	query := `SELECT id, area_id, title, status, current_value, target_value FROM public.quests WHERE user_id = $1`
+	query := `SELECT id, area_id, title, status, current_value, target_value, target_date FROM public.quests WHERE user_id = $1`
 	args := []interface{}{userID}
 
 	if areaID != "" {
@@ -64,7 +68,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	quests := []Quest{}
 	for rows.Next() {
 		var q Quest
-		if err := rows.Scan(&q.ID, &q.AreaID, &q.Title, &q.Status, &q.CurrentValue, &q.TargetValue); err != nil {
+		if err := rows.Scan(&q.ID, &q.AreaID, &q.Title, &q.Status, &q.CurrentValue, &q.TargetValue, &q.TargetDate); err != nil {
 			continue
 		}
 		quests = append(quests, q)
@@ -83,15 +87,24 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Parse target_date if provided
+	var targetDate *time.Time
+	if req.TargetDate != nil && *req.TargetDate != "" {
+		parsed, err := time.Parse("2006-01-02", *req.TargetDate)
+		if err == nil {
+			targetDate = &parsed
+		}
+	}
+
 	query := `
-		INSERT INTO public.quests (user_id, area_id, title, target_value) 
-		VALUES ($1, $2, $3, $4) 
-		RETURNING id, area_id, title, status, current_value, target_value
+		INSERT INTO public.quests (user_id, area_id, title, target_value, target_date)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, area_id, title, status, current_value, target_value, target_date
 	`
 
 	var q Quest
-	err := h.db.QueryRow(r.Context(), query, userID, req.AreaID, req.Title, req.TargetValue).Scan(
-		&q.ID, &q.AreaID, &q.Title, &q.Status, &q.CurrentValue, &q.TargetValue,
+	err := h.db.QueryRow(r.Context(), query, userID, req.AreaID, req.Title, req.TargetValue, targetDate).Scan(
+		&q.ID, &q.AreaID, &q.Title, &q.Status, &q.CurrentValue, &q.TargetValue, &q.TargetDate,
 	)
 	if err != nil {
 		fmt.Println("Create error:", err)
@@ -137,6 +150,21 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		args = append(args, *req.TargetValue)
 		argId++
 	}
+	if req.TargetDate != nil {
+		if *req.TargetDate == "" {
+			// Clear the target date
+			setParts = append(setParts, fmt.Sprintf("target_date = $%d", argId))
+			args = append(args, nil)
+		} else {
+			// Parse and set the target date
+			parsed, err := time.Parse("2006-01-02", *req.TargetDate)
+			if err == nil {
+				setParts = append(setParts, fmt.Sprintf("target_date = $%d", argId))
+				args = append(args, parsed)
+			}
+		}
+		argId++
+	}
 
 	if len(setParts) == 0 {
 		http.Error(w, "No fields to update", http.StatusBadRequest)
@@ -145,7 +173,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 
 	args = append(args, userID, questID)
 	query := fmt.Sprintf(
-		"UPDATE public.quests SET %s WHERE user_id = $%d AND id = $%d RETURNING id, area_id, title, status, current_value, target_value",
+		"UPDATE public.quests SET %s WHERE user_id = $%d AND id = $%d RETURNING id, area_id, title, status, current_value, target_value, target_date",
 		strings.Join(setParts, ", "),
 		argId,
 		argId+1,
@@ -153,7 +181,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 
 	var q Quest
 	err := h.db.QueryRow(r.Context(), query, args...).Scan(
-		&q.ID, &q.AreaID, &q.Title, &q.Status, &q.CurrentValue, &q.TargetValue,
+		&q.ID, &q.AreaID, &q.Title, &q.Status, &q.CurrentValue, &q.TargetValue, &q.TargetDate,
 	)
 	if err != nil {
 		http.Error(w, "Failed to update quest", http.StatusInternalServerError)

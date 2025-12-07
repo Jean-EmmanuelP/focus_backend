@@ -13,18 +13,20 @@ import (
 )
 
 type Routine struct {
-	ID        string  `json:"id"`
-	AreaID    *string `json:"area_id,omitempty"`
-	Title     string  `json:"title"`
-	Frequency string  `json:"frequency"`
-	Icon      string  `json:"icon,omitempty"`
+	ID            string  `json:"id"`
+	AreaID        *string `json:"area_id,omitempty"`
+	Title         string  `json:"title"`
+	Frequency     string  `json:"frequency"`
+	Icon          string  `json:"icon,omitempty"`
+	ScheduledTime *string `json:"scheduled_time,omitempty"` // HH:mm format
 }
 
 type CreateRoutineRequest struct {
-	AreaID    string `json:"area_id"`
-	Title     string `json:"title"`
-	Frequency string `json:"frequency"` // default 'daily'
-	Icon      string `json:"icon"`
+	AreaID        string  `json:"area_id"`
+	Title         string  `json:"title"`
+	Frequency     string  `json:"frequency"` // default 'daily'
+	Icon          string  `json:"icon"`
+	ScheduledTime *string `json:"scheduled_time"` // HH:mm format
 }
 
 type BatchCompleteRequest struct {
@@ -32,9 +34,10 @@ type BatchCompleteRequest struct {
 }
 
 type UpdateRoutineRequest struct {
-	Title     *string `json:"title"`
-	Frequency *string `json:"frequency"`
-	Icon      *string `json:"icon"`
+	Title         *string `json:"title"`
+	Frequency     *string `json:"frequency"`
+	Icon          *string `json:"icon"`
+	ScheduledTime *string `json:"scheduled_time"`
 }
 
 type Handler struct {
@@ -49,7 +52,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 	areaID := r.URL.Query().Get("area_id")
 
-	query := `SELECT id, area_id, title, frequency, icon FROM public.routines WHERE user_id = $1`
+	query := `SELECT id, area_id, title, frequency, icon, scheduled_time FROM public.routines WHERE user_id = $1`
 	args := []interface{}{userID}
 
 	if areaID != "" {
@@ -69,7 +72,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var rt Routine
 		var icon *string
-		if err := rows.Scan(&rt.ID, &rt.AreaID, &rt.Title, &rt.Frequency, &icon); err != nil {
+		if err := rows.Scan(&rt.ID, &rt.AreaID, &rt.Title, &rt.Frequency, &icon, &rt.ScheduledTime); err != nil {
 			fmt.Println("Scan error:", err)
 			continue
 		}
@@ -97,9 +100,9 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := `
-		INSERT INTO public.routines (user_id, area_id, title, frequency, icon) 
-		VALUES ($1, $2, $3, $4, $5) 
-		RETURNING id, area_id, title, frequency, icon
+		INSERT INTO public.routines (user_id, area_id, title, frequency, icon, scheduled_time)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, area_id, title, frequency, icon, scheduled_time
 	`
 
 	var rt Routine
@@ -108,8 +111,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if req.AreaID != "" {
 		areaID = &req.AreaID
 	}
-	err := h.db.QueryRow(r.Context(), query, userID, areaID, req.Title, req.Frequency, req.Icon).Scan(
-		&rt.ID, &rt.AreaID, &rt.Title, &rt.Frequency, &icon,
+	err := h.db.QueryRow(r.Context(), query, userID, areaID, req.Title, req.Frequency, req.Icon, req.ScheduledTime).Scan(
+		&rt.ID, &rt.AreaID, &rt.Title, &rt.Frequency, &icon, &rt.ScheduledTime,
 	)
 	if err != nil {
 		fmt.Println("Create error:", err)
@@ -153,6 +156,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		args = append(args, *req.Icon)
 		argId++
 	}
+	if req.ScheduledTime != nil {
+		setParts = append(setParts, fmt.Sprintf("scheduled_time = $%d", argId))
+		args = append(args, *req.ScheduledTime)
+		argId++
+	}
 
 	if len(setParts) == 0 {
 		http.Error(w, "No fields to update", http.StatusBadRequest)
@@ -161,7 +169,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 
 	args = append(args, userID, routineID)
 	query := fmt.Sprintf(
-		"UPDATE public.routines SET %s WHERE user_id = $%d AND id = $%d RETURNING id, area_id, title, frequency, icon",
+		"UPDATE public.routines SET %s WHERE user_id = $%d AND id = $%d RETURNING id, area_id, title, frequency, icon, scheduled_time",
 		strings.Join(setParts, ", "),
 		argId,
 		argId+1,
@@ -170,7 +178,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	var rt Routine
 	var icon *string
 	err := h.db.QueryRow(r.Context(), query, args...).Scan(
-		&rt.ID, &rt.AreaID, &rt.Title, &rt.Frequency, &icon,
+		&rt.ID, &rt.AreaID, &rt.Title, &rt.Frequency, &icon, &rt.ScheduledTime,
 	)
 	if err != nil {
 		http.Error(w, "Failed to update routine", http.StatusInternalServerError)

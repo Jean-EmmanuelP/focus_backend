@@ -139,6 +139,11 @@ func main() {
 		r.Get("/crew/members/{id}/day", crewHandler.GetMemberDay)
 		r.Patch("/me/visibility", crewHandler.UpdateVisibility)
 		r.Get("/me/stats", crewHandler.GetMyStats)
+		r.Get("/crew/suggestions", crewHandler.GetSuggestedUsers)
+
+		// Routine Likes
+		r.Post("/completions/{id}/like", crewHandler.LikeCompletion)
+		r.Delete("/completions/{id}/like", crewHandler.UnlikeCompletion)
 	})
 
 	port := os.Getenv("PORT")

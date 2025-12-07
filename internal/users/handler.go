@@ -18,17 +18,18 @@ import (
 
 // 1. The Model: Represents the database row in 'public.users'
 type User struct {
-	ID          string  `json:"id"`
-	Email       *string `json:"email"`
-	Pseudo      *string `json:"pseudo"`       // Display name / username
-	FirstName   *string `json:"first_name"`
-	LastName    *string `json:"last_name"`
-	Gender      *string `json:"gender"`       // male, female, other, prefer_not_to_say
-	Age         *int    `json:"age"`
-	Description *string `json:"description"`  // Bio / tagline
-	Hobbies     *string `json:"hobbies"`      // Comma-separated or free text
-	LifeGoal    *string `json:"life_goal"`    // What they want to achieve
-	AvatarURL   *string `json:"avatar_url"`
+	ID            string  `json:"id"`
+	Email         *string `json:"email"`
+	Pseudo        *string `json:"pseudo"`         // Display name / username
+	FirstName     *string `json:"first_name"`
+	LastName      *string `json:"last_name"`
+	Gender        *string `json:"gender"`         // male, female, other, prefer_not_to_say
+	Age           *int    `json:"age"`
+	Description   *string `json:"description"`    // Bio / tagline
+	Hobbies       *string `json:"hobbies"`        // Comma-separated or free text
+	LifeGoal      *string `json:"life_goal"`      // What they want to achieve
+	AvatarURL     *string `json:"avatar_url"`
+	DayVisibility *string `json:"day_visibility"` // public, crew, private
 }
 
 // 2. The DTO: Represents what a user is ALLOWED to update
@@ -64,7 +65,8 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	// RAW SQL Query with all profile fields
 	query := `
 		SELECT id, email, pseudo, first_name, last_name, gender, age,
-		       description, hobbies, life_goal, avatar_url
+		       description, hobbies, life_goal, avatar_url,
+		       COALESCE(day_visibility, 'crew') as day_visibility
 		FROM public.users
 		WHERE id = $1
 	`
@@ -82,6 +84,7 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		&user.Hobbies,
 		&user.LifeGoal,
 		&user.AvatarURL,
+		&user.DayVisibility,
 	)
 
 	if err != nil {

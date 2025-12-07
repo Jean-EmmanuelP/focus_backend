@@ -123,6 +123,8 @@ type CrewRoutine struct {
 	Icon        *string    `json:"icon"`
 	Completed   bool       `json:"completed"`
 	CompletedAt *time.Time `json:"completed_at"`
+	LikeCount   int        `json:"like_count"`
+	IsLikedByMe bool       `json:"is_liked_by_me"`
 }
 
 type CrewIntention struct {
@@ -145,6 +147,8 @@ type CrewCompletedRoutine struct {
 	Title       string    `json:"title"`
 	Icon        *string   `json:"icon"`
 	CompletedAt time.Time `json:"completed_at"`
+	LikeCount   int       `json:"like_count"`
+	IsLikedByMe bool      `json:"is_liked_by_me"`
 }
 
 // ============================================================================
@@ -797,38 +801,46 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 		sessions = append(sessions, s)
 	}
 
-	// Get completed routines (for backwards compatibility)
+	// Get completed routines with like counts
 	completedRoutinesQuery := `
-		SELECT r.id, r.title, r.icon, c.completed_at
+		SELECT
+			c.id,
+			r.title,
+			r.icon,
+			c.completed_at,
+			COALESCE((SELECT COUNT(*) FROM routine_likes rl WHERE rl.completion_id = c.id), 0)::int as like_count,
+			EXISTS(SELECT 1 FROM routine_likes rl WHERE rl.completion_id = c.id AND rl.user_id = $3) as is_liked_by_me
 		FROM routine_completions c
 		JOIN routines r ON c.routine_id = r.id
 		WHERE r.user_id = $1 AND DATE(c.completed_at) = $2
 		ORDER BY c.completed_at
 	`
-	completedRoutineRows, _ := h.db.Query(r.Context(), completedRoutinesQuery, memberID, dateStr)
+	completedRoutineRows, _ := h.db.Query(r.Context(), completedRoutinesQuery, memberID, dateStr, userID)
 	defer completedRoutineRows.Close()
 
 	completedRoutines := []CrewCompletedRoutine{}
 	for completedRoutineRows.Next() {
 		var cr CrewCompletedRoutine
-		completedRoutineRows.Scan(&cr.ID, &cr.Title, &cr.Icon, &cr.CompletedAt)
+		completedRoutineRows.Scan(&cr.ID, &cr.Title, &cr.Icon, &cr.CompletedAt, &cr.LikeCount, &cr.IsLikedByMe)
 		completedRoutines = append(completedRoutines, cr)
 	}
 
-	// Get ALL routines with completion status for this day
+	// Get ALL routines with completion status and like counts for this day
 	allRoutinesQuery := `
 		SELECT
-			r.id,
+			COALESCE(c.id, r.id) as id,
 			r.title,
 			r.icon,
 			CASE WHEN c.id IS NOT NULL THEN true ELSE false END as completed,
-			c.completed_at
+			c.completed_at,
+			COALESCE((SELECT COUNT(*) FROM routine_likes rl WHERE rl.completion_id = c.id), 0)::int as like_count,
+			COALESCE(EXISTS(SELECT 1 FROM routine_likes rl WHERE rl.completion_id = c.id AND rl.user_id = $3), false) as is_liked_by_me
 		FROM routines r
 		LEFT JOIN routine_completions c ON r.id = c.routine_id AND DATE(c.completed_at) = $2
 		WHERE r.user_id = $1
 		ORDER BY completed DESC, r.title ASC
 	`
-	allRoutineRows, err := h.db.Query(r.Context(), allRoutinesQuery, memberID, dateStr)
+	allRoutineRows, err := h.db.Query(r.Context(), allRoutinesQuery, memberID, dateStr, userID)
 	if err != nil {
 		fmt.Println("Get all routines error:", err)
 	}
@@ -837,7 +849,7 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 	allRoutines := []CrewRoutine{}
 	for allRoutineRows.Next() {
 		var cr CrewRoutine
-		if err := allRoutineRows.Scan(&cr.ID, &cr.Title, &cr.Icon, &cr.Completed, &cr.CompletedAt); err != nil {
+		if err := allRoutineRows.Scan(&cr.ID, &cr.Title, &cr.Icon, &cr.Completed, &cr.CompletedAt, &cr.LikeCount, &cr.IsLikedByMe); err != nil {
 			fmt.Println("Scan routine error:", err)
 			continue
 		}
@@ -1037,4 +1049,136 @@ func (h *Handler) UpdateVisibility(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"day_visibility": req.DayVisibility})
+}
+
+// ============================================================================
+// POST /completions/{id}/like - Like a routine completion
+// ============================================================================
+
+func (h *Handler) LikeCompletion(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	completionID := chi.URLParam(r, "id")
+
+	query := `
+		INSERT INTO routine_likes (user_id, completion_id)
+		VALUES ($1, $2)
+		ON CONFLICT (user_id, completion_id) DO NOTHING
+	`
+	_, err := h.db.Exec(r.Context(), query, userID, completionID)
+	if err != nil {
+		fmt.Println("Like completion error:", err)
+		http.Error(w, "Failed to like completion", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+// ============================================================================
+// DELETE /completions/{id}/like - Unlike a routine completion
+// ============================================================================
+
+func (h *Handler) UnlikeCompletion(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	completionID := chi.URLParam(r, "id")
+
+	query := `DELETE FROM routine_likes WHERE user_id = $1 AND completion_id = $2`
+	_, err := h.db.Exec(r.Context(), query, userID, completionID)
+	if err != nil {
+		fmt.Println("Unlike completion error:", err)
+		http.Error(w, "Failed to unlike completion", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+// ============================================================================
+// GET /crew/suggestions?limit=10 - Get suggested users to add to crew
+// ============================================================================
+
+func (h *Handler) GetSuggestedUsers(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	limitStr := r.URL.Query().Get("limit")
+
+	limit := 10
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 50 {
+			limit = l
+		}
+	}
+
+	// Get users who are active but not in crew and no pending requests
+	query := `
+		WITH user_activity AS (
+			SELECT
+				u.id,
+				u.pseudo,
+				u.first_name,
+				u.last_name,
+				u.avatar_url,
+				COALESCE(u.day_visibility, 'crew') as day_visibility,
+				COALESCE(fs.total_sessions, 0)::int as total_sessions_7d,
+				COALESCE(fs.total_minutes, 0)::int as total_minutes_7d,
+				(COALESCE(fs.total_minutes, 0) + (COALESCE(rc.completed_count, 0) * 10))::int as activity_score
+			FROM users u
+			LEFT JOIN (
+				SELECT user_id, COUNT(*)::int as total_sessions, COALESCE(SUM(duration_minutes), 0)::int as total_minutes
+				FROM focus_sessions
+				WHERE started_at >= NOW() - INTERVAL '7 days' AND status = 'completed'
+				GROUP BY user_id
+			) fs ON u.id = fs.user_id
+			LEFT JOIN (
+				SELECT r.user_id, COUNT(*)::int as completed_count
+				FROM routine_completions c
+				JOIN routines r ON c.routine_id = r.id
+				WHERE c.completed_at >= NOW() - INTERVAL '7 days'
+				GROUP BY r.user_id
+			) rc ON u.id = rc.user_id
+			WHERE u.id != $1
+			AND NOT EXISTS (SELECT 1 FROM crew_members cm WHERE cm.user_id = $1 AND cm.member_id = u.id)
+			AND NOT EXISTS (
+				SELECT 1 FROM crew_requests cr
+				WHERE cr.status = 'pending'
+				AND ((cr.from_user_id = $1 AND cr.to_user_id = u.id) OR (cr.from_user_id = u.id AND cr.to_user_id = $1))
+			)
+			AND (COALESCE(fs.total_minutes, 0) + (COALESCE(rc.completed_count, 0) * 10)) > 0
+		)
+		SELECT
+			id, pseudo, first_name, last_name, avatar_url, day_visibility,
+			total_sessions_7d, total_minutes_7d, activity_score,
+			false as is_crew_member,
+			false as has_pending_request,
+			NULL::text as request_direction
+		FROM user_activity
+		ORDER BY activity_score DESC
+		LIMIT $2
+	`
+
+	rows, err := h.db.Query(r.Context(), query, userID, limit)
+	if err != nil {
+		fmt.Println("Get suggested users error:", err)
+		http.Error(w, "Failed to get suggestions", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	results := []SearchUserResult{}
+	for rows.Next() {
+		var u SearchUserResult
+		if err := rows.Scan(
+			&u.ID, &u.Pseudo, &u.FirstName, &u.LastName, &u.AvatarUrl,
+			&u.DayVisibility, &u.TotalSessions7d, &u.TotalMinutes7d, &u.ActivityScore,
+			&u.IsCrewMember, &u.HasPendingRequest, &u.RequestDirection,
+		); err != nil {
+			fmt.Println("Scan suggestion error:", err)
+			continue
+		}
+		results = append(results, u)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
 }
