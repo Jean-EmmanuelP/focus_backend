@@ -54,19 +54,19 @@ type CrewUserInfo struct {
 }
 
 type LeaderboardEntry struct {
-	Rank               int64      `json:"rank"`
-	ID                 string     `json:"id"`
-	Pseudo             *string    `json:"pseudo"`
-	FirstName          *string    `json:"first_name"`
-	LastName           *string    `json:"last_name"`
-	AvatarUrl          *string    `json:"avatar_url"`
-	DayVisibility      *string    `json:"day_visibility"`
-	TotalSessions7d    int        `json:"total_sessions_7d"`
-	TotalMinutes7d     int        `json:"total_minutes_7d"`
-	CompletedRoutines7d int       `json:"completed_routines_7d"`
-	ActivityScore      int        `json:"activity_score"`
-	LastActive         *time.Time `json:"last_active"`
-	IsCrewMember       bool       `json:"is_crew_member"`
+	Rank                int     `json:"rank"`
+	ID                  string  `json:"id"`
+	Pseudo              *string `json:"pseudo"`
+	FirstName           *string `json:"first_name"`
+	LastName            *string `json:"last_name"`
+	AvatarUrl           *string `json:"avatar_url"`
+	DayVisibility       *string `json:"day_visibility"`
+	TotalSessions7d     int     `json:"total_sessions_7d"`
+	TotalMinutes7d      int     `json:"total_minutes_7d"`
+	CompletedRoutines7d int     `json:"completed_routines_7d"`
+	ActivityScore       int     `json:"activity_score"`
+	LastActive          *string `json:"last_active"`
+	IsCrewMember        bool    `json:"is_crew_member"`
 }
 
 type SearchUserResult struct {
@@ -646,13 +646,20 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 	entries := []LeaderboardEntry{}
 	for rows.Next() {
 		var e LeaderboardEntry
+		var rank int64
+		var lastActive *time.Time
 		if err := rows.Scan(
-			&e.Rank, &e.ID, &e.Pseudo, &e.FirstName, &e.LastName, &e.AvatarUrl,
+			&rank, &e.ID, &e.Pseudo, &e.FirstName, &e.LastName, &e.AvatarUrl,
 			&e.DayVisibility, &e.TotalSessions7d, &e.TotalMinutes7d, &e.CompletedRoutines7d,
-			&e.ActivityScore, &e.LastActive, &e.IsCrewMember,
+			&e.ActivityScore, &lastActive, &e.IsCrewMember,
 		); err != nil {
 			fmt.Println("Scan leaderboard entry error:", err)
 			continue
+		}
+		e.Rank = int(rank)
+		if lastActive != nil {
+			formatted := lastActive.Format(time.RFC3339)
+			e.LastActive = &formatted
 		}
 		entries = append(entries, e)
 	}
