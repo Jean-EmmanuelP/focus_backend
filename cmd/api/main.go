@@ -12,6 +12,7 @@ import (
 
 	"firelevel-backend/internal/areas"
 	"firelevel-backend/internal/auth"
+	"firelevel-backend/internal/crew"
 	"firelevel-backend/internal/database"
 	"firelevel-backend/internal/focus"
 	"firelevel-backend/internal/intentions"
@@ -53,6 +54,7 @@ func main() {
 	focusHandler := focus.NewHandler(pool)
 	intentionsHandler := intentions.NewHandler(pool)
 	statsHandler := stats.NewHandler(pool)
+	crewHandler := crew.NewHandler(pool)
 
 	// 4. Setup Router
 	r := chi.NewRouter()
@@ -123,6 +125,19 @@ func main() {
 		r.Get("/quests-tab", statsHandler.GetQuestsTab)    // New
 		r.Get("/stats/focus", statsHandler.GetFocusStats)
 		r.Get("/stats/routines", statsHandler.GetRoutineStats)
+
+		// Crew / Social
+		r.Get("/crew/members", crewHandler.ListMembers)
+		r.Delete("/crew/members/{id}", crewHandler.RemoveMember)
+		r.Get("/crew/requests/received", crewHandler.ListReceivedRequests)
+		r.Get("/crew/requests/sent", crewHandler.ListSentRequests)
+		r.Post("/crew/requests", crewHandler.SendRequest)
+		r.Post("/crew/requests/{id}/accept", crewHandler.AcceptRequest)
+		r.Post("/crew/requests/{id}/reject", crewHandler.RejectRequest)
+		r.Get("/crew/search", crewHandler.SearchUsers)
+		r.Get("/crew/leaderboard", crewHandler.GetLeaderboard)
+		r.Get("/crew/members/{id}/day", crewHandler.GetMemberDay)
+		r.Patch("/me/visibility", crewHandler.UpdateVisibility)
 	})
 
 	port := os.Getenv("PORT")
