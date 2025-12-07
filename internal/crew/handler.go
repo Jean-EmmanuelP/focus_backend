@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -67,6 +68,8 @@ type LeaderboardEntry struct {
 	ActivityScore       int     `json:"activity_score"`
 	LastActive          *string `json:"last_active"`
 	IsCrewMember        bool    `json:"is_crew_member"`
+	HasPendingRequest   bool    `json:"has_pending_request"`
+	RequestDirection    *string `json:"request_direction"`
 }
 
 type SearchUserResult struct {
@@ -90,6 +93,28 @@ type CrewMemberDay struct {
 	FocusSessions     []CrewFocusSession     `json:"focus_sessions"`
 	CompletedRoutines []CrewCompletedRoutine `json:"completed_routines"`
 	Routines          []CrewRoutine          `json:"routines"`
+	Stats             *CrewMemberStats       `json:"stats"`
+}
+
+type CrewMemberStats struct {
+	// Weekly stats (last 7 days)
+	WeeklyFocusMinutes   []DailyStat `json:"weekly_focus_minutes"`
+	WeeklyRoutinesDone   []DailyStat `json:"weekly_routines_done"`
+	WeeklyTotalFocus     int         `json:"weekly_total_focus"`
+	WeeklyTotalRoutines  int         `json:"weekly_total_routines"`
+	WeeklyAvgFocus       int         `json:"weekly_avg_focus"`
+	WeeklyRoutineRate    int         `json:"weekly_routine_rate"` // percentage
+
+	// Monthly stats (last 30 days)
+	MonthlyFocusMinutes  []DailyStat `json:"monthly_focus_minutes"`
+	MonthlyRoutinesDone  []DailyStat `json:"monthly_routines_done"`
+	MonthlyTotalFocus    int         `json:"monthly_total_focus"`
+	MonthlyTotalRoutines int         `json:"monthly_total_routines"`
+}
+
+type DailyStat struct {
+	Date  string `json:"date"`
+	Value int    `json:"value"`
 }
 
 type CrewRoutine struct {
@@ -638,7 +663,23 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 			us.completed_routines_7d,
 			us.activity_score,
 			us.last_active,
-			EXISTS(SELECT 1 FROM crew_members cm WHERE cm.user_id = $1 AND cm.member_id = us.id) as is_crew_member
+			EXISTS(SELECT 1 FROM crew_members cm WHERE cm.user_id = $1 AND cm.member_id = us.id) as is_crew_member,
+			EXISTS(
+				SELECT 1 FROM crew_requests cr
+				WHERE cr.status = 'pending'
+				AND ((cr.from_user_id = $1 AND cr.to_user_id = us.id) OR (cr.from_user_id = us.id AND cr.to_user_id = $1))
+			) as has_pending_request,
+			(
+				SELECT CASE
+					WHEN cr.from_user_id = $1 THEN 'outgoing'
+					WHEN cr.to_user_id = $1 THEN 'incoming'
+					ELSE NULL
+				END
+				FROM crew_requests cr
+				WHERE cr.status = 'pending'
+				AND ((cr.from_user_id = $1 AND cr.to_user_id = us.id) OR (cr.from_user_id = us.id AND cr.to_user_id = $1))
+				LIMIT 1
+			) as request_direction
 		FROM user_stats us
 		ORDER BY activity_score DESC, total_minutes_7d DESC
 		LIMIT $2
@@ -660,7 +701,7 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(
 			&rank, &e.ID, &e.Pseudo, &e.FirstName, &e.LastName, &e.AvatarUrl,
 			&e.DayVisibility, &e.TotalSessions7d, &e.TotalMinutes7d, &e.CompletedRoutines7d,
-			&e.ActivityScore, &lastActive, &e.IsCrewMember,
+			&e.ActivityScore, &lastActive, &e.IsCrewMember, &e.HasPendingRequest, &e.RequestDirection,
 		); err != nil {
 			fmt.Println("Scan leaderboard entry error:", err)
 			continue
@@ -804,16 +845,141 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Printf("Found %d routines for user %s on %s\n", len(allRoutines), memberID, dateStr)
 
+	// Get stats for the member
+	stats := h.getMemberStats(r.Context(), memberID)
+
 	day := CrewMemberDay{
 		User:              &user,
 		Intentions:        intentions,
 		FocusSessions:     sessions,
 		CompletedRoutines: completedRoutines,
 		Routines:          allRoutines,
+		Stats:             stats,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(day)
+}
+
+// getMemberStats calculates weekly and monthly stats for a member
+func (h *Handler) getMemberStats(ctx context.Context, memberID string) *CrewMemberStats {
+	stats := &CrewMemberStats{
+		WeeklyFocusMinutes:  make([]DailyStat, 0),
+		WeeklyRoutinesDone:  make([]DailyStat, 0),
+		MonthlyFocusMinutes: make([]DailyStat, 0),
+		MonthlyRoutinesDone: make([]DailyStat, 0),
+	}
+
+	// Weekly focus minutes (last 7 days)
+	weeklyFocusQuery := `
+		SELECT DATE(started_at) as date, COALESCE(SUM(duration_minutes), 0)::int as minutes
+		FROM focus_sessions
+		WHERE user_id = $1 AND started_at >= NOW() - INTERVAL '7 days' AND status = 'completed'
+		GROUP BY DATE(started_at)
+		ORDER BY date
+	`
+	rows, err := h.db.Query(ctx, weeklyFocusQuery, memberID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var date time.Time
+			var minutes int
+			rows.Scan(&date, &minutes)
+			stats.WeeklyFocusMinutes = append(stats.WeeklyFocusMinutes, DailyStat{
+				Date:  date.Format("2006-01-02"),
+				Value: minutes,
+			})
+			stats.WeeklyTotalFocus += minutes
+		}
+	}
+	if len(stats.WeeklyFocusMinutes) > 0 {
+		stats.WeeklyAvgFocus = stats.WeeklyTotalFocus / 7
+	}
+
+	// Weekly routines done (last 7 days)
+	weeklyRoutinesQuery := `
+		SELECT DATE(c.completed_at) as date, COUNT(*)::int as count
+		FROM routine_completions c
+		JOIN routines r ON c.routine_id = r.id
+		WHERE r.user_id = $1 AND c.completed_at >= NOW() - INTERVAL '7 days'
+		GROUP BY DATE(c.completed_at)
+		ORDER BY date
+	`
+	rows2, err := h.db.Query(ctx, weeklyRoutinesQuery, memberID)
+	if err == nil {
+		defer rows2.Close()
+		for rows2.Next() {
+			var date time.Time
+			var count int
+			rows2.Scan(&date, &count)
+			stats.WeeklyRoutinesDone = append(stats.WeeklyRoutinesDone, DailyStat{
+				Date:  date.Format("2006-01-02"),
+				Value: count,
+			})
+			stats.WeeklyTotalRoutines += count
+		}
+	}
+
+	// Calculate routine completion rate (routines done / total possible)
+	var totalRoutines int
+	countQuery := `SELECT COUNT(*) FROM routines WHERE user_id = $1`
+	h.db.QueryRow(ctx, countQuery, memberID).Scan(&totalRoutines)
+	if totalRoutines > 0 {
+		// Rate = (routines done in 7 days) / (total routines * 7 days) * 100
+		possibleRoutines := totalRoutines * 7
+		if possibleRoutines > 0 {
+			stats.WeeklyRoutineRate = (stats.WeeklyTotalRoutines * 100) / possibleRoutines
+		}
+	}
+
+	// Monthly focus minutes (last 30 days)
+	monthlyFocusQuery := `
+		SELECT DATE(started_at) as date, COALESCE(SUM(duration_minutes), 0)::int as minutes
+		FROM focus_sessions
+		WHERE user_id = $1 AND started_at >= NOW() - INTERVAL '30 days' AND status = 'completed'
+		GROUP BY DATE(started_at)
+		ORDER BY date
+	`
+	rows3, err := h.db.Query(ctx, monthlyFocusQuery, memberID)
+	if err == nil {
+		defer rows3.Close()
+		for rows3.Next() {
+			var date time.Time
+			var minutes int
+			rows3.Scan(&date, &minutes)
+			stats.MonthlyFocusMinutes = append(stats.MonthlyFocusMinutes, DailyStat{
+				Date:  date.Format("2006-01-02"),
+				Value: minutes,
+			})
+			stats.MonthlyTotalFocus += minutes
+		}
+	}
+
+	// Monthly routines done (last 30 days)
+	monthlyRoutinesQuery := `
+		SELECT DATE(c.completed_at) as date, COUNT(*)::int as count
+		FROM routine_completions c
+		JOIN routines r ON c.routine_id = r.id
+		WHERE r.user_id = $1 AND c.completed_at >= NOW() - INTERVAL '30 days'
+		GROUP BY DATE(c.completed_at)
+		ORDER BY date
+	`
+	rows4, err := h.db.Query(ctx, monthlyRoutinesQuery, memberID)
+	if err == nil {
+		defer rows4.Close()
+		for rows4.Next() {
+			var date time.Time
+			var count int
+			rows4.Scan(&date, &count)
+			stats.MonthlyRoutinesDone = append(stats.MonthlyRoutinesDone, DailyStat{
+				Date:  date.Format("2006-01-02"),
+				Value: count,
+			})
+			stats.MonthlyTotalRoutines += count
+		}
+	}
+
+	return stats
 }
 
 // ============================================================================
