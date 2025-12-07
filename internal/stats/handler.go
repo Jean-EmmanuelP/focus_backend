@@ -13,17 +13,18 @@ import (
 // --- Response Structures ---
 
 type UserInfo struct {
-	ID          string  `json:"id"`
-	Email       *string `json:"email,omitempty"`
-	Pseudo      *string `json:"pseudo,omitempty"`
-	FirstName   *string `json:"first_name,omitempty"`
-	LastName    *string `json:"last_name,omitempty"`
-	Gender      *string `json:"gender,omitempty"`
-	Age         *int    `json:"age,omitempty"`
-	Description *string `json:"description,omitempty"`
-	Hobbies     *string `json:"hobbies,omitempty"`
-	LifeGoal    *string `json:"life_goal,omitempty"`
-	AvatarURL   *string `json:"avatar_url,omitempty"`
+	ID            string  `json:"id"`
+	Email         *string `json:"email,omitempty"`
+	Pseudo        *string `json:"pseudo,omitempty"`
+	FirstName     *string `json:"first_name,omitempty"`
+	LastName      *string `json:"last_name,omitempty"`
+	Gender        *string `json:"gender,omitempty"`
+	Age           *int    `json:"age,omitempty"`
+	Description   *string `json:"description,omitempty"`
+	Hobbies       *string `json:"hobbies,omitempty"`
+	LifeGoal      *string `json:"life_goal,omitempty"`
+	AvatarURL     *string `json:"avatar_url,omitempty"`
+	DayVisibility *string `json:"day_visibility,omitempty"`
 }
 
 type Area struct {
@@ -125,7 +126,8 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 	// 1. User Profile (always set user ID, other fields may be null)
 	response.User.ID = userID
 	err := h.db.QueryRow(ctx,
-		`SELECT email, pseudo, first_name, last_name, gender, age, description, hobbies, life_goal, avatar_url
+		`SELECT email, pseudo, first_name, last_name, gender, age, description, hobbies, life_goal, avatar_url,
+		        COALESCE(day_visibility, 'crew') as day_visibility
 		 FROM public.users WHERE id = $1`,
 		userID,
 	).Scan(
@@ -139,12 +141,13 @@ func (h *Handler) GetDashboard(w http.ResponseWriter, r *http.Request) {
 		&response.User.Hobbies,
 		&response.User.LifeGoal,
 		&response.User.AvatarURL,
+		&response.User.DayVisibility,
 	)
 	if err != nil {
 		fmt.Printf("❌ Dashboard: User profile query error: %v\n", err)
 	} else {
-		fmt.Printf("✅ Dashboard: User profile loaded - pseudo=%v, avatar_url=%v\n",
-			response.User.Pseudo, response.User.AvatarURL)
+		fmt.Printf("✅ Dashboard: User profile loaded - pseudo=%v, avatar_url=%v, day_visibility=%v\n",
+			response.User.Pseudo, response.User.AvatarURL, response.User.DayVisibility)
 	}
 
 	// 2. Areas
