@@ -153,21 +153,21 @@ func (h *Handler) ListMembers(w http.ResponseWriter, r *http.Request) {
 			u.first_name,
 			u.last_name,
 			u.avatar_url,
-			u.day_visibility,
-			COALESCE(fs.total_sessions, 0) as total_sessions_7d,
-			COALESCE(fs.total_minutes, 0) as total_minutes_7d,
-			COALESCE(fs.total_minutes, 0) + (COALESCE(rc.completed_count, 0) * 10) as activity_score,
+			COALESCE(u.day_visibility, 'crew') as day_visibility,
+			COALESCE(fs.total_sessions, 0)::int as total_sessions_7d,
+			COALESCE(fs.total_minutes, 0)::int as total_minutes_7d,
+			(COALESCE(fs.total_minutes, 0) + (COALESCE(rc.completed_count, 0) * 10))::int as activity_score,
 			cm.created_at
 		FROM crew_members cm
 		JOIN users u ON cm.member_id = u.id
 		LEFT JOIN (
-			SELECT user_id, COUNT(*) as total_sessions, COALESCE(SUM(duration_minutes), 0) as total_minutes
+			SELECT user_id, COUNT(*)::int as total_sessions, COALESCE(SUM(duration_minutes), 0)::int as total_minutes
 			FROM focus_sessions
 			WHERE started_at >= NOW() - INTERVAL '7 days' AND status = 'completed'
 			GROUP BY user_id
 		) fs ON u.id = fs.user_id
 		LEFT JOIN (
-			SELECT r.user_id, COUNT(*) as completed_count
+			SELECT r.user_id, COUNT(*)::int as completed_count
 			FROM routine_completions c
 			JOIN routines r ON c.routine_id = r.id
 			WHERE c.completed_at >= NOW() - INTERVAL '7 days'
@@ -504,10 +504,10 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 			u.first_name,
 			u.last_name,
 			u.avatar_url,
-			u.day_visibility,
-			COALESCE(fs.total_sessions, 0) as total_sessions_7d,
-			COALESCE(fs.total_minutes, 0) as total_minutes_7d,
-			COALESCE(fs.total_minutes, 0) + (COALESCE(rc.completed_count, 0) * 10) as activity_score,
+			COALESCE(u.day_visibility, 'crew') as day_visibility,
+			COALESCE(fs.total_sessions, 0)::int as total_sessions_7d,
+			COALESCE(fs.total_minutes, 0)::int as total_minutes_7d,
+			(COALESCE(fs.total_minutes, 0) + (COALESCE(rc.completed_count, 0) * 10))::int as activity_score,
 			EXISTS(SELECT 1 FROM crew_members cm WHERE cm.user_id = $1 AND cm.member_id = u.id) as is_crew_member,
 			EXISTS(
 				SELECT 1 FROM crew_requests cr
@@ -527,13 +527,13 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 			) as request_direction
 		FROM users u
 		LEFT JOIN (
-			SELECT user_id, COUNT(*) as total_sessions, COALESCE(SUM(duration_minutes), 0) as total_minutes
+			SELECT user_id, COUNT(*)::int as total_sessions, COALESCE(SUM(duration_minutes), 0)::int as total_minutes
 			FROM focus_sessions
 			WHERE started_at >= NOW() - INTERVAL '7 days' AND status = 'completed'
 			GROUP BY user_id
 		) fs ON u.id = fs.user_id
 		LEFT JOIN (
-			SELECT r.user_id, COUNT(*) as completed_count
+			SELECT r.user_id, COUNT(*)::int as completed_count
 			FROM routine_completions c
 			JOIN routines r ON c.routine_id = r.id
 			WHERE c.completed_at >= NOW() - INTERVAL '7 days'
@@ -587,35 +587,50 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := `
+		WITH user_stats AS (
+			SELECT
+				u.id,
+				u.pseudo,
+				u.first_name,
+				u.last_name,
+				u.avatar_url,
+				COALESCE(u.day_visibility, 'crew') as day_visibility,
+				COALESCE(fs.total_sessions, 0)::int as total_sessions_7d,
+				COALESCE(fs.total_minutes, 0)::int as total_minutes_7d,
+				COALESCE(rc.completed_count, 0)::int as completed_routines_7d,
+				(COALESCE(fs.total_minutes, 0) + (COALESCE(rc.completed_count, 0) * 10))::int as activity_score,
+				GREATEST(fs.last_session, rc.last_completion) as last_active
+			FROM users u
+			LEFT JOIN (
+				SELECT user_id, COUNT(*)::int as total_sessions, COALESCE(SUM(duration_minutes), 0)::int as total_minutes, MAX(started_at) as last_session
+				FROM focus_sessions
+				WHERE started_at >= NOW() - INTERVAL '7 days' AND status = 'completed'
+				GROUP BY user_id
+			) fs ON u.id = fs.user_id
+			LEFT JOIN (
+				SELECT r.user_id, COUNT(*)::int as completed_count, MAX(c.completed_at) as last_completion
+				FROM routine_completions c
+				JOIN routines r ON c.routine_id = r.id
+				WHERE c.completed_at >= NOW() - INTERVAL '7 days'
+				GROUP BY r.user_id
+			) rc ON u.id = rc.user_id
+			WHERE (COALESCE(fs.total_minutes, 0) + (COALESCE(rc.completed_count, 0) * 10)) > 0
+		)
 		SELECT
-			ROW_NUMBER() OVER (ORDER BY activity_score DESC, total_minutes_7d DESC) as rank,
-			u.id,
-			u.pseudo,
-			u.first_name,
-			u.last_name,
-			u.avatar_url,
-			u.day_visibility,
-			COALESCE(fs.total_sessions, 0) as total_sessions_7d,
-			COALESCE(fs.total_minutes, 0) as total_minutes_7d,
-			COALESCE(rc.completed_count, 0) as completed_routines_7d,
-			COALESCE(fs.total_minutes, 0) + (COALESCE(rc.completed_count, 0) * 10) as activity_score,
-			GREATEST(COALESCE(fs.last_session, '1970-01-01'), COALESCE(rc.last_completion, '1970-01-01')) as last_active,
-			EXISTS(SELECT 1 FROM crew_members cm WHERE cm.user_id = $1 AND cm.member_id = u.id) as is_crew_member
-		FROM users u
-		LEFT JOIN (
-			SELECT user_id, COUNT(*) as total_sessions, COALESCE(SUM(duration_minutes), 0) as total_minutes, MAX(started_at) as last_session
-			FROM focus_sessions
-			WHERE started_at >= NOW() - INTERVAL '7 days' AND status = 'completed'
-			GROUP BY user_id
-		) fs ON u.id = fs.user_id
-		LEFT JOIN (
-			SELECT r.user_id, COUNT(*) as completed_count, MAX(c.completed_at) as last_completion
-			FROM routine_completions c
-			JOIN routines r ON c.routine_id = r.id
-			WHERE c.completed_at >= NOW() - INTERVAL '7 days'
-			GROUP BY r.user_id
-		) rc ON u.id = rc.user_id
-		WHERE (COALESCE(fs.total_minutes, 0) + (COALESCE(rc.completed_count, 0) * 10)) > 0
+			ROW_NUMBER() OVER (ORDER BY activity_score DESC, total_minutes_7d DESC)::bigint as rank,
+			us.id,
+			us.pseudo,
+			us.first_name,
+			us.last_name,
+			us.avatar_url,
+			us.day_visibility,
+			us.total_sessions_7d,
+			us.total_minutes_7d,
+			us.completed_routines_7d,
+			us.activity_score,
+			us.last_active,
+			EXISTS(SELECT 1 FROM crew_members cm WHERE cm.user_id = $1 AND cm.member_id = us.id) as is_crew_member
+		FROM user_stats us
 		ORDER BY activity_score DESC, total_minutes_7d DESC
 		LIMIT $2
 	`
