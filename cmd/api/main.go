@@ -20,6 +20,7 @@ import (
 	"firelevel-backend/internal/reflections"
 	"firelevel-backend/internal/routines"
 	"firelevel-backend/internal/stats"
+	"firelevel-backend/internal/streaks"
 	"firelevel-backend/internal/users"
 )
 
@@ -55,6 +56,7 @@ func main() {
 	intentionsHandler := intentions.NewHandler(pool)
 	statsHandler := stats.NewHandler(pool)
 	crewHandler := crew.NewHandler(pool)
+	streaksHandler := streaks.NewHandler(pool)
 
 	// 4. Setup Router
 	r := chi.NewRouter()
@@ -125,6 +127,11 @@ func main() {
 		r.Get("/quests-tab", statsHandler.GetQuestsTab)    // New
 		r.Get("/stats/focus", statsHandler.GetFocusStats)
 		r.Get("/stats/routines", statsHandler.GetRoutineStats)
+
+		// Streaks
+		r.Get("/streak", streaksHandler.GetStreak)
+		r.Get("/streak/day", streaksHandler.GetDayValidation)
+		r.Post("/streak/recalculate", streaksHandler.RecalculateStreak)
 
 		// Crew / Social
 		r.Get("/crew/members", crewHandler.ListMembers)
