@@ -85,10 +85,19 @@ type SearchUserResult struct {
 }
 
 type CrewMemberDay struct {
-	User              *CrewUserInfo         `json:"user"`
-	Intentions        []CrewIntention       `json:"intentions"`
-	FocusSessions     []CrewFocusSession    `json:"focus_sessions"`
+	User              *CrewUserInfo          `json:"user"`
+	Intentions        []CrewIntention        `json:"intentions"`
+	FocusSessions     []CrewFocusSession     `json:"focus_sessions"`
 	CompletedRoutines []CrewCompletedRoutine `json:"completed_routines"`
+	Routines          []CrewRoutine          `json:"routines"`
+}
+
+type CrewRoutine struct {
+	ID          string     `json:"id"`
+	Title       string     `json:"title"`
+	Icon        *string    `json:"icon"`
+	Completed   bool       `json:"completed"`
+	CompletedAt *time.Time `json:"completed_at"`
 }
 
 type CrewIntention struct {
@@ -747,29 +756,53 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 		sessions = append(sessions, s)
 	}
 
-	// Get completed routines
-	routinesQuery := `
+	// Get completed routines (for backwards compatibility)
+	completedRoutinesQuery := `
 		SELECT r.id, r.title, r.icon, c.completed_at
 		FROM routine_completions c
 		JOIN routines r ON c.routine_id = r.id
 		WHERE r.user_id = $1 AND DATE(c.completed_at) = $2
 		ORDER BY c.completed_at
 	`
-	routineRows, _ := h.db.Query(r.Context(), routinesQuery, memberID, dateStr)
-	defer routineRows.Close()
+	completedRoutineRows, _ := h.db.Query(r.Context(), completedRoutinesQuery, memberID, dateStr)
+	defer completedRoutineRows.Close()
 
-	routines := []CrewCompletedRoutine{}
-	for routineRows.Next() {
+	completedRoutines := []CrewCompletedRoutine{}
+	for completedRoutineRows.Next() {
 		var cr CrewCompletedRoutine
-		routineRows.Scan(&cr.ID, &cr.Title, &cr.Icon, &cr.CompletedAt)
-		routines = append(routines, cr)
+		completedRoutineRows.Scan(&cr.ID, &cr.Title, &cr.Icon, &cr.CompletedAt)
+		completedRoutines = append(completedRoutines, cr)
+	}
+
+	// Get ALL routines with completion status for this day
+	allRoutinesQuery := `
+		SELECT
+			r.id,
+			r.title,
+			r.icon,
+			CASE WHEN c.id IS NOT NULL THEN true ELSE false END as completed,
+			c.completed_at
+		FROM routines r
+		LEFT JOIN routine_completions c ON r.id = c.routine_id AND DATE(c.completed_at) = $2
+		WHERE r.user_id = $1
+		ORDER BY completed DESC, r.title ASC
+	`
+	allRoutineRows, _ := h.db.Query(r.Context(), allRoutinesQuery, memberID, dateStr)
+	defer allRoutineRows.Close()
+
+	allRoutines := []CrewRoutine{}
+	for allRoutineRows.Next() {
+		var cr CrewRoutine
+		allRoutineRows.Scan(&cr.ID, &cr.Title, &cr.Icon, &cr.Completed, &cr.CompletedAt)
+		allRoutines = append(allRoutines, cr)
 	}
 
 	day := CrewMemberDay{
 		User:              &user,
 		Intentions:        intentions,
 		FocusSessions:     sessions,
-		CompletedRoutines: routines,
+		CompletedRoutines: completedRoutines,
+		Routines:          allRoutines,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
