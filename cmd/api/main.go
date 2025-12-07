@@ -138,6 +138,7 @@ func main() {
 		r.Get("/crew/leaderboard", crewHandler.GetLeaderboard)
 		r.Get("/crew/members/{id}/day", crewHandler.GetMemberDay)
 		r.Patch("/me/visibility", crewHandler.UpdateVisibility)
+		r.Get("/me/stats", crewHandler.GetMyStats)
 	})
 
 	port := os.Getenv("PORT")

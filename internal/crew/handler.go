@@ -983,6 +983,32 @@ func (h *Handler) getMemberStats(ctx context.Context, memberID string) *CrewMemb
 }
 
 // ============================================================================
+// GET /me/stats - Get my own stats
+// ============================================================================
+
+func (h *Handler) GetMyStats(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+
+	stats := h.getMemberStats(r.Context(), userID)
+
+	// Also get total routines count for context
+	var totalRoutines int
+	countQuery := `SELECT COUNT(*) FROM routines WHERE user_id = $1`
+	h.db.QueryRow(r.Context(), countQuery, userID).Scan(&totalRoutines)
+
+	response := struct {
+		*CrewMemberStats
+		TotalRoutines int `json:"total_routines"`
+	}{
+		CrewMemberStats: stats,
+		TotalRoutines:   totalRoutines,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// ============================================================================
 // PATCH /me/visibility - Update day visibility
 // ============================================================================
 
