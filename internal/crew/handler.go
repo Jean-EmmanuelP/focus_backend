@@ -60,12 +60,14 @@ type LeaderboardEntry struct {
 	Pseudo              *string `json:"pseudo"`
 	FirstName           *string `json:"first_name"`
 	LastName            *string `json:"last_name"`
+	Email               *string `json:"email"`
 	AvatarUrl           *string `json:"avatar_url"`
 	DayVisibility       *string `json:"day_visibility"`
 	TotalSessions7d     int     `json:"total_sessions_7d"`
 	TotalMinutes7d      int     `json:"total_minutes_7d"`
 	CompletedRoutines7d int     `json:"completed_routines_7d"`
 	ActivityScore       int     `json:"activity_score"`
+	CurrentStreak       int     `json:"current_streak"`
 	LastActive          *string `json:"last_active"`
 	IsCrewMember        bool    `json:"is_crew_member"`
 	HasPendingRequest   bool    `json:"has_pending_request"`
@@ -631,6 +633,7 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 				u.pseudo,
 				u.first_name,
 				u.last_name,
+				u.email,
 				u.avatar_url,
 				COALESCE(u.day_visibility, 'crew') as day_visibility,
 				COALESCE(fs.total_sessions, 0)::int as total_sessions_7d,
@@ -660,12 +663,14 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 			us.pseudo,
 			us.first_name,
 			us.last_name,
+			us.email,
 			us.avatar_url,
 			us.day_visibility,
 			us.total_sessions_7d,
 			us.total_minutes_7d,
 			us.completed_routines_7d,
 			us.activity_score,
+			COALESCE((SELECT longest_streak FROM user_streaks WHERE user_id = us.id), 0)::int as current_streak,
 			us.last_active,
 			EXISTS(SELECT 1 FROM crew_members cm WHERE cm.user_id = $1 AND cm.member_id = us.id) as is_crew_member,
 			EXISTS(
@@ -703,9 +708,9 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 		var rank int64
 		var lastActive *time.Time
 		if err := rows.Scan(
-			&rank, &e.ID, &e.Pseudo, &e.FirstName, &e.LastName, &e.AvatarUrl,
+			&rank, &e.ID, &e.Pseudo, &e.FirstName, &e.LastName, &e.Email, &e.AvatarUrl,
 			&e.DayVisibility, &e.TotalSessions7d, &e.TotalMinutes7d, &e.CompletedRoutines7d,
-			&e.ActivityScore, &lastActive, &e.IsCrewMember, &e.HasPendingRequest, &e.RequestDirection,
+			&e.ActivityScore, &e.CurrentStreak, &lastActive, &e.IsCrewMember, &e.HasPendingRequest, &e.RequestDirection,
 		); err != nil {
 			fmt.Println("Scan leaderboard entry error:", err)
 			continue

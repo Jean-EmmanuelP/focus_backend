@@ -184,6 +184,7 @@ func (h *Handler) validateDay(ctx context.Context, userID string, date string) D
 }
 
 // calculateStreak calculates the current streak by checking consecutive valid days
+// If today is not yet valid, we keep the streak from yesterday (user still has time to validate today)
 func (h *Handler) calculateStreak(ctx context.Context, userID string, currentDate string) StreakInfo {
 	streak := StreakInfo{
 		CurrentStreak: 0,
@@ -205,7 +206,7 @@ func (h *Handler) calculateStreak(ctx context.Context, userID string, currentDat
 	var streakStartDate string
 	var lastValidDate string
 
-	// If today is valid, count it
+	// If today is valid, count it and continue from yesterday
 	if todayValidation.IsValid {
 		consecutiveDays = 1
 		streakStartDate = currentDate
@@ -226,11 +227,15 @@ func (h *Handler) calculateStreak(ctx context.Context, userID string, currentDat
 				lastValidDate = dateStr
 			}
 		} else {
-			// Streak broken, stop counting
+			// If this is yesterday and today wasn't valid either, streak is truly broken
+			// But if it's further back, we already counted valid days, so stop
 			break
 		}
 	}
 
+	// Important: If today is not yet valid but yesterday was valid,
+	// the user still has their streak (they haven't broken it yet, today is still ongoing)
+	// The streak count should reflect the ongoing streak, not penalize for incomplete today
 	streak.CurrentStreak = consecutiveDays
 	if streakStartDate != "" {
 		streak.StreakStart = &streakStartDate
@@ -255,8 +260,8 @@ func (h *Handler) calculateStreak(ctx context.Context, userID string, currentDat
 		h.updateLongestStreak(ctx, userID, streak.CurrentStreak)
 	}
 
-	fmt.Printf("✅ Streak calculated for user %s: current=%d, longest=%d, start=%v\n",
-		userID, streak.CurrentStreak, streak.LongestStreak, streak.StreakStart)
+	fmt.Printf("✅ Streak calculated for user %s: current=%d, longest=%d, start=%v, todayValid=%v\n",
+		userID, streak.CurrentStreak, streak.LongestStreak, streak.StreakStart, todayValidation.IsValid)
 
 	return streak
 }
