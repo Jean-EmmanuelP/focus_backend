@@ -26,6 +26,7 @@ type CrewMember struct {
 	Pseudo          *string `json:"pseudo"`
 	FirstName       *string `json:"first_name"`
 	LastName        *string `json:"last_name"`
+	Email           *string `json:"email"`
 	AvatarUrl       *string `json:"avatar_url"`
 	DayVisibility   *string `json:"day_visibility"`
 	TotalSessions7d *int    `json:"total_sessions_7d"`
@@ -51,6 +52,7 @@ type CrewUserInfo struct {
 	Pseudo    *string `json:"pseudo"`
 	FirstName *string `json:"first_name"`
 	LastName  *string `json:"last_name"`
+	Email     *string `json:"email"`
 	AvatarUrl *string `json:"avatar_url"`
 }
 
@@ -79,6 +81,7 @@ type SearchUserResult struct {
 	Pseudo            *string `json:"pseudo"`
 	FirstName         *string `json:"first_name"`
 	LastName          *string `json:"last_name"`
+	Email             *string `json:"email"`
 	AvatarUrl         *string `json:"avatar_url"`
 	DayVisibility     *string `json:"day_visibility"`
 	TotalSessions7d   *int    `json:"total_sessions_7d"`
@@ -192,6 +195,7 @@ func (h *Handler) ListMembers(w http.ResponseWriter, r *http.Request) {
 			u.pseudo,
 			u.first_name,
 			u.last_name,
+			u.email,
 			u.avatar_url,
 			COALESCE(u.day_visibility, 'crew') as day_visibility,
 			COALESCE(fs.total_sessions, 0)::int as total_sessions_7d,
@@ -231,7 +235,7 @@ func (h *Handler) ListMembers(w http.ResponseWriter, r *http.Request) {
 		var createdAt time.Time
 		if err := rows.Scan(
 			&m.ID, &m.MemberID, &m.Pseudo, &m.FirstName, &m.LastName,
-			&m.AvatarUrl, &m.DayVisibility, &m.TotalSessions7d, &m.TotalMinutes7d,
+			&m.Email, &m.AvatarUrl, &m.DayVisibility, &m.TotalSessions7d, &m.TotalMinutes7d,
 			&m.ActivityScore, &createdAt,
 		); err != nil {
 			fmt.Println("Scan crew member error:", err)
@@ -289,7 +293,7 @@ func (h *Handler) ListReceivedRequests(w http.ResponseWriter, r *http.Request) {
 		SELECT
 			cr.id, cr.from_user_id, cr.to_user_id, cr.status, cr.message,
 			cr.created_at, cr.updated_at,
-			u.id, u.pseudo, u.first_name, u.last_name, u.avatar_url
+			u.id, u.pseudo, u.first_name, u.last_name, u.email, u.avatar_url
 		FROM crew_requests cr
 		JOIN users u ON cr.from_user_id = u.id
 		WHERE cr.to_user_id = $1 AND cr.status = 'pending'
@@ -311,7 +315,7 @@ func (h *Handler) ListReceivedRequests(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(
 			&req.ID, &req.FromUserID, &req.ToUserID, &req.Status, &req.Message,
 			&req.CreatedAt, &req.UpdatedAt,
-			&fromUser.ID, &fromUser.Pseudo, &fromUser.FirstName, &fromUser.LastName, &fromUser.AvatarUrl,
+			&fromUser.ID, &fromUser.Pseudo, &fromUser.FirstName, &fromUser.LastName, &fromUser.Email, &fromUser.AvatarUrl,
 		); err != nil {
 			fmt.Println("Scan request error:", err)
 			continue
@@ -335,7 +339,7 @@ func (h *Handler) ListSentRequests(w http.ResponseWriter, r *http.Request) {
 		SELECT
 			cr.id, cr.from_user_id, cr.to_user_id, cr.status, cr.message,
 			cr.created_at, cr.updated_at,
-			u.id, u.pseudo, u.first_name, u.last_name, u.avatar_url
+			u.id, u.pseudo, u.first_name, u.last_name, u.email, u.avatar_url
 		FROM crew_requests cr
 		JOIN users u ON cr.to_user_id = u.id
 		WHERE cr.from_user_id = $1
@@ -357,7 +361,7 @@ func (h *Handler) ListSentRequests(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(
 			&req.ID, &req.FromUserID, &req.ToUserID, &req.Status, &req.Message,
 			&req.CreatedAt, &req.UpdatedAt,
-			&toUser.ID, &toUser.Pseudo, &toUser.FirstName, &toUser.LastName, &toUser.AvatarUrl,
+			&toUser.ID, &toUser.Pseudo, &toUser.FirstName, &toUser.LastName, &toUser.Email, &toUser.AvatarUrl,
 		); err != nil {
 			fmt.Println("Scan request error:", err)
 			continue
@@ -543,6 +547,7 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 			u.pseudo,
 			u.first_name,
 			u.last_name,
+			u.email,
 			u.avatar_url,
 			COALESCE(u.day_visibility, 'crew') as day_visibility,
 			COALESCE(fs.total_sessions, 0)::int as total_sessions_7d,
@@ -580,7 +585,7 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 			GROUP BY r.user_id
 		) rc ON u.id = rc.user_id
 		WHERE u.id != $1
-		AND (u.pseudo ILIKE $2 OR u.first_name ILIKE $2 OR u.last_name ILIKE $2)
+		AND (u.pseudo ILIKE $2 OR u.first_name ILIKE $2 OR u.last_name ILIKE $2 OR u.email ILIKE $2)
 		ORDER BY activity_score DESC
 		LIMIT $3
 	`
@@ -597,7 +602,7 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var u SearchUserResult
 		if err := rows.Scan(
-			&u.ID, &u.Pseudo, &u.FirstName, &u.LastName, &u.AvatarUrl,
+			&u.ID, &u.Pseudo, &u.FirstName, &u.LastName, &u.Email, &u.AvatarUrl,
 			&u.DayVisibility, &u.TotalSessions7d, &u.TotalMinutes7d, &u.ActivityScore,
 			&u.IsCrewMember, &u.HasPendingRequest, &u.RequestDirection,
 		); err != nil {
@@ -766,9 +771,9 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 
 	// Get user info
 	var user CrewUserInfo
-	userQuery := `SELECT id, pseudo, first_name, last_name, avatar_url FROM users WHERE id = $1`
+	userQuery := `SELECT id, pseudo, first_name, last_name, email, avatar_url FROM users WHERE id = $1`
 	h.db.QueryRow(r.Context(), userQuery, memberID).Scan(
-		&user.ID, &user.Pseudo, &user.FirstName, &user.LastName, &user.AvatarUrl,
+		&user.ID, &user.Pseudo, &user.FirstName, &user.LastName, &user.Email, &user.AvatarUrl,
 	)
 
 	// Get intentions
@@ -1123,6 +1128,7 @@ func (h *Handler) GetSuggestedUsers(w http.ResponseWriter, r *http.Request) {
 				u.pseudo,
 				u.first_name,
 				u.last_name,
+				u.email,
 				u.avatar_url,
 				COALESCE(u.day_visibility, 'crew') as day_visibility,
 				COALESCE(fs.total_sessions, 0)::int as total_sessions_7d,
@@ -1152,7 +1158,7 @@ func (h *Handler) GetSuggestedUsers(w http.ResponseWriter, r *http.Request) {
 			AND (COALESCE(fs.total_minutes, 0) + (COALESCE(rc.completed_count, 0) * 10)) > 0
 		)
 		SELECT
-			id, pseudo, first_name, last_name, avatar_url, day_visibility,
+			id, pseudo, first_name, last_name, email, avatar_url, day_visibility,
 			total_sessions_7d, total_minutes_7d, activity_score,
 			false as is_crew_member,
 			false as has_pending_request,
@@ -1174,7 +1180,7 @@ func (h *Handler) GetSuggestedUsers(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var u SearchUserResult
 		if err := rows.Scan(
-			&u.ID, &u.Pseudo, &u.FirstName, &u.LastName, &u.AvatarUrl,
+			&u.ID, &u.Pseudo, &u.FirstName, &u.LastName, &u.Email, &u.AvatarUrl,
 			&u.DayVisibility, &u.TotalSessions7d, &u.TotalMinutes7d, &u.ActivityScore,
 			&u.IsCrewMember, &u.HasPendingRequest, &u.RequestDirection,
 		); err != nil {
