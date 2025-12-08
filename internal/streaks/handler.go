@@ -257,8 +257,10 @@ func (h *Handler) calculateStreak(ctx context.Context, userID string, currentDat
 	// Update longest streak if current is higher
 	if streak.CurrentStreak > streak.LongestStreak {
 		streak.LongestStreak = streak.CurrentStreak
-		h.updateLongestStreak(ctx, userID, streak.CurrentStreak)
 	}
+
+	// Always update both current and longest streak in DB
+	h.updateStreaks(ctx, userID, streak.CurrentStreak, streak.LongestStreak)
 
 	fmt.Printf("✅ Streak calculated for user %s: current=%d, longest=%d, start=%v, todayValid=%v\n",
 		userID, streak.CurrentStreak, streak.LongestStreak, streak.StreakStart, todayValidation.IsValid)
@@ -266,16 +268,16 @@ func (h *Handler) calculateStreak(ctx context.Context, userID string, currentDat
 	return streak
 }
 
-// updateLongestStreak updates the user's longest streak in the database
-func (h *Handler) updateLongestStreak(ctx context.Context, userID string, longestStreak int) {
+// updateStreaks updates the user's current and longest streak in the database
+func (h *Handler) updateStreaks(ctx context.Context, userID string, currentStreak int, longestStreak int) {
 	_, err := h.db.Exec(ctx, `
-		INSERT INTO public.user_streaks (user_id, longest_streak, updated_at)
-		VALUES ($1, $2, NOW())
+		INSERT INTO public.user_streaks (user_id, current_streak, longest_streak, updated_at)
+		VALUES ($1, $2, $3, NOW())
 		ON CONFLICT (user_id)
-		DO UPDATE SET longest_streak = $2, updated_at = NOW()
-	`, userID, longestStreak)
+		DO UPDATE SET current_streak = $2, longest_streak = $3, updated_at = NOW()
+	`, userID, currentStreak, longestStreak)
 	if err != nil {
-		fmt.Printf("❌ Streak: Error updating longest streak: %v\n", err)
+		fmt.Printf("❌ Streak: Error updating streaks: %v\n", err)
 	}
 }
 

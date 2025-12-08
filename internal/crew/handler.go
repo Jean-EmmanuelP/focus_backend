@@ -670,7 +670,7 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 			us.total_minutes_7d,
 			us.completed_routines_7d,
 			us.activity_score,
-			COALESCE((SELECT longest_streak FROM user_streaks WHERE user_id = us.id), 0)::int as current_streak,
+			COALESCE((SELECT current_streak FROM user_streaks WHERE user_id = us.id), 0)::int as current_streak,
 			us.last_active,
 			EXISTS(SELECT 1 FROM crew_members cm WHERE cm.user_id = $1 AND cm.member_id = us.id) as is_crew_member,
 			EXISTS(
