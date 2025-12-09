@@ -16,6 +16,7 @@ import (
 	"firelevel-backend/internal/database"
 	"firelevel-backend/internal/focus"
 	"firelevel-backend/internal/intentions"
+	"firelevel-backend/internal/onboarding"
 	"firelevel-backend/internal/quests"
 	"firelevel-backend/internal/reflections"
 	"firelevel-backend/internal/routines"
@@ -57,6 +58,7 @@ func main() {
 	statsHandler := stats.NewHandler(pool)
 	crewHandler := crew.NewHandler(pool)
 	streaksHandler := streaks.NewHandler(pool)
+	onboardingHandler := onboarding.NewHandler(pool)
 
 	// 4. Setup Router
 	r := chi.NewRouter()
@@ -151,6 +153,12 @@ func main() {
 		// Routine Likes
 		r.Post("/completions/{id}/like", crewHandler.LikeCompletion)
 		r.Delete("/completions/{id}/like", crewHandler.UnlikeCompletion)
+
+		// Onboarding
+		r.Get("/onboarding/status", onboardingHandler.GetStatus)
+		r.Put("/onboarding/progress", onboardingHandler.SaveProgress)
+		r.Post("/onboarding/complete", onboardingHandler.Complete)
+		r.Delete("/onboarding", onboardingHandler.Reset)
 	})
 
 	port := os.Getenv("PORT")
