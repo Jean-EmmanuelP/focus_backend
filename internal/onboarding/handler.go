@@ -117,11 +117,15 @@ func (h *Handler) SaveProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Printf("📝 SaveProgress request - step: %d, projectStatus: %v, timeAvailable: %v, goals: %v\n", req.CurrentStep, req.ProjectStatus, req.TimeAvailable, req.Goals)
 
-	// Convert goals to JSON
-	goalsJSON, _ := json.Marshal(req.Goals)
-	if req.Goals == nil {
-		goalsJSON = []byte("[]")
+	// Convert goals to JSON string for PostgreSQL jsonb
+	var goalsJSONStr string
+	if req.Goals == nil || len(req.Goals) == 0 {
+		goalsJSONStr = "[]"
+	} else {
+		goalsBytes, _ := json.Marshal(req.Goals)
+		goalsJSONStr = string(goalsBytes)
 	}
+	fmt.Printf("📝 Goals JSON string: %s\n", goalsJSONStr)
 
 	// Determine completed_at
 	var completedAt *time.Time
@@ -156,7 +160,7 @@ func (h *Handler) SaveProgress(w http.ResponseWriter, r *http.Request) {
 		userID,
 		req.ProjectStatus,
 		req.TimeAvailable,
-		goalsJSON,
+		goalsJSONStr,
 		req.CurrentStep,
 		completedAt,
 	).Scan(
