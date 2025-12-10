@@ -1056,14 +1056,22 @@ func (h *Handler) getDailyGoalsForWeek(ctx context.Context, userID, startDate, e
 		if err != nil {
 			continue
 		}
-		// Convert time.Time to HH:mm string format
+		// Convert time.Time to HH:mm string format, or use default based on time_block
 		if scheduledStart != nil {
 			s := scheduledStart.Format("15:04")
 			g.ScheduledStart = &s
+		} else {
+			// Default time based on time_block
+			defaultStart := getDefaultStartTime(g.TimeBlock)
+			g.ScheduledStart = &defaultStart
 		}
 		if scheduledEnd != nil {
 			s := scheduledEnd.Format("15:04")
 			g.ScheduledEnd = &s
+		} else {
+			// Default end time = start + 1 hour
+			defaultEnd := getDefaultEndTime(g.TimeBlock)
+			g.ScheduledEnd = &defaultEnd
 		}
 		goals = append(goals, g)
 	}
@@ -1073,6 +1081,34 @@ func (h *Handler) getDailyGoalsForWeek(ctx context.Context, userID, startDate, e
 	}
 
 	return goals, nil
+}
+
+// getDefaultStartTime returns default start time based on time_block
+func getDefaultStartTime(timeBlock string) string {
+	switch timeBlock {
+	case "morning":
+		return "09:30"
+	case "afternoon":
+		return "14:00"
+	case "evening":
+		return "19:00"
+	default:
+		return "09:30" // Default to morning
+	}
+}
+
+// getDefaultEndTime returns default end time based on time_block
+func getDefaultEndTime(timeBlock string) string {
+	switch timeBlock {
+	case "morning":
+		return "10:30"
+	case "afternoon":
+		return "15:00"
+	case "evening":
+		return "20:00"
+	default:
+		return "10:30" // Default to morning
+	}
 }
 
 func (h *Handler) getTasksForWeek(ctx context.Context, userID, startDate, endDate string) ([]Task, error) {
