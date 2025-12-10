@@ -138,10 +138,10 @@ type CreateDailyGoalRequest struct {
 	Description    *string `json:"description"`
 	Date           string  `json:"date"`
 	Priority       string  `json:"priority"`
-	TimeBlock      string  `json:"timeBlock"`
-	QuestID        *string `json:"questId"`
-	ScheduledStart *string `json:"scheduledStart"` // HH:mm format
-	ScheduledEnd   *string `json:"scheduledEnd"`   // HH:mm format
+	TimeBlock      string  `json:"time_block"`
+	QuestID        *string `json:"quest_id"`
+	ScheduledStart *string `json:"scheduled_start"` // HH:mm format
+	ScheduledEnd   *string `json:"scheduled_end"`   // HH:mm format
 }
 
 type UpdateDailyGoalRequest struct {
