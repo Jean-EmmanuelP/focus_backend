@@ -181,8 +181,8 @@ type VoiceAssistantResponse struct {
 // ============================================
 
 func (h *Handler) ProcessVoiceIntent(w http.ResponseWriter, r *http.Request) {
-	userID := auth.GetUserID(r.Context())
-	if userID == "" {
+	userID, ok := r.Context().Value(auth.UserContextKey).(string)
+	if !ok || userID == "" {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -291,8 +291,8 @@ func (h *Handler) ProcessVoiceIntent(w http.ResponseWriter, r *http.Request) {
 
 // VoiceAssistant - Complete voice assistant endpoint with Perplexity + Gradium TTS
 func (h *Handler) VoiceAssistant(w http.ResponseWriter, r *http.Request) {
-	userID := auth.GetUserID(r.Context())
-	if userID == "" {
+	userID, ok := r.Context().Value(auth.UserContextKey).(string)
+	if !ok || userID == "" {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -412,8 +412,8 @@ func (h *Handler) VoiceAssistant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetIntentLogs(w http.ResponseWriter, r *http.Request) {
-	userID := auth.GetUserID(r.Context())
-	if userID == "" {
+	userID, ok := r.Context().Value(auth.UserContextKey).(string)
+	if !ok || userID == "" {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -453,8 +453,8 @@ func (h *Handler) GetIntentLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetDailyGoals(w http.ResponseWriter, r *http.Request) {
-	userID := auth.GetUserID(r.Context())
-	if userID == "" {
+	userID, ok := r.Context().Value(auth.UserContextKey).(string)
+	if !ok || userID == "" {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -476,8 +476,8 @@ func (h *Handler) GetDailyGoals(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetDailyGoalsByDate(w http.ResponseWriter, r *http.Request) {
-	userID := auth.GetUserID(r.Context())
-	if userID == "" {
+	userID, ok := r.Context().Value(auth.UserContextKey).(string)
+	if !ok || userID == "" {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -494,8 +494,8 @@ func (h *Handler) GetDailyGoalsByDate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CreateDailyGoal(w http.ResponseWriter, r *http.Request) {
-	userID := auth.GetUserID(r.Context())
-	if userID == "" {
+	userID, ok := r.Context().Value(auth.UserContextKey).(string)
+	if !ok || userID == "" {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -544,8 +544,8 @@ func (h *Handler) CreateDailyGoal(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateDailyGoal(w http.ResponseWriter, r *http.Request) {
-	userID := auth.GetUserID(r.Context())
-	if userID == "" {
+	userID, ok := r.Context().Value(auth.UserContextKey).(string)
+	if !ok || userID == "" {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -604,8 +604,8 @@ func (h *Handler) UpdateDailyGoal(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DeleteDailyGoal(w http.ResponseWriter, r *http.Request) {
-	userID := auth.GetUserID(r.Context())
-	if userID == "" {
+	userID, ok := r.Context().Value(auth.UserContextKey).(string)
+	if !ok || userID == "" {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -626,8 +626,8 @@ func (h *Handler) DeleteDailyGoal(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CompleteDailyGoal(w http.ResponseWriter, r *http.Request) {
-	userID := auth.GetUserID(r.Context())
-	if userID == "" {
+	userID, ok := r.Context().Value(auth.UserContextKey).(string)
+	if !ok || userID == "" {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -669,8 +669,8 @@ func (h *Handler) CompleteDailyGoal(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetGoalSubtasks(w http.ResponseWriter, r *http.Request) {
-	userID := auth.GetUserID(r.Context())
-	if userID == "" {
+	userID, ok := r.Context().Value(auth.UserContextKey).(string)
+	if !ok || userID == "" {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -720,8 +720,8 @@ func (h *Handler) GetGoalSubtasks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ScheduleGoalsToCalendar(w http.ResponseWriter, r *http.Request) {
-	userID := auth.GetUserID(r.Context())
-	if userID == "" {
+	userID, ok := r.Context().Value(auth.UserContextKey).(string)
+	if !ok || userID == "" {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
