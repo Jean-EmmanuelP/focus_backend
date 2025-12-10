@@ -58,6 +58,7 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 // GET /onboarding/status
 func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
+	fmt.Printf("📋 GetStatus called - userID: %s\n", userID)
 
 	query := `
 		SELECT
@@ -85,6 +86,7 @@ func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		// No onboarding record exists yet - user hasn't started
+		fmt.Printf("📋 GetStatus - No record found for user %s, error: %v\n", userID, err)
 		status.IsCompleted = false
 		status.CurrentStep = 1
 		w.Header().Set("Content-Type", "application/json")
@@ -98,6 +100,8 @@ func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status.IsCompleted = status.CompletedAt != nil
+	fmt.Printf("📋 GetStatus - Found record for user %s: step=%d, completedAt=%v, isCompleted=%v\n",
+		userID, status.CurrentStep, status.CompletedAt, status.IsCompleted)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
