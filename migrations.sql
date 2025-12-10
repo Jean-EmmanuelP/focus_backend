@@ -151,6 +151,85 @@ create table public.focus_sessions (
 -- RLS
 alter table public.focus_sessions enable row level security;
 
-create policy "Users can manage own sessions" 
+create policy "Users can manage own sessions"
 on public.focus_sessions
 using (auth.uid() = user_id);
+
+
+-- ==========================================
+-- 7. TASKS (Calendar Tasks - unified with time_blocks)
+-- ==========================================
+create table public.tasks (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid not null references auth.users on delete cascade,
+
+  -- Optional links
+  quest_id uuid references public.quests on delete set null,
+  area_id uuid references public.areas on delete set null,
+
+  -- Core fields
+  title text not null,
+  description text,
+  position integer default 0,
+
+  -- Time estimates
+  estimated_minutes integer,
+  actual_minutes integer default 0,
+
+  -- Priority and status
+  priority text default 'medium',  -- low, medium, high, urgent
+  status text default 'pending',   -- pending, in_progress, completed
+
+  -- Calendar scheduling
+  date date default current_date,
+  scheduled_start time,            -- HH:mm format in DB
+  scheduled_end time,              -- HH:mm format in DB
+  time_block text default 'morning', -- morning, afternoon, evening
+
+  -- Due date and completion
+  due_at timestamp with time zone,
+  completed_at timestamp with time zone,
+
+  -- AI fields
+  is_ai_generated boolean default false,
+  ai_notes text,
+
+  -- Timestamps
+  created_at timestamp with time zone default now(),
+  updated_at timestamp with time zone default now()
+);
+
+-- RLS
+alter table public.tasks enable row level security;
+create policy "Users can manage own tasks" on public.tasks
+  using (auth.uid() = user_id);
+
+-- Indexes for performance
+create index idx_tasks_user_date on public.tasks(user_id, date);
+create index idx_tasks_quest on public.tasks(quest_id);
+create index idx_tasks_area on public.tasks(area_id);
+
+
+-- ==========================================
+-- 8. DAY PLANS (For AI day planning)
+-- ==========================================
+create table public.day_plans (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid not null references auth.users on delete cascade,
+
+  date date not null,
+  ideal_day_prompt text,
+  ai_summary text,
+  progress integer default 0,
+  status text default 'active',
+
+  created_at timestamp with time zone default now(),
+  updated_at timestamp with time zone default now(),
+
+  unique (user_id, date)
+);
+
+-- RLS
+alter table public.day_plans enable row level security;
+create policy "Users can manage own day_plans" on public.day_plans
+  using (auth.uid() = user_id);
