@@ -463,7 +463,7 @@ func (h *Handler) getExistingTimeBlocks(userID, date string) ([]TimeBlock, error
 		ORDER BY start_time
 	`
 
-	rows, err := h.db.Pool.Query(context.Background(), query, userID, date)
+	rows, err := h.db.Query(context.Background(), query, userID, date)
 	if err != nil {
 		return nil, err
 	}
@@ -498,7 +498,7 @@ func (h *Handler) createTimeBlockFromSchedule(userID, date string, block Schedul
 	`
 
 	var tb TimeBlock
-	err := h.db.Pool.QueryRow(context.Background(), query,
+	err := h.db.QueryRow(context.Background(), query,
 		id, userID, block.Title, startTime, endTime, block.BlockType, block.GoalID,
 	).Scan(
 		&tb.ID, &tb.Title, &tb.Description, &tb.StartTime, &tb.EndTime,
@@ -518,7 +518,7 @@ func (h *Handler) updateGoalSchedule(goalID, startTime, endTime string) {
 		SET scheduled_start = $2::time, scheduled_end = $3::time, is_ai_scheduled = true, updated_at = NOW()
 		WHERE id = $1
 	`
-	h.db.Pool.Exec(context.Background(), query, goalID, startTime, endTime)
+	h.db.Exec(context.Background(), query, goalID, startTime, endTime)
 }
 
 // Alias for backwards compatibility - scheduleGoalsWithGrok now uses Perplexity
