@@ -63,7 +63,7 @@ func main() {
 	onboardingHandler := onboarding.NewHandler(pool)
 	calendarHandler := calendar.NewHandler(pool)
 	calendarAIHandler := calendar.NewAIHandler(pool)
-	voiceHandler := voice.NewHandler(database.NewDB(pool))
+	voiceHandler := voice.NewHandler(pool)
 
 	// 4. Setup Router
 	r := chi.NewRouter()
@@ -195,6 +195,7 @@ func main() {
 
 		// Voice / Intentions AI
 		r.Post("/voice/process", voiceHandler.ProcessVoiceIntent)
+		r.Post("/assistant/voice", voiceHandler.VoiceAssistant)
 		r.Get("/voice/intentions", voiceHandler.GetIntentLogs)
 		r.Get("/daily-goals", voiceHandler.GetDailyGoals)
 		r.Get("/daily-goals/{date}", voiceHandler.GetDailyGoalsByDate)
