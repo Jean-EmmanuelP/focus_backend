@@ -88,21 +88,6 @@ type Task struct {
 	AreaIcon         *string    `json:"areaIcon,omitempty"`
 }
 
-type Project struct {
-	ID              string                 `json:"id"`
-	UserID          string                 `json:"userId"`
-	QuestID         *string                `json:"questId,omitempty"`
-	AreaID          *string                `json:"areaId,omitempty"`
-	Name            string                 `json:"name"`
-	Description     *string                `json:"description,omitempty"`
-	Components      []string               `json:"components"`
-	Keywords        []string               `json:"keywords"`
-	TimeAllocations map[string]int         `json:"timeAllocations"`
-	Status          string                 `json:"status"`
-	CreatedAt       time.Time              `json:"createdAt"`
-	UpdatedAt       time.Time              `json:"updatedAt"`
-}
-
 // ==========================================
 // REQUEST/RESPONSE TYPES
 // ==========================================
@@ -166,16 +151,6 @@ type UpdateTaskRequest struct {
 	TimeBlockID      *string    `json:"timeBlockId,omitempty"`
 	QuestID          *string    `json:"questId,omitempty"`
 	AreaID           *string    `json:"areaId,omitempty"`
-}
-
-type CreateProjectRequest struct {
-	QuestID         *string            `json:"questId,omitempty"`
-	AreaID          *string            `json:"areaId,omitempty"`
-	Name            string             `json:"name"`
-	Description     *string            `json:"description,omitempty"`
-	Components      []string           `json:"components"`
-	Keywords        []string           `json:"keywords"`
-	TimeAllocations map[string]int     `json:"timeAllocations"`
 }
 
 type CalendarDayResponse struct {
@@ -613,122 +588,6 @@ func (h *Handler) DeleteTask(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil || result.RowsAffected() == 0 {
 		http.Error(w, "Task not found", http.StatusNotFound)
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// ==========================================
-// PROJECT HANDLERS
-// ==========================================
-
-func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(auth.UserContextKey).(string)
-
-	rows, err := h.db.Query(r.Context(), `
-		SELECT id, user_id, quest_id, area_id, name, description, components, keywords, time_allocations, status, created_at, updated_at
-		FROM projects
-		WHERE user_id = $1 AND status = 'active'
-		ORDER BY name
-	`, userID)
-
-	if err != nil {
-		http.Error(w, "Failed to fetch projects", http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-
-	var projects []Project
-	for rows.Next() {
-		var p Project
-		var componentsJSON, keywordsJSON, timeAllocJSON []byte
-
-		err := rows.Scan(
-			&p.ID, &p.UserID, &p.QuestID, &p.AreaID,
-			&p.Name, &p.Description, &componentsJSON, &keywordsJSON,
-			&timeAllocJSON, &p.Status, &p.CreatedAt, &p.UpdatedAt,
-		)
-		if err != nil {
-			continue
-		}
-
-		json.Unmarshal(componentsJSON, &p.Components)
-		json.Unmarshal(keywordsJSON, &p.Keywords)
-		json.Unmarshal(timeAllocJSON, &p.TimeAllocations)
-
-		if p.Components == nil {
-			p.Components = []string{}
-		}
-		if p.Keywords == nil {
-			p.Keywords = []string{}
-		}
-		if p.TimeAllocations == nil {
-			p.TimeAllocations = map[string]int{}
-		}
-
-		projects = append(projects, p)
-	}
-
-	if projects == nil {
-		projects = []Project{}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(projects)
-}
-
-func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(auth.UserContextKey).(string)
-
-	var req CreateProjectRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	componentsJSON, _ := json.Marshal(req.Components)
-	keywordsJSON, _ := json.Marshal(req.Keywords)
-	timeAllocJSON, _ := json.Marshal(req.TimeAllocations)
-
-	var p Project
-	var componentsOut, keywordsOut, timeAllocOut []byte
-
-	err := h.db.QueryRow(r.Context(), `
-		INSERT INTO projects (user_id, quest_id, area_id, name, description, components, keywords, time_allocations)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, user_id, quest_id, area_id, name, description, components, keywords, time_allocations, status, created_at, updated_at
-	`, userID, req.QuestID, req.AreaID, req.Name, req.Description, componentsJSON, keywordsJSON, timeAllocJSON).Scan(
-		&p.ID, &p.UserID, &p.QuestID, &p.AreaID,
-		&p.Name, &p.Description, &componentsOut, &keywordsOut,
-		&timeAllocOut, &p.Status, &p.CreatedAt, &p.UpdatedAt,
-	)
-
-	if err != nil {
-		http.Error(w, "Failed to create project: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	json.Unmarshal(componentsOut, &p.Components)
-	json.Unmarshal(keywordsOut, &p.Keywords)
-	json.Unmarshal(timeAllocOut, &p.TimeAllocations)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(p)
-}
-
-func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(auth.UserContextKey).(string)
-	projectID := chi.URLParam(r, "id")
-
-	result, err := h.db.Exec(r.Context(), `
-		UPDATE projects SET status = 'archived', updated_at = now()
-		WHERE id = $1 AND user_id = $2
-	`, projectID, userID)
-
-	if err != nil || result.RowsAffected() == 0 {
-		http.Error(w, "Project not found", http.StatusNotFound)
 		return
 	}
 

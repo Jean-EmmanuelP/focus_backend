@@ -184,11 +184,6 @@ func main() {
 		r.Post("/calendar/tasks/{id}/uncomplete", calendarHandler.UncompleteTask)
 		r.Delete("/calendar/tasks/{id}", calendarHandler.DeleteTask)
 
-		// Calendar - Projects
-		r.Get("/calendar/projects", calendarHandler.ListProjects)
-		r.Post("/calendar/projects", calendarHandler.CreateProject)
-		r.Delete("/calendar/projects/{id}", calendarHandler.DeleteProject)
-
 		// Calendar - Week View
 		r.Get("/calendar/week", calendarHandler.GetWeekView)
 		r.Patch("/calendar/goals/{id}/reschedule", calendarHandler.RescheduleGoal)

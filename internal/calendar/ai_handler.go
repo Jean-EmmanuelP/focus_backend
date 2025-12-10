@@ -111,17 +111,14 @@ func (h *AIHandler) GenerateDayPlan(w http.ResponseWriter, r *http.Request) {
 		req.Date = time.Now().Format("2006-01-02")
 	}
 
-	// Get user's projects for context
-	projects, _ := h.getUserProjects(r.Context(), userID)
-
-	// Get user's quests for linking
+	// Get user's quests (projects) for context
 	quests, _ := h.getUserQuests(r.Context(), userID)
 
 	// Get user's areas
 	areas, _ := h.getUserAreas(r.Context(), userID)
 
 	// Build the AI prompt
-	prompt := h.buildDayPlanPrompt(req.IdealDayPrompt, req.Date, projects, quests, areas)
+	prompt := h.buildDayPlanPrompt(req.IdealDayPrompt, req.Date, quests, areas)
 
 	// Call Gemini API
 	aiResponse, err := h.callGemini(prompt)
@@ -177,11 +174,11 @@ func (h *AIHandler) GenerateTasksForBlock(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Get user's projects for context
-	projects, _ := h.getUserProjects(r.Context(), userID)
+	// Get user's quests (projects) for context
+	quests, _ := h.getUserQuests(r.Context(), userID)
 
 	// Build prompt for task generation
-	prompt := h.buildTasksPrompt(block, req.Context, req.Count, projects)
+	prompt := h.buildTasksPrompt(block, req.Context, req.Count, quests)
 
 	// Call Gemini
 	aiResponse, err := h.callGemini(prompt)
@@ -212,14 +209,8 @@ func (h *AIHandler) GenerateTasksForBlock(w http.ResponseWriter, r *http.Request
 // AI PROMPT BUILDERS
 // ==========================================
 
-func (h *AIHandler) buildDayPlanPrompt(idealDay, date string, projects []Project, quests []Quest, areas []Area) string {
-	// Build project context
-	var projectContext strings.Builder
-	for _, p := range projects {
-		projectContext.WriteString(fmt.Sprintf("- %s: %s (composants: %s)\n", p.Name, safeString(p.Description), strings.Join(p.Components, ", ")))
-	}
-
-	// Build quest context
+func (h *AIHandler) buildDayPlanPrompt(idealDay, date string, quests []Quest, areas []Area) string {
+	// Build quest context (quests = projects)
 	var questContext strings.Builder
 	for _, q := range quests {
 		questContext.WriteString(fmt.Sprintf("- %s (objectif: %d/%d)\n", q.Title, q.CurrentValue, q.TargetValue))
@@ -238,19 +229,16 @@ DATE: %s
 DESCRIPTION DE LA JOURNÉE IDÉALE:
 %s
 
-PROJETS DE L'UTILISATEUR (utilise ces définitions pour comprendre ce que l'utilisateur veut faire):
+PROJETS/QUÊTES EN COURS:
 %s
 
-QUÊTES/OBJECTIFS EN COURS:
-%s
-
-CATÉGORIES DISPONIBLES:
+CATÉGORIES (AREAS):
 %s
 
 INSTRUCTIONS:
 1. Analyse la description et crée des blocs de temps réalistes
 2. Pour chaque bloc, génère des tâches concrètes et actionnables
-3. Si l'utilisateur mentionne un projet, utilise ses composants pour créer les tâches
+3. Si l'utilisateur mentionne un projet/quête, utilise-le pour créer les tâches
 4. Chaque tâche doit avoir une durée estimée réaliste
 5. Lie les tâches aux catégories appropriées
 
@@ -274,18 +262,18 @@ RÉPONDS UNIQUEMENT EN JSON avec ce format exact:
       ]
     }
   ]
-}`, date, idealDay, projectContext.String(), questContext.String(), areaContext.String())
+}`, date, idealDay, questContext.String(), areaContext.String())
 
 	return prompt
 }
 
-func (h *AIHandler) buildTasksPrompt(block TimeBlock, context string, count int, projects []Project) string {
+func (h *AIHandler) buildTasksPrompt(block TimeBlock, context string, count int, quests []Quest) string {
 	duration := block.EndTime.Sub(block.StartTime).Minutes()
 
-	// Build project context
-	var projectContext strings.Builder
-	for _, p := range projects {
-		projectContext.WriteString(fmt.Sprintf("- %s: %s (composants: %s)\n", p.Name, safeString(p.Description), strings.Join(p.Components, ", ")))
+	// Build quest context (quests = projects)
+	var questContext strings.Builder
+	for _, q := range quests {
+		questContext.WriteString(fmt.Sprintf("- %s (objectif: %d/%d)\n", q.Title, q.CurrentValue, q.TargetValue))
 	}
 
 	prompt := fmt.Sprintf(`Tu es un assistant de productivité. Génère %d tâches concrètes pour ce bloc de temps.
@@ -296,7 +284,7 @@ BLOC DE TEMPS:
 - Durée: %.0f minutes
 - Contexte additionnel: %s
 
-PROJETS DE L'UTILISATEUR:
+PROJETS/QUÊTES EN COURS:
 %s
 
 INSTRUCTIONS:
@@ -315,7 +303,7 @@ RÉPONDS UNIQUEMENT EN JSON avec ce format exact:
       "priority": "medium"
     }
   ]
-}`, count, block.Title, safeString(block.Description), duration, context, projectContext.String(), count)
+}`, count, block.Title, safeString(block.Description), duration, context, questContext.String(), count)
 
 	return prompt
 }
@@ -563,35 +551,6 @@ type Area struct {
 	Name string `json:"name"`
 	Slug string `json:"slug"`
 	Icon string `json:"icon"`
-}
-
-func (h *AIHandler) getUserProjects(ctx context.Context, userID string) ([]Project, error) {
-	rows, err := h.db.Query(ctx, `
-		SELECT id, user_id, quest_id, area_id, name, description, components, keywords, time_allocations, status, created_at, updated_at
-		FROM projects
-		WHERE user_id = $1 AND status = 'active'
-	`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var projects []Project
-	for rows.Next() {
-		var p Project
-		var componentsJSON, keywordsJSON, timeAllocJSON []byte
-		rows.Scan(
-			&p.ID, &p.UserID, &p.QuestID, &p.AreaID,
-			&p.Name, &p.Description, &componentsJSON, &keywordsJSON,
-			&timeAllocJSON, &p.Status, &p.CreatedAt, &p.UpdatedAt,
-		)
-		json.Unmarshal(componentsJSON, &p.Components)
-		json.Unmarshal(keywordsJSON, &p.Keywords)
-		json.Unmarshal(timeAllocJSON, &p.TimeAllocations)
-		projects = append(projects, p)
-	}
-
-	return projects, nil
 }
 
 func (h *AIHandler) getUserQuests(ctx context.Context, userID string) ([]Quest, error) {
