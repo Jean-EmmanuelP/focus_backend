@@ -134,12 +134,14 @@ type TimeBlock struct {
 }
 
 type CreateDailyGoalRequest struct {
-	Title       string  `json:"title"`
-	Description *string `json:"description"`
-	Date        string  `json:"date"`
-	Priority    string  `json:"priority"`
-	TimeBlock   string  `json:"time_block"`
-	QuestID     *string `json:"quest_id"`
+	Title          string  `json:"title"`
+	Description    *string `json:"description"`
+	Date           string  `json:"date"`
+	Priority       string  `json:"priority"`
+	TimeBlock      string  `json:"timeBlock"`
+	QuestID        *string `json:"questId"`
+	ScheduledStart *string `json:"scheduledStart"` // HH:mm format
+	ScheduledEnd   *string `json:"scheduledEnd"`   // HH:mm format
 }
 
 type UpdateDailyGoalRequest struct {
@@ -508,19 +510,20 @@ func (h *Handler) CreateDailyGoal(w http.ResponseWriter, r *http.Request) {
 
 	id := uuid.New().String()
 	query := `
-		INSERT INTO daily_goals (id, user_id, title, description, date, priority, time_block, quest_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO daily_goals (id, user_id, title, description, date, priority, time_block, quest_id, scheduled_start, scheduled_end)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::time, $10::time)
 		RETURNING id, user_id, title, description, date, priority, time_block,
 		          scheduled_start, scheduled_end, status, is_ai_scheduled, quest_id, created_at, updated_at
 	`
 
 	var goal DailyGoal
-	var scheduledStart, scheduledEnd *time.Time
+	var scheduledStartResult, scheduledEndResult *time.Time
 	err := h.db.QueryRow(r.Context(), query,
 		id, userID, req.Title, req.Description, req.Date, req.Priority, req.TimeBlock, req.QuestID,
+		req.ScheduledStart, req.ScheduledEnd,
 	).Scan(
 		&goal.ID, &goal.UserID, &goal.Title, &goal.Description, &goal.Date,
-		&goal.Priority, &goal.TimeBlock, &scheduledStart, &scheduledEnd,
+		&goal.Priority, &goal.TimeBlock, &scheduledStartResult, &scheduledEndResult,
 		&goal.Status, &goal.IsAIScheduled, &goal.QuestID, &goal.CreatedAt, &goal.UpdatedAt,
 	)
 
@@ -529,12 +532,13 @@ func (h *Handler) CreateDailyGoal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if scheduledStart != nil {
-		s := scheduledStart.Format("15:04")
+	// Convert time.Time back to HH:mm string
+	if scheduledStartResult != nil {
+		s := scheduledStartResult.Format("15:04")
 		goal.ScheduledStart = &s
 	}
-	if scheduledEnd != nil {
-		e := scheduledEnd.Format("15:04")
+	if scheduledEndResult != nil {
+		e := scheduledEndResult.Format("15:04")
 		goal.ScheduledEnd = &e
 	}
 

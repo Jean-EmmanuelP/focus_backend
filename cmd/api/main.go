@@ -189,6 +189,10 @@ func main() {
 		r.Post("/calendar/projects", calendarHandler.CreateProject)
 		r.Delete("/calendar/projects/{id}", calendarHandler.DeleteProject)
 
+		// Calendar - Week View
+		r.Get("/calendar/week", calendarHandler.GetWeekView)
+		r.Patch("/calendar/goals/{id}/reschedule", calendarHandler.RescheduleGoal)
+
 		// Calendar - AI Generation
 		r.Post("/calendar/ai/generate-day", calendarAIHandler.GenerateDayPlan)
 		r.Post("/calendar/ai/generate-tasks", calendarAIHandler.GenerateTasksForBlock)
