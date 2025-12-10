@@ -130,35 +130,35 @@ type UpdateTimeBlockRequest struct {
 }
 
 type CreateTaskRequest struct {
-	QuestID          *string    `json:"questId,omitempty"`
-	AreaID           *string    `json:"areaId,omitempty"`
+	QuestID          *string    `json:"quest_id,omitempty"`
+	AreaID           *string    `json:"area_id,omitempty"`
 	Title            string     `json:"title"`
 	Description      *string    `json:"description,omitempty"`
-	Date             string     `json:"date"`                      // YYYY-MM-DD
-	ScheduledStart   *string    `json:"scheduledStart,omitempty"`  // HH:mm
-	ScheduledEnd     *string    `json:"scheduledEnd,omitempty"`    // HH:mm
-	TimeBlock        *string    `json:"timeBlock,omitempty"`       // morning, afternoon, evening
+	Date             string     `json:"date"`                       // YYYY-MM-DD
+	ScheduledStart   *string    `json:"scheduled_start,omitempty"`  // HH:mm
+	ScheduledEnd     *string    `json:"scheduled_end,omitempty"`    // HH:mm
+	TimeBlock        *string    `json:"time_block,omitempty"`       // morning, afternoon, evening
 	Position         *int       `json:"position,omitempty"`
-	EstimatedMinutes *int       `json:"estimatedMinutes,omitempty"`
+	EstimatedMinutes *int       `json:"estimated_minutes,omitempty"`
 	Priority         *string    `json:"priority,omitempty"`
-	DueAt            *time.Time `json:"dueAt,omitempty"`
+	DueAt            *time.Time `json:"due_at,omitempty"`
 }
 
 type UpdateTaskRequest struct {
 	Title            *string    `json:"title,omitempty"`
 	Description      *string    `json:"description,omitempty"`
 	Date             *string    `json:"date,omitempty"`
-	ScheduledStart   *string    `json:"scheduledStart,omitempty"`
-	ScheduledEnd     *string    `json:"scheduledEnd,omitempty"`
-	TimeBlock        *string    `json:"timeBlock,omitempty"`
+	ScheduledStart   *string    `json:"scheduled_start,omitempty"`
+	ScheduledEnd     *string    `json:"scheduled_end,omitempty"`
+	TimeBlock        *string    `json:"time_block,omitempty"`
 	Position         *int       `json:"position,omitempty"`
-	EstimatedMinutes *int       `json:"estimatedMinutes,omitempty"`
-	ActualMinutes    *int       `json:"actualMinutes,omitempty"`
+	EstimatedMinutes *int       `json:"estimated_minutes,omitempty"`
+	ActualMinutes    *int       `json:"actual_minutes,omitempty"`
 	Priority         *string    `json:"priority,omitempty"`
 	Status           *string    `json:"status,omitempty"`
-	DueAt            *time.Time `json:"dueAt,omitempty"`
-	QuestID          *string    `json:"questId,omitempty"`
-	AreaID           *string    `json:"areaId,omitempty"`
+	DueAt            *time.Time `json:"due_at,omitempty"`
+	QuestID          *string    `json:"quest_id,omitempty"`
+	AreaID           *string    `json:"area_id,omitempty"`
 }
 
 type CalendarDayResponse struct {
@@ -440,6 +440,17 @@ func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
+
+	// Log received data
+	startStr := "nil"
+	endStr := "nil"
+	if req.ScheduledStart != nil {
+		startStr = *req.ScheduledStart
+	}
+	if req.ScheduledEnd != nil {
+		endStr = *req.ScheduledEnd
+	}
+	log.Printf("[CreateTask] Received: title=%s, date=%s, scheduledStart=%s, scheduledEnd=%s", req.Title, req.Date, startStr, endStr)
 
 	priority := "medium"
 	if req.Priority != nil {
@@ -1003,8 +1014,8 @@ func (h *Handler) getTasksForWeek(ctx context.Context, userID, startDate, endDat
 
 type RescheduleTaskRequest struct {
 	Date           string  `json:"date"`
-	ScheduledStart *string `json:"scheduledStart,omitempty"` // HH:mm format
-	ScheduledEnd   *string `json:"scheduledEnd,omitempty"`   // HH:mm format
+	ScheduledStart *string `json:"scheduled_start,omitempty"` // HH:mm format
+	ScheduledEnd   *string `json:"scheduled_end,omitempty"`   // HH:mm format
 }
 
 // RescheduleTask updates the date and scheduled time of a task (drag & drop)
