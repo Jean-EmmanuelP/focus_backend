@@ -3,6 +3,7 @@ package calendar
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 
@@ -928,8 +929,14 @@ func (h *Handler) getTasksForWeek(ctx context.Context, userID, startDate, endDat
 		SELECT
 			t.id, t.user_id, t.quest_id, t.area_id,
 			t.title, t.description, t.date, t.scheduled_start, t.scheduled_end,
-			t.time_block, t.position, t.estimated_minutes, t.actual_minutes,
-			t.priority, t.status, t.due_at, t.completed_at, t.is_ai_generated,
+			COALESCE(t.time_block, 'morning') as time_block,
+			COALESCE(t.position, 0) as position,
+			t.estimated_minutes,
+			COALESCE(t.actual_minutes, 0) as actual_minutes,
+			COALESCE(t.priority, 'medium') as priority,
+			COALESCE(t.status, 'pending') as status,
+			t.due_at, t.completed_at,
+			COALESCE(t.is_ai_generated, false) as is_ai_generated,
 			t.ai_notes, t.created_at, t.updated_at,
 			q.title as quest_title, a.name as area_name, a.icon as area_icon
 		FROM tasks t
@@ -940,6 +947,7 @@ func (h *Handler) getTasksForWeek(ctx context.Context, userID, startDate, endDat
 	`, userID, startDate, endDate)
 
 	if err != nil {
+		log.Printf("[getTasksForWeek] Query error: %v", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -948,7 +956,7 @@ func (h *Handler) getTasksForWeek(ctx context.Context, userID, startDate, endDat
 	for rows.Next() {
 		var t Task
 		var scheduledStart, scheduledEnd *time.Time
-		var timeBlock *string
+		var timeBlock string
 		err := rows.Scan(
 			&t.ID, &t.UserID, &t.QuestID, &t.AreaID,
 			&t.Title, &t.Description, &t.Date, &scheduledStart, &scheduledEnd,
@@ -958,15 +966,10 @@ func (h *Handler) getTasksForWeek(ctx context.Context, userID, startDate, endDat
 			&t.QuestTitle, &t.AreaName, &t.AreaIcon,
 		)
 		if err != nil {
+			log.Printf("[getTasksForWeek] Scan error: %v", err)
 			continue
 		}
-
-		// Set time_block with default
-		if timeBlock != nil {
-			t.TimeBlock = *timeBlock
-		} else {
-			t.TimeBlock = "morning"
-		}
+		t.TimeBlock = timeBlock
 
 		// Convert time.Time to HH:mm string format, or use default based on time_block
 		if scheduledStart != nil {
