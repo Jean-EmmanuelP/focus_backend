@@ -475,15 +475,15 @@ func (h *AIHandler) createDayPlanFromAI(ctx context.Context, userID, date, promp
 		for i, task := range block.Tasks {
 			var t Task
 			err := h.db.QueryRow(ctx, `
-				INSERT INTO tasks (user_id, time_block_id, day_plan_id, area_id, title, description, position, estimated_minutes, priority, is_ai_generated)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)
-				RETURNING id, user_id, time_block_id, quest_id, area_id, day_plan_id, title, description, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
-			`, userID, tb.ID, dayPlan.ID, areaID, task.Title, task.Description, i, task.EstimatedMinutes, task.Priority).Scan(
-				&t.ID, &t.UserID, &t.TimeBlockID, &t.QuestID, &t.AreaID,
-				&t.DayPlanID, &t.Title, &t.Description, &t.Position,
-				&t.EstimatedMinutes, &t.ActualMinutes, &t.Priority, &t.Status,
-				&t.DueAt, &t.CompletedAt, &t.IsAIGenerated, &t.AINotes,
-				&t.CreatedAt, &t.UpdatedAt,
+				INSERT INTO tasks (user_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, priority, is_ai_generated)
+				VALUES ($1, $2, $3, $4, $5, $6::time, $7::time, 'morning', $8, $9, $10, true)
+				RETURNING id, user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
+			`, userID, areaID, task.Title, task.Description, date, block.StartTime, block.EndTime, i, task.EstimatedMinutes, task.Priority).Scan(
+				&t.ID, &t.UserID, &t.QuestID, &t.AreaID,
+				&t.Title, &t.Description, &t.Date, &t.ScheduledStart, &t.ScheduledEnd,
+				&t.TimeBlock, &t.Position, &t.EstimatedMinutes, &t.ActualMinutes,
+				&t.Priority, &t.Status, &t.DueAt, &t.CompletedAt,
+				&t.IsAIGenerated, &t.AINotes, &t.CreatedAt, &t.UpdatedAt,
 			)
 			if err != nil {
 				continue
@@ -503,21 +503,21 @@ func (h *AIHandler) createDayPlanFromAI(ctx context.Context, userID, date, promp
 	}, nil
 }
 
-func (h *AIHandler) createTasksFromAI(ctx context.Context, userID, timeBlockID string, tasks []AIParsedTask) ([]Task, error) {
+func (h *AIHandler) createTasksFromAI(ctx context.Context, userID, date string, tasks []AIParsedTask) ([]Task, error) {
 	var createdTasks []Task
 
 	for i, task := range tasks {
 		var t Task
 		err := h.db.QueryRow(ctx, `
-			INSERT INTO tasks (user_id, time_block_id, title, description, position, estimated_minutes, priority, is_ai_generated)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, true)
-			RETURNING id, user_id, time_block_id, quest_id, area_id, day_plan_id, title, description, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
-		`, userID, timeBlockID, task.Title, task.Description, i, task.EstimatedMinutes, task.Priority).Scan(
-			&t.ID, &t.UserID, &t.TimeBlockID, &t.QuestID, &t.AreaID,
-			&t.DayPlanID, &t.Title, &t.Description, &t.Position,
-			&t.EstimatedMinutes, &t.ActualMinutes, &t.Priority, &t.Status,
-			&t.DueAt, &t.CompletedAt, &t.IsAIGenerated, &t.AINotes,
-			&t.CreatedAt, &t.UpdatedAt,
+			INSERT INTO tasks (user_id, title, description, date, time_block, position, estimated_minutes, priority, is_ai_generated)
+			VALUES ($1, $2, $3, $4, 'morning', $5, $6, $7, true)
+			RETURNING id, user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
+		`, userID, task.Title, task.Description, date, i, task.EstimatedMinutes, task.Priority).Scan(
+			&t.ID, &t.UserID, &t.QuestID, &t.AreaID,
+			&t.Title, &t.Description, &t.Date, &t.ScheduledStart, &t.ScheduledEnd,
+			&t.TimeBlock, &t.Position, &t.EstimatedMinutes, &t.ActualMinutes,
+			&t.Priority, &t.Status, &t.DueAt, &t.CompletedAt,
+			&t.IsAIGenerated, &t.AINotes, &t.CreatedAt, &t.UpdatedAt,
 		)
 		if err != nil {
 			continue

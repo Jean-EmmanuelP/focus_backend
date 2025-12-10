@@ -66,12 +66,14 @@ type TimeBlock struct {
 type Task struct {
 	ID               string     `json:"id"`
 	UserID           string     `json:"userId"`
-	TimeBlockID      *string    `json:"timeBlockId,omitempty"`
 	QuestID          *string    `json:"questId,omitempty"`
 	AreaID           *string    `json:"areaId,omitempty"`
-	DayPlanID        *string    `json:"dayPlanId,omitempty"`
 	Title            string     `json:"title"`
 	Description      *string    `json:"description,omitempty"`
+	Date             string     `json:"date"`                       // YYYY-MM-DD
+	ScheduledStart   *string    `json:"scheduledStart,omitempty"`   // HH:mm format
+	ScheduledEnd     *string    `json:"scheduledEnd,omitempty"`     // HH:mm format
+	TimeBlock        string     `json:"timeBlock"`                  // morning, afternoon, evening
 	Position         int        `json:"position"`
 	EstimatedMinutes *int       `json:"estimatedMinutes,omitempty"`
 	ActualMinutes    int        `json:"actualMinutes"`
@@ -127,12 +129,14 @@ type UpdateTimeBlockRequest struct {
 }
 
 type CreateTaskRequest struct {
-	TimeBlockID      *string    `json:"timeBlockId,omitempty"`
 	QuestID          *string    `json:"questId,omitempty"`
 	AreaID           *string    `json:"areaId,omitempty"`
-	DayPlanID        *string    `json:"dayPlanId,omitempty"`
 	Title            string     `json:"title"`
 	Description      *string    `json:"description,omitempty"`
+	Date             string     `json:"date"`                      // YYYY-MM-DD
+	ScheduledStart   *string    `json:"scheduledStart,omitempty"`  // HH:mm
+	ScheduledEnd     *string    `json:"scheduledEnd,omitempty"`    // HH:mm
+	TimeBlock        *string    `json:"timeBlock,omitempty"`       // morning, afternoon, evening
 	Position         *int       `json:"position,omitempty"`
 	EstimatedMinutes *int       `json:"estimatedMinutes,omitempty"`
 	Priority         *string    `json:"priority,omitempty"`
@@ -142,13 +146,16 @@ type CreateTaskRequest struct {
 type UpdateTaskRequest struct {
 	Title            *string    `json:"title,omitempty"`
 	Description      *string    `json:"description,omitempty"`
+	Date             *string    `json:"date,omitempty"`
+	ScheduledStart   *string    `json:"scheduledStart,omitempty"`
+	ScheduledEnd     *string    `json:"scheduledEnd,omitempty"`
+	TimeBlock        *string    `json:"timeBlock,omitempty"`
 	Position         *int       `json:"position,omitempty"`
 	EstimatedMinutes *int       `json:"estimatedMinutes,omitempty"`
 	ActualMinutes    *int       `json:"actualMinutes,omitempty"`
 	Priority         *string    `json:"priority,omitempty"`
 	Status           *string    `json:"status,omitempty"`
 	DueAt            *time.Time `json:"dueAt,omitempty"`
-	TimeBlockID      *string    `json:"timeBlockId,omitempty"`
 	QuestID          *string    `json:"questId,omitempty"`
 	AreaID           *string    `json:"areaId,omitempty"`
 }
@@ -443,22 +450,38 @@ func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		position = *req.Position
 	}
 
+	timeBlock := "morning"
+	if req.TimeBlock != nil {
+		timeBlock = *req.TimeBlock
+	}
+
 	var task Task
+	var scheduledStart, scheduledEnd *time.Time
 	err := h.db.QueryRow(r.Context(), `
-		INSERT INTO tasks (user_id, time_block_id, quest_id, area_id, day_plan_id, title, description, position, estimated_minutes, priority, due_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		RETURNING id, user_id, time_block_id, quest_id, area_id, day_plan_id, title, description, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
-	`, userID, req.TimeBlockID, req.QuestID, req.AreaID, req.DayPlanID, req.Title, req.Description, position, req.EstimatedMinutes, priority, req.DueAt).Scan(
-		&task.ID, &task.UserID, &task.TimeBlockID, &task.QuestID, &task.AreaID,
-		&task.DayPlanID, &task.Title, &task.Description, &task.Position,
-		&task.EstimatedMinutes, &task.ActualMinutes, &task.Priority, &task.Status,
-		&task.DueAt, &task.CompletedAt, &task.IsAIGenerated, &task.AINotes,
-		&task.CreatedAt, &task.UpdatedAt,
+		INSERT INTO tasks (user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, priority, due_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7::time, $8::time, $9, $10, $11, $12, $13)
+		RETURNING id, user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
+	`, userID, req.QuestID, req.AreaID, req.Title, req.Description, req.Date, req.ScheduledStart, req.ScheduledEnd, timeBlock, position, req.EstimatedMinutes, priority, req.DueAt).Scan(
+		&task.ID, &task.UserID, &task.QuestID, &task.AreaID,
+		&task.Title, &task.Description, &task.Date, &scheduledStart, &scheduledEnd,
+		&task.TimeBlock, &task.Position, &task.EstimatedMinutes, &task.ActualMinutes,
+		&task.Priority, &task.Status, &task.DueAt, &task.CompletedAt,
+		&task.IsAIGenerated, &task.AINotes, &task.CreatedAt, &task.UpdatedAt,
 	)
 
 	if err != nil {
 		http.Error(w, "Failed to create task: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// Convert times to HH:mm format
+	if scheduledStart != nil {
+		s := scheduledStart.Format("15:04")
+		task.ScheduledStart = &s
+	}
+	if scheduledEnd != nil {
+		s := scheduledEnd.Format("15:04")
+		task.ScheduledEnd = &s
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -484,35 +507,49 @@ func (h *Handler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var task Task
+	var scheduledStart, scheduledEnd *time.Time
 	err := h.db.QueryRow(r.Context(), `
 		UPDATE tasks
 		SET
 			title = COALESCE($3, title),
 			description = COALESCE($4, description),
-			position = COALESCE($5, position),
-			estimated_minutes = COALESCE($6, estimated_minutes),
-			actual_minutes = COALESCE($7, actual_minutes),
-			priority = COALESCE($8, priority),
-			status = COALESCE($9, status),
-			due_at = COALESCE($10, due_at),
-			completed_at = COALESCE($11, completed_at),
-			time_block_id = COALESCE($12, time_block_id),
-			quest_id = COALESCE($13, quest_id),
-			area_id = COALESCE($14, area_id),
+			date = COALESCE($5, date),
+			scheduled_start = COALESCE($6::time, scheduled_start),
+			scheduled_end = COALESCE($7::time, scheduled_end),
+			time_block = COALESCE($8, time_block),
+			position = COALESCE($9, position),
+			estimated_minutes = COALESCE($10, estimated_minutes),
+			actual_minutes = COALESCE($11, actual_minutes),
+			priority = COALESCE($12, priority),
+			status = COALESCE($13, status),
+			due_at = COALESCE($14, due_at),
+			completed_at = COALESCE($15, completed_at),
+			quest_id = COALESCE($16, quest_id),
+			area_id = COALESCE($17, area_id),
 			updated_at = now()
 		WHERE id = $1 AND user_id = $2
-		RETURNING id, user_id, time_block_id, quest_id, area_id, day_plan_id, title, description, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
-	`, taskID, userID, req.Title, req.Description, req.Position, req.EstimatedMinutes, req.ActualMinutes, req.Priority, req.Status, req.DueAt, completedAt, req.TimeBlockID, req.QuestID, req.AreaID).Scan(
-		&task.ID, &task.UserID, &task.TimeBlockID, &task.QuestID, &task.AreaID,
-		&task.DayPlanID, &task.Title, &task.Description, &task.Position,
-		&task.EstimatedMinutes, &task.ActualMinutes, &task.Priority, &task.Status,
-		&task.DueAt, &task.CompletedAt, &task.IsAIGenerated, &task.AINotes,
-		&task.CreatedAt, &task.UpdatedAt,
+		RETURNING id, user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
+	`, taskID, userID, req.Title, req.Description, req.Date, req.ScheduledStart, req.ScheduledEnd, req.TimeBlock, req.Position, req.EstimatedMinutes, req.ActualMinutes, req.Priority, req.Status, req.DueAt, completedAt, req.QuestID, req.AreaID).Scan(
+		&task.ID, &task.UserID, &task.QuestID, &task.AreaID,
+		&task.Title, &task.Description, &task.Date, &scheduledStart, &scheduledEnd,
+		&task.TimeBlock, &task.Position, &task.EstimatedMinutes, &task.ActualMinutes,
+		&task.Priority, &task.Status, &task.DueAt, &task.CompletedAt,
+		&task.IsAIGenerated, &task.AINotes, &task.CreatedAt, &task.UpdatedAt,
 	)
 
 	if err != nil {
 		http.Error(w, "Task not found", http.StatusNotFound)
 		return
+	}
+
+	// Convert times to HH:mm format
+	if scheduledStart != nil {
+		s := scheduledStart.Format("15:04")
+		task.ScheduledStart = &s
+	}
+	if scheduledEnd != nil {
+		s := scheduledEnd.Format("15:04")
+		task.ScheduledEnd = &s
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -524,22 +561,33 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
 
 	var task Task
+	var scheduledStart, scheduledEnd *time.Time
 	err := h.db.QueryRow(r.Context(), `
 		UPDATE tasks
 		SET status = 'completed', completed_at = now(), updated_at = now()
 		WHERE id = $1 AND user_id = $2
-		RETURNING id, user_id, time_block_id, quest_id, area_id, day_plan_id, title, description, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
+		RETURNING id, user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
 	`, taskID, userID).Scan(
-		&task.ID, &task.UserID, &task.TimeBlockID, &task.QuestID, &task.AreaID,
-		&task.DayPlanID, &task.Title, &task.Description, &task.Position,
-		&task.EstimatedMinutes, &task.ActualMinutes, &task.Priority, &task.Status,
-		&task.DueAt, &task.CompletedAt, &task.IsAIGenerated, &task.AINotes,
-		&task.CreatedAt, &task.UpdatedAt,
+		&task.ID, &task.UserID, &task.QuestID, &task.AreaID,
+		&task.Title, &task.Description, &task.Date, &scheduledStart, &scheduledEnd,
+		&task.TimeBlock, &task.Position, &task.EstimatedMinutes, &task.ActualMinutes,
+		&task.Priority, &task.Status, &task.DueAt, &task.CompletedAt,
+		&task.IsAIGenerated, &task.AINotes, &task.CreatedAt, &task.UpdatedAt,
 	)
 
 	if err != nil {
 		http.Error(w, "Task not found", http.StatusNotFound)
 		return
+	}
+
+	// Convert times
+	if scheduledStart != nil {
+		s := scheduledStart.Format("15:04")
+		task.ScheduledStart = &s
+	}
+	if scheduledEnd != nil {
+		s := scheduledEnd.Format("15:04")
+		task.ScheduledEnd = &s
 	}
 
 	// Update quest progress if linked
@@ -556,22 +604,33 @@ func (h *Handler) UncompleteTask(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
 
 	var task Task
+	var scheduledStart, scheduledEnd *time.Time
 	err := h.db.QueryRow(r.Context(), `
 		UPDATE tasks
 		SET status = 'pending', completed_at = NULL, updated_at = now()
 		WHERE id = $1 AND user_id = $2
-		RETURNING id, user_id, time_block_id, quest_id, area_id, day_plan_id, title, description, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
+		RETURNING id, user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
 	`, taskID, userID).Scan(
-		&task.ID, &task.UserID, &task.TimeBlockID, &task.QuestID, &task.AreaID,
-		&task.DayPlanID, &task.Title, &task.Description, &task.Position,
-		&task.EstimatedMinutes, &task.ActualMinutes, &task.Priority, &task.Status,
-		&task.DueAt, &task.CompletedAt, &task.IsAIGenerated, &task.AINotes,
-		&task.CreatedAt, &task.UpdatedAt,
+		&task.ID, &task.UserID, &task.QuestID, &task.AreaID,
+		&task.Title, &task.Description, &task.Date, &scheduledStart, &scheduledEnd,
+		&task.TimeBlock, &task.Position, &task.EstimatedMinutes, &task.ActualMinutes,
+		&task.Priority, &task.Status, &task.DueAt, &task.CompletedAt,
+		&task.IsAIGenerated, &task.AINotes, &task.CreatedAt, &task.UpdatedAt,
 	)
 
 	if err != nil {
 		http.Error(w, "Task not found", http.StatusNotFound)
 		return
+	}
+
+	// Convert times
+	if scheduledStart != nil {
+		s := scheduledStart.Format("15:04")
+		task.ScheduledStart = &s
+	}
+	if scheduledEnd != nil {
+		s := scheduledEnd.Format("15:04")
+		task.ScheduledEnd = &s
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -642,21 +701,21 @@ func (h *Handler) getTimeBlocksForDay(ctx context.Context, userID, date string) 
 }
 
 func (h *Handler) getTasksForDay(ctx context.Context, userID, date string, dayPlanID *string) ([]Task, error) {
-	query := `
+	rows, err := h.db.Query(ctx, `
 		SELECT
-			t.id, t.user_id, t.time_block_id, t.quest_id, t.area_id, t.day_plan_id,
-			t.title, t.description, t.position, t.estimated_minutes, t.actual_minutes,
+			t.id, t.user_id, t.quest_id, t.area_id,
+			t.title, t.description, t.date, t.scheduled_start, t.scheduled_end,
+			t.time_block, t.position, t.estimated_minutes, t.actual_minutes,
 			t.priority, t.status, t.due_at, t.completed_at, t.is_ai_generated,
 			t.ai_notes, t.created_at, t.updated_at,
 			q.title as quest_title, a.name as area_name, a.icon as area_icon
 		FROM tasks t
 		LEFT JOIN quests q ON t.quest_id = q.id
 		LEFT JOIN areas a ON t.area_id = a.id
-		WHERE t.user_id = $1 AND DATE(t.created_at) = $2
-		ORDER BY t.position, t.created_at
-	`
+		WHERE t.user_id = $1 AND t.date = $2
+		ORDER BY t.scheduled_start NULLS LAST, t.position
+	`, userID, date)
 
-	rows, err := h.db.Query(ctx, query, userID, date)
 	if err != nil {
 		return nil, err
 	}
@@ -665,9 +724,12 @@ func (h *Handler) getTasksForDay(ctx context.Context, userID, date string, dayPl
 	var tasks []Task
 	for rows.Next() {
 		var t Task
+		var scheduledStart, scheduledEnd *time.Time
+		var timeBlock *string
 		err := rows.Scan(
-			&t.ID, &t.UserID, &t.TimeBlockID, &t.QuestID, &t.AreaID, &t.DayPlanID,
-			&t.Title, &t.Description, &t.Position, &t.EstimatedMinutes, &t.ActualMinutes,
+			&t.ID, &t.UserID, &t.QuestID, &t.AreaID,
+			&t.Title, &t.Description, &t.Date, &scheduledStart, &scheduledEnd,
+			&timeBlock, &t.Position, &t.EstimatedMinutes, &t.ActualMinutes,
 			&t.Priority, &t.Status, &t.DueAt, &t.CompletedAt, &t.IsAIGenerated,
 			&t.AINotes, &t.CreatedAt, &t.UpdatedAt,
 			&t.QuestTitle, &t.AreaName, &t.AreaIcon,
@@ -675,6 +737,28 @@ func (h *Handler) getTasksForDay(ctx context.Context, userID, date string, dayPl
 		if err != nil {
 			continue
 		}
+
+		if timeBlock != nil {
+			t.TimeBlock = *timeBlock
+		} else {
+			t.TimeBlock = "morning"
+		}
+
+		if scheduledStart != nil {
+			s := scheduledStart.Format("15:04")
+			t.ScheduledStart = &s
+		} else {
+			defaultStart := getDefaultStartTime(t.TimeBlock)
+			t.ScheduledStart = &defaultStart
+		}
+		if scheduledEnd != nil {
+			s := scheduledEnd.Format("15:04")
+			t.ScheduledEnd = &s
+		} else {
+			defaultEnd := getDefaultEndTime(t.TimeBlock)
+			t.ScheduledEnd = &defaultEnd
+		}
+
 		tasks = append(tasks, t)
 	}
 
@@ -685,47 +769,9 @@ func (h *Handler) getTasksForDay(ctx context.Context, userID, date string, dayPl
 	return tasks, nil
 }
 
+// getTasksForTimeBlock is deprecated - time_blocks no longer exist
 func (h *Handler) getTasksForTimeBlock(ctx context.Context, userID, timeBlockID string) ([]Task, error) {
-	rows, err := h.db.Query(ctx, `
-		SELECT
-			t.id, t.user_id, t.time_block_id, t.quest_id, t.area_id, t.day_plan_id,
-			t.title, t.description, t.position, t.estimated_minutes, t.actual_minutes,
-			t.priority, t.status, t.due_at, t.completed_at, t.is_ai_generated,
-			t.ai_notes, t.created_at, t.updated_at,
-			q.title as quest_title, a.name as area_name, a.icon as area_icon
-		FROM tasks t
-		LEFT JOIN quests q ON t.quest_id = q.id
-		LEFT JOIN areas a ON t.area_id = a.id
-		WHERE t.user_id = $1 AND t.time_block_id = $2
-		ORDER BY t.position
-	`, userID, timeBlockID)
-
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var tasks []Task
-	for rows.Next() {
-		var t Task
-		err := rows.Scan(
-			&t.ID, &t.UserID, &t.TimeBlockID, &t.QuestID, &t.AreaID, &t.DayPlanID,
-			&t.Title, &t.Description, &t.Position, &t.EstimatedMinutes, &t.ActualMinutes,
-			&t.Priority, &t.Status, &t.DueAt, &t.CompletedAt, &t.IsAIGenerated,
-			&t.AINotes, &t.CreatedAt, &t.UpdatedAt,
-			&t.QuestTitle, &t.AreaName, &t.AreaIcon,
-		)
-		if err != nil {
-			continue
-		}
-		tasks = append(tasks, t)
-	}
-
-	if tasks == nil {
-		tasks = []Task{}
-	}
-
-	return tasks, nil
+	return []Task{}, nil
 }
 
 func (h *Handler) updateQuestProgress(ctx context.Context, userID, questID, taskID string, minutesSpent int) {
@@ -748,35 +794,12 @@ func (h *Handler) updateQuestProgress(ctx context.Context, userID, questID, task
 // ==========================================
 
 type WeekViewResponse struct {
-	StartDate  string           `json:"startDate"`
-	EndDate    string           `json:"endDate"`
-	TimeBlocks []TimeBlock      `json:"timeBlocks"`
-	DailyGoals []DailyGoalItem  `json:"dailyGoals"`
-	Tasks      []Task           `json:"tasks"`
+	StartDate string `json:"startDate"`
+	EndDate   string `json:"endDate"`
+	Tasks     []Task `json:"tasks"`
 }
 
-type DailyGoalItem struct {
-	ID             string    `json:"id"`
-	UserID         string    `json:"userId"`
-	QuestID        *string   `json:"questId,omitempty"`
-	QuestTitle     *string   `json:"questTitle,omitempty"`
-	AreaID         *string   `json:"areaId,omitempty"`
-	AreaName       *string   `json:"areaName,omitempty"`
-	AreaIcon       *string   `json:"areaIcon,omitempty"`
-	Title          string    `json:"title"`
-	Description    *string   `json:"description,omitempty"`
-	Date           string    `json:"date"`
-	Priority       string    `json:"priority"`
-	TimeBlock      string    `json:"timeBlock"`
-	ScheduledStart *string   `json:"scheduledStart,omitempty"` // HH:mm format
-	ScheduledEnd   *string   `json:"scheduledEnd,omitempty"`   // HH:mm format
-	Status         string    `json:"status"`
-	IsAIScheduled  bool      `json:"isAiScheduled"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
-}
-
-// GetWeekView returns all time blocks, daily goals and tasks for a week
+// GetWeekView returns all tasks for a week
 // GET /calendar/week?startDate=2024-01-08
 func (h *Handler) GetWeekView(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
@@ -805,20 +828,6 @@ func (h *Handler) GetWeekView(w http.ResponseWriter, r *http.Request) {
 	startDateFmt := startDate.Format("2006-01-02")
 	endDateFmt := endDate.Format("2006-01-02")
 
-	// Get time blocks for the week
-	timeBlocks, err := h.getTimeBlocksForWeek(r.Context(), userID, startDateFmt, endDateFmt)
-	if err != nil {
-		http.Error(w, "Failed to get time blocks", http.StatusInternalServerError)
-		return
-	}
-
-	// Get daily goals for the week
-	dailyGoals, err := h.getDailyGoalsForWeek(r.Context(), userID, startDateFmt, endDateFmt)
-	if err != nil {
-		http.Error(w, "Failed to get daily goals", http.StatusInternalServerError)
-		return
-	}
-
 	// Get tasks for the week
 	tasks, err := h.getTasksForWeek(r.Context(), userID, startDateFmt, endDateFmt)
 	if err != nil {
@@ -827,11 +836,9 @@ func (h *Handler) GetWeekView(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := WeekViewResponse{
-		StartDate:  startDateFmt,
-		EndDate:    endDateFmt,
-		TimeBlocks: timeBlocks,
-		DailyGoals: dailyGoals,
-		Tasks:      tasks,
+		StartDate: startDateFmt,
+		EndDate:   endDateFmt,
+		Tasks:     tasks,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -881,67 +888,6 @@ func (h *Handler) getTimeBlocksForWeek(ctx context.Context, userID, startDate, e
 	return blocks, nil
 }
 
-func (h *Handler) getDailyGoalsForWeek(ctx context.Context, userID, startDate, endDate string) ([]DailyGoalItem, error) {
-	rows, err := h.db.Query(ctx, `
-		SELECT
-			dg.id, dg.user_id, dg.quest_id, q.title as quest_title,
-			q.area_id, a.name as area_name, a.icon as area_icon,
-			dg.title, dg.description, dg.date, dg.priority, dg.time_block,
-			dg.scheduled_start, dg.scheduled_end, dg.status, dg.is_ai_scheduled,
-			dg.created_at, dg.updated_at
-		FROM daily_goals dg
-		LEFT JOIN quests q ON dg.quest_id = q.id
-		LEFT JOIN areas a ON q.area_id = a.id
-		WHERE dg.user_id = $1 AND dg.date BETWEEN $2 AND $3
-		ORDER BY dg.date, dg.scheduled_start NULLS LAST, dg.priority DESC
-	`, userID, startDate, endDate)
-
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var goals []DailyGoalItem
-	for rows.Next() {
-		var g DailyGoalItem
-		var scheduledStart, scheduledEnd *time.Time
-		err := rows.Scan(
-			&g.ID, &g.UserID, &g.QuestID, &g.QuestTitle,
-			&g.AreaID, &g.AreaName, &g.AreaIcon,
-			&g.Title, &g.Description, &g.Date, &g.Priority, &g.TimeBlock,
-			&scheduledStart, &scheduledEnd, &g.Status, &g.IsAIScheduled,
-			&g.CreatedAt, &g.UpdatedAt,
-		)
-		if err != nil {
-			continue
-		}
-		// Convert time.Time to HH:mm string format, or use default based on time_block
-		if scheduledStart != nil {
-			s := scheduledStart.Format("15:04")
-			g.ScheduledStart = &s
-		} else {
-			// Default time based on time_block
-			defaultStart := getDefaultStartTime(g.TimeBlock)
-			g.ScheduledStart = &defaultStart
-		}
-		if scheduledEnd != nil {
-			s := scheduledEnd.Format("15:04")
-			g.ScheduledEnd = &s
-		} else {
-			// Default end time = start + 1 hour
-			defaultEnd := getDefaultEndTime(g.TimeBlock)
-			g.ScheduledEnd = &defaultEnd
-		}
-		goals = append(goals, g)
-	}
-
-	if goals == nil {
-		goals = []DailyGoalItem{}
-	}
-
-	return goals, nil
-}
-
 // getDefaultStartTime returns default start time based on time_block
 func getDefaultStartTime(timeBlock string) string {
 	switch timeBlock {
@@ -973,16 +919,17 @@ func getDefaultEndTime(timeBlock string) string {
 func (h *Handler) getTasksForWeek(ctx context.Context, userID, startDate, endDate string) ([]Task, error) {
 	rows, err := h.db.Query(ctx, `
 		SELECT
-			t.id, t.user_id, t.time_block_id, t.quest_id, t.area_id, t.day_plan_id,
-			t.title, t.description, t.position, t.estimated_minutes, t.actual_minutes,
+			t.id, t.user_id, t.quest_id, t.area_id,
+			t.title, t.description, t.date, t.scheduled_start, t.scheduled_end,
+			t.time_block, t.position, t.estimated_minutes, t.actual_minutes,
 			t.priority, t.status, t.due_at, t.completed_at, t.is_ai_generated,
 			t.ai_notes, t.created_at, t.updated_at,
 			q.title as quest_title, a.name as area_name, a.icon as area_icon
 		FROM tasks t
 		LEFT JOIN quests q ON t.quest_id = q.id
 		LEFT JOIN areas a ON t.area_id = a.id
-		WHERE t.user_id = $1 AND DATE(t.created_at) BETWEEN $2 AND $3
-		ORDER BY t.created_at
+		WHERE t.user_id = $1 AND t.date BETWEEN $2 AND $3
+		ORDER BY t.date, t.scheduled_start NULLS LAST, t.position
 	`, userID, startDate, endDate)
 
 	if err != nil {
@@ -993,9 +940,12 @@ func (h *Handler) getTasksForWeek(ctx context.Context, userID, startDate, endDat
 	var tasks []Task
 	for rows.Next() {
 		var t Task
+		var scheduledStart, scheduledEnd *time.Time
+		var timeBlock *string
 		err := rows.Scan(
-			&t.ID, &t.UserID, &t.TimeBlockID, &t.QuestID, &t.AreaID, &t.DayPlanID,
-			&t.Title, &t.Description, &t.Position, &t.EstimatedMinutes, &t.ActualMinutes,
+			&t.ID, &t.UserID, &t.QuestID, &t.AreaID,
+			&t.Title, &t.Description, &t.Date, &scheduledStart, &scheduledEnd,
+			&timeBlock, &t.Position, &t.EstimatedMinutes, &t.ActualMinutes,
 			&t.Priority, &t.Status, &t.DueAt, &t.CompletedAt, &t.IsAIGenerated,
 			&t.AINotes, &t.CreatedAt, &t.UpdatedAt,
 			&t.QuestTitle, &t.AreaName, &t.AreaIcon,
@@ -1003,6 +953,30 @@ func (h *Handler) getTasksForWeek(ctx context.Context, userID, startDate, endDat
 		if err != nil {
 			continue
 		}
+
+		// Set time_block with default
+		if timeBlock != nil {
+			t.TimeBlock = *timeBlock
+		} else {
+			t.TimeBlock = "morning"
+		}
+
+		// Convert time.Time to HH:mm string format, or use default based on time_block
+		if scheduledStart != nil {
+			s := scheduledStart.Format("15:04")
+			t.ScheduledStart = &s
+		} else {
+			defaultStart := getDefaultStartTime(t.TimeBlock)
+			t.ScheduledStart = &defaultStart
+		}
+		if scheduledEnd != nil {
+			s := scheduledEnd.Format("15:04")
+			t.ScheduledEnd = &s
+		} else {
+			defaultEnd := getDefaultEndTime(t.TimeBlock)
+			t.ScheduledEnd = &defaultEnd
+		}
+
 		tasks = append(tasks, t)
 	}
 
@@ -1017,51 +991,65 @@ func (h *Handler) getTasksForWeek(ctx context.Context, userID, startDate, endDat
 // RESCHEDULE DAILY GOAL (DRAG & DROP)
 // ==========================================
 
-type RescheduleGoalRequest struct {
+type RescheduleTaskRequest struct {
 	Date           string  `json:"date"`
-	ScheduledStart *string `json:"scheduledStart,omitempty"` // HH:MM format
-	ScheduledEnd   *string `json:"scheduledEnd,omitempty"`   // HH:MM format
+	ScheduledStart *string `json:"scheduledStart,omitempty"` // HH:mm format
+	ScheduledEnd   *string `json:"scheduledEnd,omitempty"`   // HH:mm format
 }
 
-// RescheduleGoal updates the date and scheduled time of a daily goal
-// PATCH /calendar/goals/{id}/reschedule
-func (h *Handler) RescheduleGoal(w http.ResponseWriter, r *http.Request) {
+// RescheduleTask updates the date and scheduled time of a task (drag & drop)
+// PATCH /calendar/tasks/{id}/reschedule
+func (h *Handler) RescheduleTask(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
-	goalID := chi.URLParam(r, "id")
+	taskID := chi.URLParam(r, "id")
 
-	var req RescheduleGoalRequest
+	var req RescheduleTaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	query := `
-		UPDATE daily_goals
+	var task Task
+	var scheduledStart, scheduledEnd *time.Time
+	err := h.db.QueryRow(r.Context(), `
+		UPDATE tasks
 		SET
 			date = COALESCE($3, date),
 			scheduled_start = $4::time,
 			scheduled_end = $5::time,
 			updated_at = NOW()
 		WHERE id = $1 AND user_id = $2
-		RETURNING id, user_id, quest_id, title, description, date, priority, time_block,
-		          scheduled_start, scheduled_end, status, is_ai_scheduled, created_at, updated_at
-	`
-
-	var goal DailyGoalItem
-	err := h.db.QueryRow(r.Context(), query,
-		goalID, userID, req.Date, req.ScheduledStart, req.ScheduledEnd,
-	).Scan(
-		&goal.ID, &goal.UserID, &goal.QuestID, &goal.Title, &goal.Description,
-		&goal.Date, &goal.Priority, &goal.TimeBlock,
-		&goal.ScheduledStart, &goal.ScheduledEnd, &goal.Status, &goal.IsAIScheduled,
-		&goal.CreatedAt, &goal.UpdatedAt,
+		RETURNING id, user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
+	`, taskID, userID, req.Date, req.ScheduledStart, req.ScheduledEnd).Scan(
+		&task.ID, &task.UserID, &task.QuestID, &task.AreaID,
+		&task.Title, &task.Description, &task.Date, &scheduledStart, &scheduledEnd,
+		&task.TimeBlock, &task.Position, &task.EstimatedMinutes, &task.ActualMinutes,
+		&task.Priority, &task.Status, &task.DueAt, &task.CompletedAt,
+		&task.IsAIGenerated, &task.AINotes, &task.CreatedAt, &task.UpdatedAt,
 	)
 
 	if err != nil {
-		http.Error(w, "Goal not found or update failed", http.StatusNotFound)
+		http.Error(w, "Task not found or update failed", http.StatusNotFound)
 		return
 	}
 
+	// Convert times
+	if scheduledStart != nil {
+		s := scheduledStart.Format("15:04")
+		task.ScheduledStart = &s
+	}
+	if scheduledEnd != nil {
+		s := scheduledEnd.Format("15:04")
+		task.ScheduledEnd = &s
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(goal)
+	json.NewEncoder(w).Encode(task)
+}
+
+// RescheduleGoal is deprecated - use RescheduleTask instead
+// PATCH /calendar/goals/{id}/reschedule (kept for backwards compatibility)
+func (h *Handler) RescheduleGoal(w http.ResponseWriter, r *http.Request) {
+	// Redirect to RescheduleTask
+	h.RescheduleTask(w, r)
 }
