@@ -470,9 +470,13 @@ func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err != nil {
+		log.Printf("[CreateTask] ERROR inserting task: %v", err)
+		log.Printf("[CreateTask] Request data: userID=%s, title=%s, date=%s, timeBlock=%s", userID, req.Title, req.Date, timeBlock)
 		http.Error(w, "Failed to create task: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	log.Printf("[CreateTask] SUCCESS: created task id=%s, title=%s", task.ID, task.Title)
 
 	// Convert times to HH:mm format
 	if scheduledStart != nil {
@@ -829,11 +833,14 @@ func (h *Handler) GetWeekView(w http.ResponseWriter, r *http.Request) {
 	endDateFmt := endDate.Format("2006-01-02")
 
 	// Get tasks for the week
+	log.Printf("[GetWeekView] Fetching tasks for user=%s, start=%s, end=%s", userID, startDateFmt, endDateFmt)
 	tasks, err := h.getTasksForWeek(r.Context(), userID, startDateFmt, endDateFmt)
 	if err != nil {
-		http.Error(w, "Failed to get tasks", http.StatusInternalServerError)
+		log.Printf("[GetWeekView] ERROR: %v", err)
+		http.Error(w, "Failed to get tasks: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("[GetWeekView] SUCCESS: found %d tasks", len(tasks))
 
 	response := WeekViewResponse{
 		StartDate: startDateFmt,
