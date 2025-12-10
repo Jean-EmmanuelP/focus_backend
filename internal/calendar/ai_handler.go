@@ -38,10 +38,9 @@ type GenerateDayPlanRequest struct {
 }
 
 type GenerateDayPlanResponse struct {
-	DayPlan    DayPlan     `json:"dayPlan"`
-	TimeBlocks []TimeBlock `json:"timeBlocks"`
-	Tasks      []Task      `json:"tasks"`
-	AISummary  string      `json:"aiSummary"`
+	DayPlan   DayPlan `json:"dayPlan"`
+	Tasks     []Task  `json:"tasks"`
+	AISummary string  `json:"aiSummary"`
 }
 
 type GenerateTasksRequest struct {
@@ -425,62 +424,39 @@ func (h *AIHandler) createDayPlanFromAI(ctx context.Context, userID, date, promp
 		areaMap[strings.ToLower(a.Name)] = a.ID
 	}
 
-	var timeBlocks []TimeBlock
 	var allTasks []Task
 
-	// Parse date for time blocks
-	dateTime, _ := time.Parse("2006-01-02", date)
-
 	for _, block := range parsed.TimeBlocks {
-		// Parse times
-		startParts := strings.Split(block.StartTime, ":")
-		endParts := strings.Split(block.EndTime, ":")
-
-		var startHour, startMin, endHour, endMin int
-		fmt.Sscanf(startParts[0], "%d", &startHour)
-		if len(startParts) > 1 {
-			fmt.Sscanf(startParts[1], "%d", &startMin)
-		}
-		fmt.Sscanf(endParts[0], "%d", &endHour)
-		if len(endParts) > 1 {
-			fmt.Sscanf(endParts[1], "%d", &endMin)
-		}
-
-		startTime := time.Date(dateTime.Year(), dateTime.Month(), dateTime.Day(), startHour, startMin, 0, 0, time.Local)
-		endTime := time.Date(dateTime.Year(), dateTime.Month(), dateTime.Day(), endHour, endMin, 0, 0, time.Local)
-
 		// Find area ID
 		var areaID *string
 		if id, ok := areaMap[strings.ToLower(block.Category)]; ok {
 			areaID = &id
 		}
 
-		// Create time block
-		var tb TimeBlock
-		err := h.db.QueryRow(ctx, `
-			INSERT INTO time_blocks (user_id, day_plan_id, area_id, title, description, start_time, end_time, block_type, is_ai_generated)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, 'focus', true)
-			RETURNING id, user_id, day_plan_id, quest_id, area_id, title, description, start_time, end_time, block_type, status, progress, is_ai_generated, color, created_at, updated_at
-		`, userID, dayPlan.ID, areaID, block.Title, block.Description, startTime, endTime).Scan(
-			&tb.ID, &tb.UserID, &tb.DayPlanID, &tb.QuestID, &tb.AreaID,
-			&tb.Title, &tb.Description, &tb.StartTime, &tb.EndTime,
-			&tb.BlockType, &tb.Status, &tb.Progress, &tb.IsAIGenerated,
-			&tb.Color, &tb.CreatedAt, &tb.UpdatedAt,
-		)
-		if err != nil {
-			continue
+		// Determine time_block based on start time
+		timeBlockStr := "morning"
+		startParts := strings.Split(block.StartTime, ":")
+		if len(startParts) > 0 {
+			var startHour int
+			fmt.Sscanf(startParts[0], "%d", &startHour)
+			if startHour >= 18 {
+				timeBlockStr = "evening"
+			} else if startHour >= 12 {
+				timeBlockStr = "afternoon"
+			}
 		}
 
-		// Create tasks for this block
+		// Create tasks directly (no time_blocks)
 		for i, task := range block.Tasks {
 			var t Task
+			var scheduledStart, scheduledEnd *time.Time
 			err := h.db.QueryRow(ctx, `
 				INSERT INTO tasks (user_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, priority, is_ai_generated)
-				VALUES ($1, $2, $3, $4, $5, $6::time, $7::time, 'morning', $8, $9, $10, true)
+				VALUES ($1, $2, $3, $4, $5, $6::time, $7::time, $8, $9, $10, $11, true)
 				RETURNING id, user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
-			`, userID, areaID, task.Title, task.Description, date, block.StartTime, block.EndTime, i, task.EstimatedMinutes, task.Priority).Scan(
+			`, userID, areaID, task.Title, task.Description, date, block.StartTime, block.EndTime, timeBlockStr, i, task.EstimatedMinutes, task.Priority).Scan(
 				&t.ID, &t.UserID, &t.QuestID, &t.AreaID,
-				&t.Title, &t.Description, &t.Date, &t.ScheduledStart, &t.ScheduledEnd,
+				&t.Title, &t.Description, &t.Date, &scheduledStart, &scheduledEnd,
 				&t.TimeBlock, &t.Position, &t.EstimatedMinutes, &t.ActualMinutes,
 				&t.Priority, &t.Status, &t.DueAt, &t.CompletedAt,
 				&t.IsAIGenerated, &t.AINotes, &t.CreatedAt, &t.UpdatedAt,
@@ -488,18 +464,25 @@ func (h *AIHandler) createDayPlanFromAI(ctx context.Context, userID, date, promp
 			if err != nil {
 				continue
 			}
-			allTasks = append(allTasks, t)
-			tb.Tasks = append(tb.Tasks, t)
-		}
 
-		timeBlocks = append(timeBlocks, tb)
+			// Convert times to HH:mm format
+			if scheduledStart != nil {
+				s := scheduledStart.Format("15:04")
+				t.ScheduledStart = &s
+			}
+			if scheduledEnd != nil {
+				s := scheduledEnd.Format("15:04")
+				t.ScheduledEnd = &s
+			}
+
+			allTasks = append(allTasks, t)
+		}
 	}
 
 	return &GenerateDayPlanResponse{
-		DayPlan:    dayPlan,
-		TimeBlocks: timeBlocks,
-		Tasks:      allTasks,
-		AISummary:  parsed.Summary,
+		DayPlan:   dayPlan,
+		Tasks:     allTasks,
+		AISummary: parsed.Summary,
 	}, nil
 }
 
