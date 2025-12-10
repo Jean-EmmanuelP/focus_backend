@@ -9,18 +9,18 @@ import (
 	"time"
 
 	"firelevel-backend/internal/auth"
-	"firelevel-backend/internal/database"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Handler struct {
-	db        *database.DB
+	db        *pgxpool.Pool
 	aiService *AIService
 }
 
-func NewHandler(db *database.DB) *Handler {
+func NewHandler(db *pgxpool.Pool) *Handler {
 	return &Handler{
 		db:        db,
 		aiService: NewAIService(),
@@ -427,7 +427,7 @@ func (h *Handler) GetIntentLogs(w http.ResponseWriter, r *http.Request) {
 		LIMIT 50
 	`
 
-	rows, err := h.db.Pool.Query(r.Context(), query, userID)
+	rows, err := h.db.Query(r.Context(), query, userID)
 	if err != nil {
 		http.Error(w, "Failed to get intent logs", http.StatusInternalServerError)
 		return
@@ -516,7 +516,7 @@ func (h *Handler) CreateDailyGoal(w http.ResponseWriter, r *http.Request) {
 
 	var goal DailyGoal
 	var scheduledStart, scheduledEnd *time.Time
-	err := h.db.Pool.QueryRow(r.Context(), query,
+	err := h.db.QueryRow(r.Context(), query,
 		id, userID, req.Title, req.Description, req.Date, req.Priority, req.TimeBlock, req.QuestID,
 	).Scan(
 		&goal.ID, &goal.UserID, &goal.Title, &goal.Description, &goal.Date,
@@ -576,7 +576,7 @@ func (h *Handler) UpdateDailyGoal(w http.ResponseWriter, r *http.Request) {
 
 	var goal DailyGoal
 	var scheduledStart, scheduledEnd *time.Time
-	err := h.db.Pool.QueryRow(r.Context(), query,
+	err := h.db.QueryRow(r.Context(), query,
 		goalID, userID, req.Title, req.Description, req.Priority, req.TimeBlock,
 		req.Status, req.ScheduledStart, req.ScheduledEnd, req.QuestID,
 	).Scan(
@@ -612,7 +612,7 @@ func (h *Handler) DeleteDailyGoal(w http.ResponseWriter, r *http.Request) {
 
 	goalID := chi.URLParam(r, "id")
 
-	_, err := h.db.Pool.Exec(r.Context(),
+	_, err := h.db.Exec(r.Context(),
 		"DELETE FROM daily_goals WHERE id = $1 AND user_id = $2",
 		goalID, userID,
 	)
@@ -644,7 +644,7 @@ func (h *Handler) CompleteDailyGoal(w http.ResponseWriter, r *http.Request) {
 
 	var goal DailyGoal
 	var scheduledStart, scheduledEnd *time.Time
-	err := h.db.Pool.QueryRow(r.Context(), query, goalID, userID).Scan(
+	err := h.db.QueryRow(r.Context(), query, goalID, userID).Scan(
 		&goal.ID, &goal.UserID, &goal.Title, &goal.Description, &goal.Date,
 		&goal.Priority, &goal.TimeBlock, &scheduledStart, &scheduledEnd,
 		&goal.Status, &goal.IsAIScheduled, &goal.QuestID, &goal.CreatedAt, &goal.UpdatedAt,
@@ -686,7 +686,7 @@ func (h *Handler) GetGoalSubtasks(w http.ResponseWriter, r *http.Request) {
 		ORDER BY gs.position
 	`
 
-	rows, err := h.db.Pool.Query(r.Context(), query, goalID, userID)
+	rows, err := h.db.Query(r.Context(), query, goalID, userID)
 	if err != nil {
 		http.Error(w, "Failed to get subtasks", http.StatusInternalServerError)
 		return
@@ -785,7 +785,7 @@ func (h *Handler) getUserQuests(userID string) ([]Quest, error) {
 		WHERE user_id = $1 AND status = 'active'
 	`
 
-	rows, err := h.db.Pool.Query(context.Background(), query, userID)
+	rows, err := h.db.Query(context.Background(), query, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -814,7 +814,7 @@ func (h *Handler) saveIntentLog(userID, rawText string, intent *IntentResponse) 
 	`
 
 	var log IntentLog
-	err := h.db.Pool.QueryRow(context.Background(), query,
+	err := h.db.QueryRow(context.Background(), query,
 		id, userID, rawText, intent.IntentType, aiResponseJSON, intent.Notes, intent.FollowUpQuestion,
 	).Scan(
 		&log.ID, &log.UserID, &log.RawUserText, &log.IntentType,
@@ -829,7 +829,7 @@ func (h *Handler) saveIntentLog(userID, rawText string, intent *IntentResponse) 
 }
 
 func (h *Handler) markIntentProcessed(intentID string) {
-	h.db.Pool.Exec(context.Background(),
+	h.db.Exec(context.Background(),
 		"UPDATE intent_logs SET processed_at = NOW() WHERE id = $1",
 		intentID,
 	)
@@ -853,7 +853,7 @@ func (h *Handler) createGoalsFromIntent(userID, intentLogID string, intent *Inte
 
 		var goal DailyGoal
 		var scheduledStart, scheduledEnd *time.Time
-		err := h.db.Pool.QueryRow(context.Background(), query,
+		err := h.db.QueryRow(context.Background(), query,
 			id, userID, intentLogID, questID, g.Title, g.Date, g.Priority, g.TimeBlock, g.Status,
 		).Scan(
 			&goal.ID, &goal.UserID, &goal.IntentLogID, &goal.QuestID, &goal.Title,
@@ -938,7 +938,7 @@ func (h *Handler) getDailyGoalsByDate(userID, date string) ([]DailyGoal, error) 
 			dg.priority DESC
 	`
 
-	rows, err := h.db.Pool.Query(context.Background(), query, userID, date)
+	rows, err := h.db.Query(context.Background(), query, userID, date)
 	if err != nil {
 		return nil, err
 	}
@@ -984,7 +984,7 @@ func (h *Handler) getGoalsByIDs(userID string, goalIDs []string) ([]DailyGoal, e
 		WHERE dg.user_id = $1 AND dg.id = ANY($2)
 	`
 
-	rows, err := h.db.Pool.Query(context.Background(), query, userID, goalIDs)
+	rows, err := h.db.Query(context.Background(), query, userID, goalIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -1030,7 +1030,7 @@ func (h *Handler) getPendingGoalsForDate(userID, date string) ([]DailyGoal, erro
 		WHERE dg.user_id = $1 AND dg.date = $2 AND dg.status = 'pending' AND dg.scheduled_start IS NULL
 	`
 
-	rows, err := h.db.Pool.Query(context.Background(), query, userID, date)
+	rows, err := h.db.Query(context.Background(), query, userID, date)
 	if err != nil {
 		return nil, err
 	}

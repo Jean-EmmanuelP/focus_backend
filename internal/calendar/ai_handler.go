@@ -145,7 +145,7 @@ func (h *AIHandler) GenerateDayPlan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Store AI conversation for context
-	h.storeAIConversation(r.Context(), userID, dayPlan.ID, "day_planning", req.IdealDayPrompt, aiResponse)
+	h.storeAIConversation(r.Context(), userID, dayPlan.DayPlan.ID, "day_planning", req.IdealDayPrompt, aiResponse)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(dayPlan)
