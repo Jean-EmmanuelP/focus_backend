@@ -277,7 +277,10 @@ func (h *Handler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 		WHERE (from_user_id = $1 AND to_user_id = $2)
 		   OR (from_user_id = $2 AND to_user_id = $1)
 	`
-	h.db.Exec(r.Context(), updateQuery, userID, memberID)
+	if _, err := h.db.Exec(r.Context(), updateQuery, userID, memberID); err != nil {
+		fmt.Println("Update crew requests error:", err)
+		// Non-critical, continue anyway
+	}
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -400,7 +403,11 @@ func (h *Handler) SendRequest(w http.ResponseWriter, r *http.Request) {
 	// Check if already crew members
 	checkQuery := `SELECT EXISTS(SELECT 1 FROM crew_members WHERE user_id = $1 AND member_id = $2)`
 	var alreadyMember bool
-	h.db.QueryRow(r.Context(), checkQuery, userID, req.ToUserID).Scan(&alreadyMember)
+	if err := h.db.QueryRow(r.Context(), checkQuery, userID, req.ToUserID).Scan(&alreadyMember); err != nil {
+		fmt.Println("Check crew member error:", err)
+		http.Error(w, "Failed to check membership", http.StatusInternalServerError)
+		return
+	}
 	if alreadyMember {
 		http.Error(w, "Already crew members", http.StatusConflict)
 		return
@@ -477,8 +484,16 @@ func (h *Handler) AcceptRequest(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO crew_members (user_id, member_id) VALUES ($1, $2)
 		ON CONFLICT (user_id, member_id) DO NOTHING
 	`
-	tx.Exec(r.Context(), insertQuery, toUserID, fromUserID)
-	tx.Exec(r.Context(), insertQuery, fromUserID, toUserID)
+	if _, err := tx.Exec(r.Context(), insertQuery, toUserID, fromUserID); err != nil {
+		fmt.Println("Insert crew member (direction 1) error:", err)
+		http.Error(w, "Failed to create crew membership", http.StatusInternalServerError)
+		return
+	}
+	if _, err := tx.Exec(r.Context(), insertQuery, fromUserID, toUserID); err != nil {
+		fmt.Println("Insert crew member (direction 2) error:", err)
+		http.Error(w, "Failed to create crew membership", http.StatusInternalServerError)
+		return
+	}
 
 	if err := tx.Commit(r.Context()); err != nil {
 		http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
@@ -757,7 +772,11 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 	// Check if current user is in their crew
 	var isCrewMember bool
 	crewQuery := `SELECT EXISTS(SELECT 1 FROM crew_members WHERE user_id = $1 AND member_id = $2)`
-	h.db.QueryRow(r.Context(), crewQuery, userID, memberID).Scan(&isCrewMember)
+	if err := h.db.QueryRow(r.Context(), crewQuery, userID, memberID).Scan(&isCrewMember); err != nil {
+		fmt.Println("Check crew member error:", err)
+		// Assume not a crew member on error
+		isCrewMember = false
+	}
 
 	// Check permission
 	if visibility == "private" {
@@ -772,9 +791,13 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 	// Get user info
 	var user CrewUserInfo
 	userQuery := `SELECT id, pseudo, first_name, last_name, email, avatar_url FROM users WHERE id = $1`
-	h.db.QueryRow(r.Context(), userQuery, memberID).Scan(
+	if err := h.db.QueryRow(r.Context(), userQuery, memberID).Scan(
 		&user.ID, &user.Pseudo, &user.FirstName, &user.LastName, &user.Email, &user.AvatarUrl,
-	)
+	); err != nil {
+		fmt.Println("Get user info error:", err)
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
 
 	// Get intentions
 	intentionsQuery := `
@@ -784,14 +807,26 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 		WHERE di.user_id = $1 AND di.date = $2
 		ORDER BY i.position
 	`
-	intentionRows, _ := h.db.Query(r.Context(), intentionsQuery, memberID, dateStr)
-	defer intentionRows.Close()
+	intentionRows, err := h.db.Query(r.Context(), intentionsQuery, memberID, dateStr)
+	if err != nil {
+		fmt.Println("Get intentions error:", err)
+		// Continue with empty intentions
+		intentionRows = nil
+	}
+	if intentionRows != nil {
+		defer intentionRows.Close()
+	}
 
 	intentions := []CrewIntention{}
-	for intentionRows.Next() {
-		var i CrewIntention
-		intentionRows.Scan(&i.ID, &i.Content, &i.Position)
-		intentions = append(intentions, i)
+	if intentionRows != nil {
+		for intentionRows.Next() {
+			var i CrewIntention
+			if err := intentionRows.Scan(&i.ID, &i.Content, &i.Position); err != nil {
+				fmt.Println("Scan intention error:", err)
+				continue
+			}
+			intentions = append(intentions, i)
+		}
 	}
 
 	// Get focus sessions
@@ -801,14 +836,25 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 		WHERE user_id = $1 AND DATE(started_at) = $2 AND status = 'completed'
 		ORDER BY started_at DESC
 	`
-	sessionRows, _ := h.db.Query(r.Context(), sessionsQuery, memberID, dateStr)
-	defer sessionRows.Close()
+	sessionRows, err := h.db.Query(r.Context(), sessionsQuery, memberID, dateStr)
+	if err != nil {
+		fmt.Println("Get sessions error:", err)
+		sessionRows = nil
+	}
+	if sessionRows != nil {
+		defer sessionRows.Close()
+	}
 
 	sessions := []CrewFocusSession{}
-	for sessionRows.Next() {
-		var s CrewFocusSession
-		sessionRows.Scan(&s.ID, &s.Description, &s.DurationMinutes, &s.StartedAt, &s.CompletedAt, &s.Status)
-		sessions = append(sessions, s)
+	if sessionRows != nil {
+		for sessionRows.Next() {
+			var s CrewFocusSession
+			if err := sessionRows.Scan(&s.ID, &s.Description, &s.DurationMinutes, &s.StartedAt, &s.CompletedAt, &s.Status); err != nil {
+				fmt.Println("Scan session error:", err)
+				continue
+			}
+			sessions = append(sessions, s)
+		}
 	}
 
 	// Get completed routines with like counts
@@ -825,14 +871,25 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 		WHERE r.user_id = $1 AND DATE(c.completed_at) = $2
 		ORDER BY c.completed_at
 	`
-	completedRoutineRows, _ := h.db.Query(r.Context(), completedRoutinesQuery, memberID, dateStr, userID)
-	defer completedRoutineRows.Close()
+	completedRoutineRows, err := h.db.Query(r.Context(), completedRoutinesQuery, memberID, dateStr, userID)
+	if err != nil {
+		fmt.Println("Get completed routines error:", err)
+		completedRoutineRows = nil
+	}
+	if completedRoutineRows != nil {
+		defer completedRoutineRows.Close()
+	}
 
 	completedRoutines := []CrewCompletedRoutine{}
-	for completedRoutineRows.Next() {
-		var cr CrewCompletedRoutine
-		completedRoutineRows.Scan(&cr.ID, &cr.Title, &cr.Icon, &cr.CompletedAt, &cr.LikeCount, &cr.IsLikedByMe)
-		completedRoutines = append(completedRoutines, cr)
+	if completedRoutineRows != nil {
+		for completedRoutineRows.Next() {
+			var cr CrewCompletedRoutine
+			if err := completedRoutineRows.Scan(&cr.ID, &cr.Title, &cr.Icon, &cr.CompletedAt, &cr.LikeCount, &cr.IsLikedByMe); err != nil {
+				fmt.Println("Scan completed routine error:", err)
+				continue
+			}
+			completedRoutines = append(completedRoutines, cr)
+		}
 	}
 
 	// Get ALL routines with completion status and like counts for this day

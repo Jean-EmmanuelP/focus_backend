@@ -12,6 +12,7 @@ import (
 
 	"firelevel-backend/internal/areas"
 	"firelevel-backend/internal/auth"
+	"firelevel-backend/internal/calendar"
 	"firelevel-backend/internal/crew"
 	"firelevel-backend/internal/database"
 	"firelevel-backend/internal/focus"
@@ -23,6 +24,7 @@ import (
 	"firelevel-backend/internal/stats"
 	"firelevel-backend/internal/streaks"
 	"firelevel-backend/internal/users"
+	"firelevel-backend/internal/voice"
 )
 
 func main() {
@@ -59,6 +61,9 @@ func main() {
 	crewHandler := crew.NewHandler(pool)
 	streaksHandler := streaks.NewHandler(pool)
 	onboardingHandler := onboarding.NewHandler(pool)
+	calendarHandler := calendar.NewHandler(pool)
+	calendarAIHandler := calendar.NewAIHandler(pool)
+	voiceHandler := voice.NewHandler(database.NewDB(pool))
 
 	// 4. Setup Router
 	r := chi.NewRouter()
@@ -159,6 +164,46 @@ func main() {
 		r.Put("/onboarding/progress", onboardingHandler.SaveProgress)
 		r.Post("/onboarding/complete", onboardingHandler.Complete)
 		r.Delete("/onboarding", onboardingHandler.Reset)
+
+		// Calendar - Day Plans
+		r.Get("/calendar/day", calendarHandler.GetDayPlan)
+		r.Post("/calendar/day", calendarHandler.CreateDayPlan)
+		r.Patch("/calendar/day/{id}", calendarHandler.UpdateDayPlan)
+
+		// Calendar - Time Blocks
+		r.Get("/calendar/blocks", calendarHandler.ListTimeBlocks)
+		r.Post("/calendar/blocks", calendarHandler.CreateTimeBlock)
+		r.Patch("/calendar/blocks/{id}", calendarHandler.UpdateTimeBlock)
+		r.Delete("/calendar/blocks/{id}", calendarHandler.DeleteTimeBlock)
+
+		// Calendar - Tasks
+		r.Get("/calendar/tasks", calendarHandler.ListTasks)
+		r.Post("/calendar/tasks", calendarHandler.CreateTask)
+		r.Patch("/calendar/tasks/{id}", calendarHandler.UpdateTask)
+		r.Post("/calendar/tasks/{id}/complete", calendarHandler.CompleteTask)
+		r.Post("/calendar/tasks/{id}/uncomplete", calendarHandler.UncompleteTask)
+		r.Delete("/calendar/tasks/{id}", calendarHandler.DeleteTask)
+
+		// Calendar - Projects
+		r.Get("/calendar/projects", calendarHandler.ListProjects)
+		r.Post("/calendar/projects", calendarHandler.CreateProject)
+		r.Delete("/calendar/projects/{id}", calendarHandler.DeleteProject)
+
+		// Calendar - AI Generation
+		r.Post("/calendar/ai/generate-day", calendarAIHandler.GenerateDayPlan)
+		r.Post("/calendar/ai/generate-tasks", calendarAIHandler.GenerateTasksForBlock)
+
+		// Voice / Intentions AI
+		r.Post("/voice/process", voiceHandler.ProcessVoiceIntent)
+		r.Get("/voice/intentions", voiceHandler.GetIntentLogs)
+		r.Get("/daily-goals", voiceHandler.GetDailyGoals)
+		r.Get("/daily-goals/{date}", voiceHandler.GetDailyGoalsByDate)
+		r.Post("/daily-goals", voiceHandler.CreateDailyGoal)
+		r.Patch("/daily-goals/{id}", voiceHandler.UpdateDailyGoal)
+		r.Delete("/daily-goals/{id}", voiceHandler.DeleteDailyGoal)
+		r.Post("/daily-goals/{id}/complete", voiceHandler.CompleteDailyGoal)
+		r.Get("/daily-goals/{id}/subtasks", voiceHandler.GetGoalSubtasks)
+		r.Post("/calendar/schedule-goals", voiceHandler.ScheduleGoalsToCalendar)
 	})
 
 	port := os.Getenv("PORT")
