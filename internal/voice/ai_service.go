@@ -1,7 +1,6 @@
 package voice
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -13,60 +12,40 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"google.golang.org/genai"
 )
 
 type AIService struct {
 	geminiAPIKey  string
 	gradiumAPIKey string
 	httpClient    *http.Client
+	genaiClient   *genai.Client
 }
 
 func NewAIService() *AIService {
+	ctx := context.Background()
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  os.Getenv("GEMINI_API_KEY"),
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		// Log error but don't fail - will check client in callGemini
+		fmt.Printf("Warning: Failed to create genai client: %v\n", err)
+	}
+
 	return &AIService{
 		geminiAPIKey:  os.Getenv("GEMINI_API_KEY"),
 		gradiumAPIKey: os.Getenv("GRADIUM_API_KEY"),
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
+		genaiClient: client,
 	}
 }
 
 // ============================================
-// Gemini AI - For intent extraction
+// Gemini AI - For intent extraction (using official SDK)
 // ============================================
-
-type GeminiRequest struct {
-	Contents         []GeminiContent        `json:"contents"`
-	GenerationConfig GeminiGenerationConfig `json:"generationConfig,omitempty"`
-}
-
-type GeminiContent struct {
-	Parts []GeminiPart `json:"parts"`
-	Role  string       `json:"role,omitempty"`
-}
-
-type GeminiPart struct {
-	Text string `json:"text"`
-}
-
-type GeminiGenerationConfig struct {
-	Temperature     float64 `json:"temperature,omitempty"`
-	MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
-}
-
-type GeminiResponse struct {
-	Candidates []struct {
-		Content struct {
-			Parts []struct {
-				Text string `json:"text"`
-			} `json:"parts"`
-		} `json:"content"`
-	} `json:"candidates"`
-	Error *struct {
-		Message string `json:"message"`
-		Code    int    `json:"code"`
-	} `json:"error,omitempty"`
-}
 
 // ExtractIntentions - Analyse le texte utilisateur et extrait les intentions/goals
 func (s *AIService) ExtractIntentions(userText, targetDate string, quests []Quest) (*IntentResponse, error) {
@@ -76,65 +55,33 @@ func (s *AIService) ExtractIntentions(userText, targetDate string, quests []Ques
 }
 
 func (s *AIService) callGemini(systemPrompt, userText string) (*IntentResponse, error) {
-	if s.geminiAPIKey == "" {
-		return nil, fmt.Errorf("GEMINI_API_KEY not configured")
+	if s.genaiClient == nil {
+		return nil, fmt.Errorf("Gemini client not initialized - check GEMINI_API_KEY")
 	}
+
+	ctx := context.Background()
 
 	// Combine system prompt and user text
 	fullPrompt := systemPrompt + "\n\nUser input:\n" + userText
 
-	reqBody := GeminiRequest{
-		Contents: []GeminiContent{
-			{
-				Parts: []GeminiPart{{Text: fullPrompt}},
-			},
-		},
-		GenerationConfig: GeminiGenerationConfig{
-			Temperature:     0.2,
-			MaxOutputTokens: 2048,
-		},
-	}
-
-	jsonBody, err := json.Marshal(reqBody)
+	// Use gemini-2.5-flash model via official SDK
+	result, err := s.genaiClient.Models.GenerateContent(
+		ctx,
+		"gemini-2.5-flash",
+		genai.Text(fullPrompt),
+		nil,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, fmt.Errorf("Gemini API error: %w", err)
 	}
 
-	// Gemini API URL with API key
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=%s", s.geminiAPIKey)
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to call Gemini API: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		var errResp GeminiResponse
-		json.NewDecoder(resp.Body).Decode(&errResp)
-		if errResp.Error != nil {
-			return nil, fmt.Errorf("Gemini API error: %s (code: %d)", errResp.Error.Message, errResp.Error.Code)
-		}
-		return nil, fmt.Errorf("Gemini API returned status %d", resp.StatusCode)
-	}
-
-	var geminiResp GeminiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
+	// Extract text from response
+	responseText := result.Text()
+	if responseText == "" {
 		return nil, fmt.Errorf("no response from Gemini")
 	}
 
-	content := cleanJSONResponse(geminiResp.Candidates[0].Content.Parts[0].Text)
+	content := cleanJSONResponse(responseText)
 
 	var intentResp IntentResponse
 	if err := json.Unmarshal([]byte(content), &intentResp); err != nil {
