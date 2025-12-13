@@ -101,7 +101,7 @@ func (s *AIService) callGemini(systemPrompt, userText string) (*IntentResponse, 
 	}
 
 	// Gemini API URL with API key
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=%s", s.geminiAPIKey)
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=%s", s.geminiAPIKey)
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
 	if err != nil {
