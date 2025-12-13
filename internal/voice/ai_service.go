@@ -203,11 +203,7 @@ func (s *AIService) buildIntentSystemPrompt(targetDate string, quests []Quest) s
 	if len(quests) > 0 {
 		questContext = "\n\nQuêtes actives de l'utilisateur (associe les objectifs si pertinent):\n"
 		for _, q := range quests {
-			questContext += fmt.Sprintf("- ID: %s | Titre: %s", q.ID, q.Title)
-			if q.Description != nil {
-				questContext += fmt.Sprintf(" | Description: %s", *q.Description)
-			}
-			questContext += "\n"
+			questContext += fmt.Sprintf("- ID: %s | Titre: %s\n", q.ID, q.Title)
 		}
 	}
 

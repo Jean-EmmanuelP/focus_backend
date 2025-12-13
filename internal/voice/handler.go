@@ -784,24 +784,30 @@ func (h *Handler) ScheduleGoalsToCalendar(w http.ResponseWriter, r *http.Request
 
 func (h *Handler) getUserQuests(userID string) ([]Quest, error) {
 	query := `
-		SELECT id, title, description, status
+		SELECT id, title, status
 		FROM quests
 		WHERE user_id = $1 AND status = 'active'
 	`
 
 	rows, err := h.db.Query(context.Background(), query, userID)
 	if err != nil {
-		return nil, err
+		// Return empty slice instead of error - user may not have quests yet
+		return []Quest{}, nil
 	}
 	defer rows.Close()
 
 	var quests []Quest
 	for rows.Next() {
 		var q Quest
-		if err := rows.Scan(&q.ID, &q.Title, &q.Description, &q.Status); err != nil {
+		if err := rows.Scan(&q.ID, &q.Title, &q.Status); err != nil {
 			continue
 		}
 		quests = append(quests, q)
+	}
+
+	// Return empty slice if no quests (not nil)
+	if quests == nil {
+		quests = []Quest{}
 	}
 
 	return quests, nil
@@ -900,10 +906,6 @@ func (h *Handler) matchGoalToQuest(goalTitle string, quests []Quest) *string {
 
 	for _, quest := range quests {
 		questLower := strings.ToLower(quest.Title)
-		descLower := ""
-		if quest.Description != nil {
-			descLower = strings.ToLower(*quest.Description)
-		}
 
 		// Check if goal contains quest title words
 		questWords := strings.Fields(questLower)
@@ -914,7 +916,7 @@ func (h *Handler) matchGoalToQuest(goalTitle string, quests []Quest) *string {
 			}
 		}
 
-		if matchCount >= 1 || strings.Contains(goalLower, questLower) || strings.Contains(descLower, goalLower) {
+		if matchCount >= 1 || strings.Contains(goalLower, questLower) {
 			return &quest.ID
 		}
 	}
@@ -1111,8 +1113,7 @@ func (h *Handler) generateListTTSResponse(goals []DailyGoal) string {
 }
 
 type Quest struct {
-	ID          string  `json:"id"`
-	Title       string  `json:"title"`
-	Description *string `json:"description"`
-	Status      string  `json:"status"`
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
 }
