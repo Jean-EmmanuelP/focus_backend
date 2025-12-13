@@ -195,6 +195,7 @@ func main() {
 		// Voice / Intentions AI
 		r.Post("/voice/process", voiceHandler.ProcessVoiceIntent)
 		r.Post("/assistant/voice", voiceHandler.VoiceAssistant)
+		r.Post("/assistant/analyze", voiceHandler.AnalyzeVoiceIntent)
 		r.Get("/voice/intentions", voiceHandler.GetIntentLogs)
 		r.Get("/daily-goals", voiceHandler.GetDailyGoals)
 		r.Get("/daily-goals/{date}", voiceHandler.GetDailyGoalsByDate)
