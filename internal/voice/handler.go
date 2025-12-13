@@ -324,6 +324,39 @@ func (h *Handler) VoiceAssistant(w http.ResponseWriter, r *http.Request) {
 		audioFormat = "wav"
 	}
 
+	// Check if this is a TTS_ONLY request (skip AI processing, just generate audio)
+	if strings.HasPrefix(req.Text, "TTS_ONLY:") {
+		ttsText := strings.TrimPrefix(req.Text, "TTS_ONLY:")
+
+		// Generate TTS audio directly with Gradium
+		audioBase64, err := h.aiService.GenerateTTS(ttsText, voiceID, audioFormat)
+		if err != nil {
+			fmt.Printf("TTS generation failed: %v\n", err)
+			http.Error(w, "Failed to generate TTS: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Return minimal response with just the audio
+		response := VoiceAssistantResponse{
+			IntentLog: IntentLog{
+				ID:          "",
+				UserID:      userID,
+				RawUserText: ttsText,
+				IntentType:  "TTS_ONLY",
+				CreatedAt:   time.Now(),
+			},
+			Goals:       []DailyGoal{},
+			TimeBlocks:  []TimeBlock{},
+			ReplyText:   ttsText,
+			AudioFormat: audioFormat,
+			AudioBase64: audioBase64,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+
 	// Step 1: Get user's quests for context
 	quests, err := h.getUserQuests(userID)
 	if err != nil {
