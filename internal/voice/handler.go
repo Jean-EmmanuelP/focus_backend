@@ -29,7 +29,8 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Post("/voice/process", h.ProcessVoiceIntent)
-	r.Post("/assistant/voice", h.VoiceAssistant) // New endpoint with Gradium TTS
+	r.Post("/assistant/voice", h.VoiceAssistant)         // Legacy endpoint with auto-create
+	r.Post("/assistant/analyze", h.AnalyzeVoiceIntent)   // New: analyze only, return proposals
 	r.Get("/voice/intentions", h.GetIntentLogs)
 	r.Get("/daily-goals", h.GetDailyGoals)
 	r.Get("/daily-goals/{date}", h.GetDailyGoalsByDate)
@@ -59,11 +60,14 @@ type IntentResponse struct {
 }
 
 type GoalFromAI struct {
-	Title     string `json:"title"`
-	Date      string `json:"date"`
-	Priority  string `json:"priority"`
-	TimeBlock string `json:"time_block"`
-	Status    string `json:"status"`
+	Title          string `json:"title"`
+	Date           string `json:"date"`
+	Priority       string `json:"priority"`
+	TimeBlock      string `json:"time_block"`
+	ScheduledStart string `json:"scheduled_start,omitempty"`
+	ScheduledEnd   string `json:"scheduled_end,omitempty"`
+	EstimatedMins  int    `json:"estimated_duration_minutes,omitempty"`
+	Status         string `json:"status"`
 }
 
 type ProcessVoiceResponse struct {
@@ -178,6 +182,33 @@ type VoiceAssistantResponse struct {
 	AudioBase64  string      `json:"audio_base64,omitempty"`
 }
 
+// Analyze Voice Request/Response (STT -> AI Analysis -> Proposals, no DB writes)
+type AnalyzeVoiceRequest struct {
+	Text string `json:"text"` // STT transcription
+	Date string `json:"date,omitempty"` // Target date, defaults to today
+}
+
+// ProposedGoal represents an AI-suggested goal (not yet saved)
+type ProposedGoal struct {
+	Title          string  `json:"title"`
+	Date           string  `json:"date"`
+	Priority       string  `json:"priority"`
+	TimeBlock      string  `json:"time_block"`
+	ScheduledStart *string `json:"scheduled_start,omitempty"`
+	ScheduledEnd   *string `json:"scheduled_end,omitempty"`
+	EstimatedMins  int     `json:"estimated_minutes,omitempty"`
+	Status         string  `json:"status"`
+	QuestID        *string `json:"quest_id,omitempty"`
+}
+
+type AnalyzeVoiceResponse struct {
+	Success       bool           `json:"success"`
+	IntentType    string         `json:"intent_type"`
+	ProposedGoals []ProposedGoal `json:"proposed_goals"`
+	Summary       string         `json:"summary"` // AI-generated summary for TTS
+	RawUserText   string         `json:"raw_user_text"`
+}
+
 // ============================================
 // Handlers
 // ============================================
@@ -241,17 +272,8 @@ func (h *Handler) ProcessVoiceIntent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Step 5: Use Grok to intelligently schedule goals into time blocks
-		if len(goals) > 0 {
-			timeBlocks, err = h.scheduleGoalsWithGrok(userID, targetDate, goals)
-			if err != nil {
-				// Non-fatal - goals created but not scheduled
-				message = "Goals created but scheduling failed"
-			} else {
-				message = "Goals created and scheduled"
-			}
-		}
-
+		// Goals created - scheduling is handled by Gemini in the intent response
+		message = "Goals created"
 		ttsResponse = h.generateTTSResponse(intentResponse, goals)
 
 	case "UPDATE_GOAL":
@@ -391,11 +413,7 @@ func (h *Handler) VoiceAssistant(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Schedule goals with Perplexity (since we removed Grok)
-		if len(goals) > 0 {
-			timeBlocks, _ = h.scheduleGoalsWithGrok(userID, targetDate, goals)
-		}
-
+		// Goals created - scheduling is already in the Gemini response
 		replyText = h.generateTTSResponse(intentResponse, goals)
 
 	case "UPDATE_GOAL":
@@ -444,6 +462,112 @@ func (h *Handler) VoiceAssistant(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+// AnalyzeVoiceIntent - New endpoint: STT -> AI Analysis -> Return proposals (NO DB writes)
+// This is used for the "Start My Day" flow where user validates before creating tasks
+func (h *Handler) AnalyzeVoiceIntent(w http.ResponseWriter, r *http.Request) {
+	userID, ok := r.Context().Value(auth.UserContextKey).(string)
+	if !ok || userID == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req AnalyzeVoiceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Text == "" {
+		http.Error(w, "Text is required", http.StatusBadRequest)
+		return
+	}
+
+	// Default date to today
+	targetDate := req.Date
+	if targetDate == "" {
+		targetDate = time.Now().Format("2006-01-02")
+	}
+
+	// Get user's quests for context (helps AI match goals to quests)
+	quests, err := h.getUserQuests(userID)
+	if err != nil {
+		// Non-fatal - continue without quest context
+		quests = []Quest{}
+	}
+
+	// Call Gemini AI to extract intentions - NO database writes here
+	intentResponse, err := h.aiService.ExtractIntentions(req.Text, targetDate, quests)
+	if err != nil {
+		http.Error(w, "Failed to analyze: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Convert AI goals to proposed goals (not saved to DB)
+	var proposedGoals []ProposedGoal
+	for _, g := range intentResponse.Goals {
+		proposed := ProposedGoal{
+			Title:     g.Title,
+			Date:      g.Date,
+			Priority:  g.Priority,
+			TimeBlock: g.TimeBlock,
+			Status:    g.Status,
+		}
+
+		// Copy scheduled times if present
+		if g.ScheduledStart != "" {
+			proposed.ScheduledStart = &g.ScheduledStart
+		}
+		if g.ScheduledEnd != "" {
+			proposed.ScheduledEnd = &g.ScheduledEnd
+		}
+
+		// Try to match to a quest
+		questID := h.matchGoalToQuest(g.Title, quests)
+		proposed.QuestID = questID
+
+		proposedGoals = append(proposedGoals, proposed)
+	}
+
+	// Generate summary for display
+	summary := h.generateSummaryText(proposedGoals)
+
+	response := AnalyzeVoiceResponse{
+		Success:       true,
+		IntentType:    intentResponse.IntentType,
+		ProposedGoals: proposedGoals,
+		Summary:       summary,
+		RawUserText:   req.Text,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// generateSummaryText creates a human-readable summary of proposed goals
+func (h *Handler) generateSummaryText(goals []ProposedGoal) string {
+	if len(goals) == 0 {
+		return "Je n'ai pas identifié d'objectifs. Peux-tu reformuler ?"
+	}
+
+	if len(goals) == 1 {
+		g := goals[0]
+		if g.ScheduledStart != nil && g.ScheduledEnd != nil {
+			return fmt.Sprintf("J'ai compris : %s de %s à %s", g.Title, *g.ScheduledStart, *g.ScheduledEnd)
+		}
+		return fmt.Sprintf("J'ai compris : %s", g.Title)
+	}
+
+	summary := fmt.Sprintf("J'ai identifié %d objectifs :\n", len(goals))
+	for i, g := range goals {
+		if g.ScheduledStart != nil && g.ScheduledEnd != nil {
+			summary += fmt.Sprintf("%d. %s (%s - %s)\n", i+1, g.Title, *g.ScheduledStart, *g.ScheduledEnd)
+		} else {
+			summary += fmt.Sprintf("%d. %s\n", i+1, g.Title)
+		}
+	}
+	return summary
 }
 
 func (h *Handler) GetIntentLogs(w http.ResponseWriter, r *http.Request) {
@@ -797,12 +921,8 @@ func (h *Handler) ScheduleGoalsToCalendar(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Use Grok to schedule
-	timeBlocks, err := h.scheduleGoalsWithGrok(userID, req.Date, goals)
-	if err != nil {
-		http.Error(w, "Failed to schedule goals: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
+	// Goals are already scheduled via Gemini - no additional scheduling needed
+	var timeBlocks []TimeBlock
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
