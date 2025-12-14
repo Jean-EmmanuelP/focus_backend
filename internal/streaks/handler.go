@@ -11,12 +11,25 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// FlameLevel represents a flame tier that users can unlock
+type FlameLevel struct {
+	Level       int    `json:"level"`
+	Name        string `json:"name"`
+	Icon        string `json:"icon"`
+	DaysRequired int   `json:"days_required"`
+	IsUnlocked  bool   `json:"is_unlocked"`
+	IsCurrent   bool   `json:"is_current"`
+}
+
 // StreakInfo contains streak data for a user
 type StreakInfo struct {
-	CurrentStreak int     `json:"current_streak"`
-	LongestStreak int     `json:"longest_streak"`
-	LastValidDate *string `json:"last_valid_date,omitempty"`
-	StreakStart   *string `json:"streak_start,omitempty"`
+	CurrentStreak   int          `json:"current_streak"`
+	LongestStreak   int          `json:"longest_streak"`
+	LastValidDate   *string      `json:"last_valid_date,omitempty"`
+	StreakStart     *string      `json:"streak_start,omitempty"`
+	TodayValidation *DayValidation `json:"today_validation,omitempty"`
+	FlameLevels     []FlameLevel `json:"flame_levels"`
+	CurrentFlameLevel int        `json:"current_flame_level"`
 }
 
 // DayValidation contains the validation status for a specific day
@@ -26,7 +39,21 @@ type DayValidation struct {
 	TotalRoutines     int    `json:"total_routines"`
 	CompletedRoutines int    `json:"completed_routines"`
 	RoutineRate       int    `json:"routine_rate"` // percentage
+	TotalTasks        int    `json:"total_tasks"`
+	CompletedTasks    int    `json:"completed_tasks"`
+	TaskRate          int    `json:"task_rate"` // percentage
+	FocusSessions     int    `json:"focus_sessions"`
+	TotalItems        int    `json:"total_items"` // tasks + routines
+	CompletedItems    int    `json:"completed_items"`
+	OverallRate       int    `json:"overall_rate"` // combined percentage
 	IsValid           bool   `json:"is_valid"`
+	// Validation requirements
+	RequiredCompletionRate int  `json:"required_completion_rate"` // 60%
+	RequiredFocusSessions  int  `json:"required_focus_sessions"`  // 2
+	RequiredMinTasks       int  `json:"required_min_tasks"`       // 2
+	MeetsCompletionRate    bool `json:"meets_completion_rate"`
+	MeetsFocusSessions     bool `json:"meets_focus_sessions"`
+	MeetsMinTasks          bool `json:"meets_min_tasks"`
 }
 
 type Handler struct {
@@ -35,6 +62,19 @@ type Handler struct {
 
 func NewHandler(db *pgxpool.Pool) *Handler {
 	return &Handler{db: db}
+}
+
+// GetFlameLevels returns the flame level definitions
+func GetFlameLevels() []FlameLevel {
+	return []FlameLevel{
+		{Level: 1, Name: "Spark", Icon: "🔥", DaysRequired: 0},
+		{Level: 2, Name: "Ember", Icon: "🔥🔥", DaysRequired: 3},
+		{Level: 3, Name: "Blaze", Icon: "🔥🔥🔥", DaysRequired: 7},
+		{Level: 4, Name: "Inferno", Icon: "🌟🔥", DaysRequired: 14},
+		{Level: 5, Name: "Phoenix", Icon: "🌟🔥🔥", DaysRequired: 30},
+		{Level: 6, Name: "Supernova", Icon: "🌟🔥🔥🔥", DaysRequired: 60},
+		{Level: 7, Name: "Legend", Icon: "👑🔥", DaysRequired: 100},
+	}
 }
 
 // GetStreak - GET /streak
@@ -73,16 +113,30 @@ func (h *Handler) GetDayValidation(w http.ResponseWriter, r *http.Request) {
 }
 
 // validateDay checks if a specific day counts towards the streak
-// Rules: 40% of daily routines completed + Start of day (intention) done
+// Rules:
+// 1. At least 60% of daily items (tasks + routines) completed
+// 2. At least 2 focus sessions completed
+// 3. At least 2 tasks in the calendar for the day
 func (h *Handler) validateDay(ctx context.Context, userID string, date string) DayValidation {
 	validation := DayValidation{
-		Date:    date,
-		IsValid: false,
+		Date:                   date,
+		IsValid:                false,
+		RequiredCompletionRate: 60,
+		RequiredFocusSessions:  2,
+		RequiredMinTasks:       2,
 	}
+
+	// Parse date for day of week calculation
+	parsedDate, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		fmt.Printf("❌ Streak: Error parsing date: %v\n", err)
+		return validation
+	}
+	dayOfWeek := int(parsedDate.Weekday()) // 0 = Sunday, 1 = Monday, etc.
 
 	// 1. Check if daily intention exists for this date
 	var intentionExists bool
-	err := h.db.QueryRow(ctx,
+	err = h.db.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM public.daily_intentions WHERE user_id = $1 AND date = $2::date)`,
 		userID, date,
 	).Scan(&intentionExists)
@@ -91,16 +145,7 @@ func (h *Handler) validateDay(ctx context.Context, userID string, date string) D
 	}
 	validation.HasIntention = intentionExists
 
-	// 2. Count total routines and completed routines for the day
-	// We need to count routines that apply to this day based on frequency
-	parsedDate, err := time.Parse("2006-01-02", date)
-	if err != nil {
-		fmt.Printf("❌ Streak: Error parsing date: %v\n", err)
-		return validation
-	}
-	dayOfWeek := int(parsedDate.Weekday()) // 0 = Sunday, 1 = Monday, etc.
-
-	// Get all user's routines and filter by frequency
+	// 2. Count routines and completed routines for the day
 	rows, err := h.db.Query(ctx, `
 		SELECT r.id, r.frequency,
 			EXISTS (
@@ -152,7 +197,6 @@ func (h *Handler) validateDay(ctx context.Context, userID string, date string) D
 		case "sunday":
 			appliesForDay = dayOfWeek == 0
 		default:
-			// If frequency is not recognized, assume daily
 			appliesForDay = true
 		}
 
@@ -171,24 +215,80 @@ func (h *Handler) validateDay(ctx context.Context, userID string, date string) D
 	if totalRoutines > 0 {
 		validation.RoutineRate = (completedRoutines * 100) / totalRoutines
 	} else {
-		// If no routines exist, consider it as 100% (not blocking the streak)
 		validation.RoutineRate = 100
 	}
 
-	// Day is valid if:
-	// 1. Has intention (Start of Day done)
-	// 2. At least 40% of routines completed (or no routines exist)
-	validation.IsValid = validation.HasIntention && validation.RoutineRate >= 40
+	// 3. Count tasks for the day
+	var totalTasks, completedTasks int
+	err = h.db.QueryRow(ctx, `
+		SELECT
+			COUNT(*) as total,
+			COUNT(*) FILTER (WHERE status = 'completed') as completed
+		FROM public.tasks
+		WHERE user_id = $1 AND date = $2::date
+	`, userID, date).Scan(&totalTasks, &completedTasks)
+	if err != nil {
+		fmt.Printf("❌ Streak: Error counting tasks: %v\n", err)
+	}
+
+	validation.TotalTasks = totalTasks
+	validation.CompletedTasks = completedTasks
+
+	// Calculate task completion rate
+	if totalTasks > 0 {
+		validation.TaskRate = (completedTasks * 100) / totalTasks
+	} else {
+		validation.TaskRate = 100
+	}
+
+	// 4. Count focus sessions for the day
+	var focusSessions int
+	err = h.db.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM public.focus_sessions
+		WHERE user_id = $1
+		AND DATE(started_at) = $2::date
+		AND status = 'completed'
+	`, userID, date).Scan(&focusSessions)
+	if err != nil {
+		fmt.Printf("❌ Streak: Error counting focus sessions: %v\n", err)
+	}
+
+	validation.FocusSessions = focusSessions
+
+	// 5. Calculate overall completion rate (tasks + routines)
+	validation.TotalItems = totalTasks + totalRoutines
+	validation.CompletedItems = completedTasks + completedRoutines
+
+	if validation.TotalItems > 0 {
+		validation.OverallRate = (validation.CompletedItems * 100) / validation.TotalItems
+	} else {
+		// If no items, can't validate the day
+		validation.OverallRate = 0
+	}
+
+	// 6. Check validation requirements
+	validation.MeetsCompletionRate = validation.OverallRate >= validation.RequiredCompletionRate
+	validation.MeetsFocusSessions = validation.FocusSessions >= validation.RequiredFocusSessions
+	validation.MeetsMinTasks = validation.TotalTasks >= validation.RequiredMinTasks
+
+	// Day is valid if ALL conditions are met:
+	// 1. At least 60% of items completed
+	// 2. At least 2 focus sessions
+	// 3. At least 2 tasks in calendar
+	validation.IsValid = validation.MeetsCompletionRate &&
+		validation.MeetsFocusSessions &&
+		validation.MeetsMinTasks
 
 	return validation
 }
 
 // calculateStreak calculates the current streak by checking consecutive valid days
-// If today is not yet valid, we keep the streak from yesterday (user still has time to validate today)
 func (h *Handler) calculateStreak(ctx context.Context, userID string, currentDate string) StreakInfo {
 	streak := StreakInfo{
 		CurrentStreak: 0,
 		LongestStreak: 0,
+		FlameLevels:   GetFlameLevels(),
 	}
 
 	// Parse current date
@@ -200,6 +300,7 @@ func (h *Handler) calculateStreak(ctx context.Context, userID string, currentDat
 
 	// Check today first
 	todayValidation := h.validateDay(ctx, userID, currentDate)
+	streak.TodayValidation = &todayValidation
 
 	// Start checking from yesterday and go backwards
 	consecutiveDays := 0
@@ -227,15 +328,10 @@ func (h *Handler) calculateStreak(ctx context.Context, userID string, currentDat
 				lastValidDate = dateStr
 			}
 		} else {
-			// If this is yesterday and today wasn't valid either, streak is truly broken
-			// But if it's further back, we already counted valid days, so stop
 			break
 		}
 	}
 
-	// Important: If today is not yet valid but yesterday was valid,
-	// the user still has their streak (they haven't broken it yet, today is still ongoing)
-	// The streak count should reflect the ongoing streak, not penalize for incomplete today
 	streak.CurrentStreak = consecutiveDays
 	if streakStartDate != "" {
 		streak.StreakStart = &streakStartDate
@@ -244,7 +340,7 @@ func (h *Handler) calculateStreak(ctx context.Context, userID string, currentDat
 		streak.LastValidDate = &lastValidDate
 	}
 
-	// Get longest streak from database (if we're tracking it)
+	// Get longest streak from database
 	var longestStreak *int
 	err = h.db.QueryRow(ctx,
 		`SELECT longest_streak FROM public.user_streaks WHERE user_id = $1`,
@@ -259,11 +355,28 @@ func (h *Handler) calculateStreak(ctx context.Context, userID string, currentDat
 		streak.LongestStreak = streak.CurrentStreak
 	}
 
-	// Always update both current and longest streak in DB
+	// Calculate flame levels based on current streak
+	currentFlameLevel := 1
+	for i := range streak.FlameLevels {
+		if streak.CurrentStreak >= streak.FlameLevels[i].DaysRequired {
+			streak.FlameLevels[i].IsUnlocked = true
+			currentFlameLevel = streak.FlameLevels[i].Level
+		}
+	}
+	streak.CurrentFlameLevel = currentFlameLevel
+
+	// Mark current flame level
+	for i := range streak.FlameLevels {
+		if streak.FlameLevels[i].Level == currentFlameLevel {
+			streak.FlameLevels[i].IsCurrent = true
+		}
+	}
+
+	// Update streaks in DB
 	h.updateStreaks(ctx, userID, streak.CurrentStreak, streak.LongestStreak)
 
-	fmt.Printf("✅ Streak calculated for user %s: current=%d, longest=%d, start=%v, todayValid=%v\n",
-		userID, streak.CurrentStreak, streak.LongestStreak, streak.StreakStart, todayValidation.IsValid)
+	fmt.Printf("✅ Streak calculated for user %s: current=%d, longest=%d, flameLevel=%d, todayValid=%v\n",
+		userID, streak.CurrentStreak, streak.LongestStreak, currentFlameLevel, todayValidation.IsValid)
 
 	return streak
 }
@@ -282,7 +395,7 @@ func (h *Handler) updateStreaks(ctx context.Context, userID string, currentStrea
 }
 
 // RecalculateStreak - POST /streak/recalculate
-// Forces a recalculation of the streak (useful after data changes)
+// Forces a recalculation of the streak
 func (h *Handler) RecalculateStreak(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 	ctx := r.Context()
