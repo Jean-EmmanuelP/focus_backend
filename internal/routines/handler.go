@@ -207,22 +207,52 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 
 // --- COMPLETIONS ---
 
+type CompleteRoutineRequest struct {
+	Date string `json:"date"` // Optional: YYYY-MM-DD format, defaults to today
+}
+
 func (h *Handler) Complete(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 	routineID := chi.URLParam(r, "id")
 
-	// Insert new completion for now()
-	// ON CONFLICT DO NOTHING ensures idempotency if the user spams the button
+	// Parse optional date from request body
+	var req CompleteRoutineRequest
+	if r.Body != nil && r.ContentLength > 0 {
+		json.NewDecoder(r.Body).Decode(&req) // Ignore errors, date is optional
+	}
+
+	// Also check query param for backwards compatibility
+	if req.Date == "" {
+		req.Date = r.URL.Query().Get("date")
+	}
+
+	// Default to today if no date provided
+	completionDate := req.Date
+	if completionDate == "" {
+		completionDate = time.Now().Format("2006-01-02")
+	}
+
+	fmt.Printf("📅 Completing routine %s for user %s on date %s\n", routineID, userID, completionDate)
+
+	// Insert with completion_date for unique per-day constraint
 	query := `
-		INSERT INTO public.routine_completions (user_id, routine_id, completed_at)
-		VALUES ($1, $2, now())
-		ON CONFLICT DO NOTHING
+		INSERT INTO public.routine_completions (user_id, routine_id, completed_at, completion_date)
+		VALUES ($1, $2, ($3::date + interval '12 hours'), $3::date)
+		ON CONFLICT (user_id, routine_id, completion_date) DO NOTHING
 	`
 
-	_, err := h.db.Exec(r.Context(), query, userID, routineID)
+	result, err := h.db.Exec(r.Context(), query, userID, routineID, completionDate)
 	if err != nil {
+		fmt.Printf("❌ Failed to complete routine: %v\n", err)
 		http.Error(w, "Failed to complete routine", http.StatusInternalServerError)
 		return
+	}
+
+	rowsAffected := result.RowsAffected()
+	if rowsAffected == 0 {
+		fmt.Printf("⚠️ Routine completion already exists for %s (no rows inserted)\n", completionDate)
+	} else {
+		fmt.Printf("✅ Routine completion created successfully for %s\n", completionDate)
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -287,28 +317,60 @@ func (h *Handler) BatchComplete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+type UncompleteRoutineRequest struct {
+	Date string `json:"date"` // Optional: YYYY-MM-DD format, defaults to today
+}
+
 func (h *Handler) Uncomplete(w http.ResponseWriter, r *http.Request) {
-	// This is tricky without a specific completion ID. 
-	// For "Undo", we usually delete the *latest* completion for today.
-	// For MVP, we can delete the most recent completion for this routine.
 	userID := r.Context().Value(auth.UserContextKey).(string)
 	routineID := chi.URLParam(r, "id")
 
-	query := `
-		DELETE FROM public.routine_completions
-		WHERE id = (
-			SELECT id FROM public.routine_completions
-			WHERE user_id = $1 AND routine_id = $2
-			ORDER BY completed_at DESC
-			LIMIT 1
-		)
-	`
+	// Parse optional date from request body
+	var req UncompleteRoutineRequest
+	if r.Body != nil && r.ContentLength > 0 {
+		json.NewDecoder(r.Body).Decode(&req) // Ignore errors, date is optional
+	}
 
-	_, err := h.db.Exec(r.Context(), query, userID, routineID)
+	// Also check query param for backwards compatibility
+	if req.Date == "" {
+		req.Date = r.URL.Query().Get("date")
+	}
+
+	var query string
+	var args []interface{}
+
+	if req.Date != "" {
+		// Delete completion for specific date
+		query = `
+			DELETE FROM public.routine_completions
+			WHERE user_id = $1 AND routine_id = $2 AND completion_date = $3::date
+		`
+		args = []interface{}{userID, routineID, req.Date}
+		fmt.Printf("📅 Uncompleting routine %s for user %s on date %s\n", routineID, userID, req.Date)
+	} else {
+		// Delete the most recent completion (backwards compatibility)
+		query = `
+			DELETE FROM public.routine_completions
+			WHERE id = (
+				SELECT id FROM public.routine_completions
+				WHERE user_id = $1 AND routine_id = $2
+				ORDER BY completed_at DESC
+				LIMIT 1
+			)
+		`
+		args = []interface{}{userID, routineID}
+		fmt.Printf("📅 Uncompleting most recent completion for routine %s, user %s\n", routineID, userID)
+	}
+
+	result, err := h.db.Exec(r.Context(), query, args...)
 	if err != nil {
+		fmt.Printf("❌ Failed to uncomplete routine: %v\n", err)
 		http.Error(w, "Failed to undo completion", http.StatusInternalServerError)
 		return
 	}
+
+	rowsAffected := result.RowsAffected()
+	fmt.Printf("✅ Uncomplete: %d rows deleted\n", rowsAffected)
 
 	w.WriteHeader(http.StatusOK)
 }
