@@ -202,7 +202,7 @@ func (h *Handler) ListMembers(w http.ResponseWriter, r *http.Request) {
 			COALESCE(fs.total_minutes, 0)::int as total_minutes_7d,
 			(COALESCE(fs.total_minutes, 0) + (COALESCE(rc.completed_count, 0) * 10))::int as activity_score,
 			cm.created_at
-		FROM crew_members cm
+		FROM friendships cm
 		JOIN users u ON cm.member_id = u.id
 		LEFT JOIN (
 			SELECT user_id, COUNT(*)::int as total_sessions, COALESCE(SUM(duration_minutes), 0)::int as total_minutes
@@ -260,7 +260,7 @@ func (h *Handler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 
 	// Remove bidirectional membership
 	query := `
-		DELETE FROM crew_members
+		DELETE FROM friendships
 		WHERE (user_id = $1 AND member_id = $2)
 		   OR (user_id = $2 AND member_id = $1)
 	`
@@ -273,7 +273,7 @@ func (h *Handler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 
 	// Update related requests to allow re-requesting
 	updateQuery := `
-		UPDATE crew_requests SET status = 'rejected'
+		UPDATE friend_requests SET status = 'rejected'
 		WHERE (from_user_id = $1 AND to_user_id = $2)
 		   OR (from_user_id = $2 AND to_user_id = $1)
 	`
@@ -297,7 +297,7 @@ func (h *Handler) ListReceivedRequests(w http.ResponseWriter, r *http.Request) {
 			cr.id, cr.from_user_id, cr.to_user_id, cr.status, cr.message,
 			cr.created_at, cr.updated_at,
 			u.id, u.pseudo, u.first_name, u.last_name, u.email, u.avatar_url
-		FROM crew_requests cr
+		FROM friend_requests cr
 		JOIN users u ON cr.from_user_id = u.id
 		WHERE cr.to_user_id = $1 AND cr.status = 'pending'
 		ORDER BY cr.created_at DESC
@@ -343,7 +343,7 @@ func (h *Handler) ListSentRequests(w http.ResponseWriter, r *http.Request) {
 			cr.id, cr.from_user_id, cr.to_user_id, cr.status, cr.message,
 			cr.created_at, cr.updated_at,
 			u.id, u.pseudo, u.first_name, u.last_name, u.email, u.avatar_url
-		FROM crew_requests cr
+		FROM friend_requests cr
 		JOIN users u ON cr.to_user_id = u.id
 		WHERE cr.from_user_id = $1
 		ORDER BY cr.created_at DESC
@@ -401,7 +401,7 @@ func (h *Handler) SendRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if already crew members
-	checkQuery := `SELECT EXISTS(SELECT 1 FROM crew_members WHERE user_id = $1 AND member_id = $2)`
+	checkQuery := `SELECT EXISTS(SELECT 1 FROM friendships WHERE user_id = $1 AND member_id = $2)`
 	var alreadyMember bool
 	if err := h.db.QueryRow(r.Context(), checkQuery, userID, req.ToUserID).Scan(&alreadyMember); err != nil {
 		fmt.Println("Check crew member error:", err)
@@ -414,7 +414,7 @@ func (h *Handler) SendRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := `
-		INSERT INTO crew_requests (from_user_id, to_user_id, message, status)
+		INSERT INTO friend_requests (from_user_id, to_user_id, message, status)
 		VALUES ($1, $2, $3, 'pending')
 		RETURNING id, from_user_id, to_user_id, status, message, created_at, updated_at
 	`
@@ -458,7 +458,7 @@ func (h *Handler) AcceptRequest(w http.ResponseWriter, r *http.Request) {
 	// Get the request and verify it's pending and belongs to current user
 	var fromUserID, toUserID string
 	checkQuery := `
-		SELECT from_user_id, to_user_id FROM crew_requests
+		SELECT from_user_id, to_user_id FROM friend_requests
 		WHERE id = $1 AND status = 'pending' AND to_user_id = $2
 	`
 	err = tx.QueryRow(r.Context(), checkQuery, requestID, userID).Scan(&fromUserID, &toUserID)
@@ -472,7 +472,7 @@ func (h *Handler) AcceptRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update request status
-	updateQuery := `UPDATE crew_requests SET status = 'accepted', updated_at = NOW() WHERE id = $1`
+	updateQuery := `UPDATE friend_requests SET status = 'accepted', updated_at = NOW() WHERE id = $1`
 	_, err = tx.Exec(r.Context(), updateQuery, requestID)
 	if err != nil {
 		http.Error(w, "Failed to update request", http.StatusInternalServerError)
@@ -481,7 +481,7 @@ func (h *Handler) AcceptRequest(w http.ResponseWriter, r *http.Request) {
 
 	// Create bidirectional crew membership
 	insertQuery := `
-		INSERT INTO crew_members (user_id, member_id) VALUES ($1, $2)
+		INSERT INTO friendships (user_id, member_id) VALUES ($1, $2)
 		ON CONFLICT (user_id, member_id) DO NOTHING
 	`
 	if _, err := tx.Exec(r.Context(), insertQuery, toUserID, fromUserID); err != nil {
@@ -513,7 +513,7 @@ func (h *Handler) RejectRequest(w http.ResponseWriter, r *http.Request) {
 	requestID := chi.URLParam(r, "id")
 
 	query := `
-		UPDATE crew_requests SET status = 'rejected', updated_at = NOW()
+		UPDATE friend_requests SET status = 'rejected', updated_at = NOW()
 		WHERE id = $1 AND status = 'pending' AND to_user_id = $2
 	`
 	result, err := h.db.Exec(r.Context(), query, requestID, userID)
@@ -568,9 +568,9 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 			COALESCE(fs.total_sessions, 0)::int as total_sessions_7d,
 			COALESCE(fs.total_minutes, 0)::int as total_minutes_7d,
 			(COALESCE(fs.total_minutes, 0) + (COALESCE(rc.completed_count, 0) * 10))::int as activity_score,
-			EXISTS(SELECT 1 FROM crew_members cm WHERE cm.user_id = $1 AND cm.member_id = u.id) as is_crew_member,
+			EXISTS(SELECT 1 FROM friendships cm WHERE cm.user_id = $1 AND cm.member_id = u.id) as is_crew_member,
 			EXISTS(
-				SELECT 1 FROM crew_requests cr
+				SELECT 1 FROM friend_requests cr
 				WHERE cr.status = 'pending'
 				AND ((cr.from_user_id = $1 AND cr.to_user_id = u.id) OR (cr.from_user_id = u.id AND cr.to_user_id = $1))
 			) as has_pending_request,
@@ -580,7 +580,7 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 					WHEN cr.to_user_id = $1 THEN 'incoming'
 					ELSE NULL
 				END
-				FROM crew_requests cr
+				FROM friend_requests cr
 				WHERE cr.status = 'pending'
 				AND ((cr.from_user_id = $1 AND cr.to_user_id = u.id) OR (cr.from_user_id = u.id AND cr.to_user_id = $1))
 				LIMIT 1
@@ -692,9 +692,9 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 			us.activity_score,
 			COALESCE((SELECT current_streak FROM user_streaks WHERE user_id = us.id), 0)::int as current_streak,
 			us.last_active,
-			EXISTS(SELECT 1 FROM crew_members cm WHERE cm.user_id = $1 AND cm.member_id = us.id) as is_crew_member,
+			EXISTS(SELECT 1 FROM friendships cm WHERE cm.user_id = $1 AND cm.member_id = us.id) as is_crew_member,
 			EXISTS(
-				SELECT 1 FROM crew_requests cr
+				SELECT 1 FROM friend_requests cr
 				WHERE cr.status = 'pending'
 				AND ((cr.from_user_id = $1 AND cr.to_user_id = us.id) OR (cr.from_user_id = us.id AND cr.to_user_id = $1))
 			) as has_pending_request,
@@ -704,7 +704,7 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 					WHEN cr.to_user_id = $1 THEN 'incoming'
 					ELSE NULL
 				END
-				FROM crew_requests cr
+				FROM friend_requests cr
 				WHERE cr.status = 'pending'
 				AND ((cr.from_user_id = $1 AND cr.to_user_id = us.id) OR (cr.from_user_id = us.id AND cr.to_user_id = $1))
 				LIMIT 1
@@ -771,7 +771,7 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 
 	// Check if current user is in their crew
 	var isCrewMember bool
-	crewQuery := `SELECT EXISTS(SELECT 1 FROM crew_members WHERE user_id = $1 AND member_id = $2)`
+	crewQuery := `SELECT EXISTS(SELECT 1 FROM friendships WHERE user_id = $1 AND member_id = $2)`
 	if err := h.db.QueryRow(r.Context(), crewQuery, userID, memberID).Scan(&isCrewMember); err != nil {
 		fmt.Println("Check crew member error:", err)
 		// Assume not a crew member on error
@@ -1206,9 +1206,9 @@ func (h *Handler) GetSuggestedUsers(w http.ResponseWriter, r *http.Request) {
 				GROUP BY r.user_id
 			) rc ON u.id = rc.user_id
 			WHERE u.id != $1
-			AND NOT EXISTS (SELECT 1 FROM crew_members cm WHERE cm.user_id = $1 AND cm.member_id = u.id)
+			AND NOT EXISTS (SELECT 1 FROM friendships cm WHERE cm.user_id = $1 AND cm.member_id = u.id)
 			AND NOT EXISTS (
-				SELECT 1 FROM crew_requests cr
+				SELECT 1 FROM friend_requests cr
 				WHERE cr.status = 'pending'
 				AND ((cr.from_user_id = $1 AND cr.to_user_id = u.id) OR (cr.from_user_id = u.id AND cr.to_user_id = $1))
 			)
@@ -1249,4 +1249,453 @@ func (h *Handler) GetSuggestedUsers(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(results)
+}
+
+// ============================================================================
+// CREW GROUPS - Custom friend grouping (Crews)
+// ============================================================================
+
+// Group models
+type CrewGroup struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Description *string           `json:"description"`
+	Icon        string            `json:"icon"`
+	Color       string            `json:"color"`
+	MemberCount int               `json:"member_count"`
+	Members     []CrewGroupMember `json:"members,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+}
+
+type CrewGroupMember struct {
+	ID        string  `json:"id"`
+	MemberID  string  `json:"member_id"`
+	Pseudo    *string `json:"pseudo"`
+	FirstName *string `json:"first_name"`
+	LastName  *string `json:"last_name"`
+	Email     *string `json:"email"`
+	AvatarUrl *string `json:"avatar_url"`
+	AddedAt   string  `json:"added_at"`
+}
+
+type CreateGroupDTO struct {
+	Name        string   `json:"name"`
+	Description *string  `json:"description"`
+	Icon        *string  `json:"icon"`
+	Color       *string  `json:"color"`
+	MemberIDs   []string `json:"member_ids"`
+}
+
+type UpdateGroupDTO struct {
+	Name        *string `json:"name"`
+	Description *string `json:"description"`
+	Icon        *string `json:"icon"`
+	Color       *string `json:"color"`
+}
+
+type AddGroupMembersDTO struct {
+	MemberIDs []string `json:"member_ids"`
+}
+
+// ============================================================================
+// GET /crew/groups - List user's groups (crews)
+// ============================================================================
+
+func (h *Handler) ListGroups(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+
+	query := `
+		SELECT
+			g.id,
+			g.name,
+			g.description,
+			g.icon,
+			g.color,
+			g.created_at,
+			g.updated_at,
+			COALESCE(mc.member_count, 0) as member_count
+		FROM friend_groups g
+		LEFT JOIN (
+			SELECT group_id, COUNT(*)::int as member_count
+			FROM friend_group_members
+			GROUP BY group_id
+		) mc ON g.id = mc.group_id
+		WHERE g.user_id = $1
+		ORDER BY g.name
+	`
+
+	rows, err := h.db.Query(r.Context(), query, userID)
+	if err != nil {
+		http.Error(w, "Failed to list groups", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	groups := []CrewGroup{}
+	for rows.Next() {
+		var g CrewGroup
+		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.Icon, &g.Color, &g.CreatedAt, &g.UpdatedAt, &g.MemberCount); err != nil {
+			continue
+		}
+		groups = append(groups, g)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(groups)
+}
+
+// ============================================================================
+// POST /crew/groups - Create a new group (crew)
+// ============================================================================
+
+func (h *Handler) CreateGroup(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+
+	var dto CreateGroupDTO
+	if err := json.NewDecoder(r.Body).Decode(&dto); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if dto.Name == "" {
+		http.Error(w, "Group name is required", http.StatusBadRequest)
+		return
+	}
+
+	// Default values
+	icon := "👥"
+	color := "#6366F1"
+	if dto.Icon != nil && *dto.Icon != "" {
+		icon = *dto.Icon
+	}
+	if dto.Color != nil && *dto.Color != "" {
+		color = *dto.Color
+	}
+
+	// Start transaction
+	ctx := r.Context()
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	// Create group
+	var group CrewGroup
+	err = tx.QueryRow(ctx, `
+		INSERT INTO friend_groups (user_id, name, description, icon, color)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, name, description, icon, color, created_at, updated_at
+	`, userID, dto.Name, dto.Description, icon, color).Scan(
+		&group.ID, &group.Name, &group.Description, &group.Icon, &group.Color, &group.CreatedAt, &group.UpdatedAt,
+	)
+	if err != nil {
+		http.Error(w, "Failed to create group", http.StatusInternalServerError)
+		return
+	}
+
+	// Add members if provided (must be existing friends/friendships)
+	if len(dto.MemberIDs) > 0 {
+		for _, memberID := range dto.MemberIDs {
+			// Verify member is in user's friends (friendships)
+			var exists bool
+			err = tx.QueryRow(ctx, `
+				SELECT EXISTS(SELECT 1 FROM friendships WHERE user_id = $1 AND member_id = $2)
+			`, userID, memberID).Scan(&exists)
+			if err != nil || !exists {
+				continue // Skip non-friends
+			}
+
+			_, err = tx.Exec(ctx, `
+				INSERT INTO friend_group_members (group_id, member_id)
+				VALUES ($1, $2)
+				ON CONFLICT (group_id, member_id) DO NOTHING
+			`, group.ID, memberID)
+			if err != nil {
+				continue
+			}
+		}
+	}
+
+	// Commit transaction
+	if err = tx.Commit(ctx); err != nil {
+		http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
+		return
+	}
+
+	// Get member count
+	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM friend_group_members WHERE group_id = $1`, group.ID).Scan(&group.MemberCount)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(group)
+}
+
+// ============================================================================
+// GET /crew/groups/{id} - Get group with members
+// ============================================================================
+
+func (h *Handler) GetGroup(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	groupID := chi.URLParam(r, "id")
+
+	// Get group (verify ownership)
+	var group CrewGroup
+	err := h.db.QueryRow(r.Context(), `
+		SELECT id, name, description, icon, color, created_at, updated_at
+		FROM friend_groups
+		WHERE id = $1 AND user_id = $2
+	`, groupID, userID).Scan(&group.ID, &group.Name, &group.Description, &group.Icon, &group.Color, &group.CreatedAt, &group.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			http.Error(w, "Group not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Failed to get group", http.StatusInternalServerError)
+		return
+	}
+
+	// Get members with user info
+	rows, err := h.db.Query(r.Context(), `
+		SELECT
+			gm.id,
+			gm.member_id,
+			u.pseudo,
+			u.first_name,
+			u.last_name,
+			u.email,
+			u.avatar_url,
+			gm.added_at
+		FROM friend_group_members gm
+		JOIN users u ON gm.member_id = u.id
+		WHERE gm.group_id = $1
+		ORDER BY u.pseudo, u.first_name
+	`, groupID)
+	if err != nil {
+		http.Error(w, "Failed to get members", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	members := []CrewGroupMember{}
+	for rows.Next() {
+		var m CrewGroupMember
+		var addedAt time.Time
+		if err := rows.Scan(&m.ID, &m.MemberID, &m.Pseudo, &m.FirstName, &m.LastName, &m.Email, &m.AvatarUrl, &addedAt); err != nil {
+			continue
+		}
+		m.AddedAt = addedAt.Format(time.RFC3339)
+		members = append(members, m)
+	}
+
+	group.Members = members
+	group.MemberCount = len(members)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(group)
+}
+
+// ============================================================================
+// PATCH /crew/groups/{id} - Update group
+// ============================================================================
+
+func (h *Handler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	groupID := chi.URLParam(r, "id")
+
+	var dto UpdateGroupDTO
+	if err := json.NewDecoder(r.Body).Decode(&dto); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Build dynamic update query
+	updates := []string{}
+	args := []interface{}{}
+	argIndex := 1
+
+	if dto.Name != nil {
+		updates = append(updates, fmt.Sprintf("name = $%d", argIndex))
+		args = append(args, *dto.Name)
+		argIndex++
+	}
+	if dto.Description != nil {
+		updates = append(updates, fmt.Sprintf("description = $%d", argIndex))
+		args = append(args, *dto.Description)
+		argIndex++
+	}
+	if dto.Icon != nil {
+		updates = append(updates, fmt.Sprintf("icon = $%d", argIndex))
+		args = append(args, *dto.Icon)
+		argIndex++
+	}
+	if dto.Color != nil {
+		updates = append(updates, fmt.Sprintf("color = $%d", argIndex))
+		args = append(args, *dto.Color)
+		argIndex++
+	}
+
+	if len(updates) == 0 {
+		http.Error(w, "No fields to update", http.StatusBadRequest)
+		return
+	}
+
+	updates = append(updates, "updated_at = NOW()")
+
+	query := fmt.Sprintf(`
+		UPDATE friend_groups
+		SET %s
+		WHERE id = $%d AND user_id = $%d
+		RETURNING id, name, description, icon, color, created_at, updated_at
+	`, joinStrings(updates, ", "), argIndex, argIndex+1)
+
+	args = append(args, groupID, userID)
+
+	var group CrewGroup
+	err := h.db.QueryRow(r.Context(), query, args...).Scan(
+		&group.ID, &group.Name, &group.Description, &group.Icon, &group.Color, &group.CreatedAt, &group.UpdatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			http.Error(w, "Group not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Failed to update group", http.StatusInternalServerError)
+		return
+	}
+
+	// Get member count
+	h.db.QueryRow(r.Context(), `SELECT COUNT(*) FROM friend_group_members WHERE group_id = $1`, groupID).Scan(&group.MemberCount)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(group)
+}
+
+// ============================================================================
+// DELETE /crew/groups/{id} - Delete group
+// ============================================================================
+
+func (h *Handler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	groupID := chi.URLParam(r, "id")
+
+	result, err := h.db.Exec(r.Context(), `
+		DELETE FROM friend_groups
+		WHERE id = $1 AND user_id = $2
+	`, groupID, userID)
+	if err != nil {
+		http.Error(w, "Failed to delete group", http.StatusInternalServerError)
+		return
+	}
+
+	if result.RowsAffected() == 0 {
+		http.Error(w, "Group not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ============================================================================
+// POST /crew/groups/{id}/members - Add members to group
+// ============================================================================
+
+func (h *Handler) AddGroupMembers(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	groupID := chi.URLParam(r, "id")
+
+	var dto AddGroupMembersDTO
+	if err := json.NewDecoder(r.Body).Decode(&dto); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if len(dto.MemberIDs) == 0 {
+		http.Error(w, "No members specified", http.StatusBadRequest)
+		return
+	}
+
+	// Verify group ownership
+	var exists bool
+	err := h.db.QueryRow(r.Context(), `
+		SELECT EXISTS(SELECT 1 FROM friend_groups WHERE id = $1 AND user_id = $2)
+	`, groupID, userID).Scan(&exists)
+	if err != nil || !exists {
+		http.Error(w, "Group not found", http.StatusNotFound)
+		return
+	}
+
+	added := 0
+	for _, memberID := range dto.MemberIDs {
+		// Verify member is in user's friends (friendships)
+		var isFriend bool
+		err = h.db.QueryRow(r.Context(), `
+			SELECT EXISTS(SELECT 1 FROM friendships WHERE user_id = $1 AND member_id = $2)
+		`, userID, memberID).Scan(&isFriend)
+		if err != nil || !isFriend {
+			continue
+		}
+
+		_, err = h.db.Exec(r.Context(), `
+			INSERT INTO friend_group_members (group_id, member_id)
+			VALUES ($1, $2)
+			ON CONFLICT (group_id, member_id) DO NOTHING
+		`, groupID, memberID)
+		if err == nil {
+			added++
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]int{"added": added})
+}
+
+// ============================================================================
+// DELETE /crew/groups/{id}/members/{memberId} - Remove member from group
+// ============================================================================
+
+func (h *Handler) RemoveGroupMember(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	groupID := chi.URLParam(r, "id")
+	memberID := chi.URLParam(r, "memberId")
+
+	// Verify group ownership
+	var exists bool
+	err := h.db.QueryRow(r.Context(), `
+		SELECT EXISTS(SELECT 1 FROM friend_groups WHERE id = $1 AND user_id = $2)
+	`, groupID, userID).Scan(&exists)
+	if err != nil || !exists {
+		http.Error(w, "Group not found", http.StatusNotFound)
+		return
+	}
+
+	result, err := h.db.Exec(r.Context(), `
+		DELETE FROM friend_group_members
+		WHERE group_id = $1 AND member_id = $2
+	`, groupID, memberID)
+	if err != nil {
+		http.Error(w, "Failed to remove member", http.StatusInternalServerError)
+		return
+	}
+
+	if result.RowsAffected() == 0 {
+		http.Error(w, "Member not in group", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// Helper function for joining strings
+func joinStrings(strs []string, sep string) string {
+	if len(strs) == 0 {
+		return ""
+	}
+	result := strs[0]
+	for i := 1; i < len(strs); i++ {
+		result += sep + strs[i]
+	}
+	return result
 }

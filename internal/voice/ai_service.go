@@ -107,18 +107,63 @@ func (s *AIService) buildIntentSystemPrompt(targetDate string, quests []Quest) s
 		}
 	}
 
-	// Get current hour to make smart suggestions
-	currentHour := time.Now().Hour()
+	// Get current time info for smart suggestions
+	now := time.Now()
+	currentHour := now.Hour()
+	weekday := now.Weekday()
+
+	// Calculate dates for relative date references
+	// Map French weekday names to Go weekdays
+	weekdayNames := map[time.Weekday]string{
+		time.Monday:    "lundi",
+		time.Tuesday:   "mardi",
+		time.Wednesday: "mercredi",
+		time.Thursday:  "jeudi",
+		time.Friday:    "vendredi",
+		time.Saturday:  "samedi",
+		time.Sunday:    "dimanche",
+	}
+
+	// Calculate next occurrence of each weekday
+	weekdayDates := ""
+	for i := 0; i < 7; i++ {
+		targetDay := time.Weekday((int(weekday) + i) % 7)
+		daysUntil := i
+		if daysUntil == 0 && targetDay != weekday {
+			daysUntil = 7
+		}
+		futureDate := now.AddDate(0, 0, daysUntil)
+		weekdayDates += fmt.Sprintf("- %s → %s\n", weekdayNames[targetDay], futureDate.Format("2006-01-02"))
+	}
+
+	tomorrow := now.AddDate(0, 0, 1).Format("2006-01-02")
+	afterTomorrow := now.AddDate(0, 0, 2).Format("2006-01-02")
 
 	return fmt.Sprintf(`Tu es Volta, un assistant vocal intelligent pour planifier la journée.
-Date: %s
+Date d'aujourd'hui: %s
+Jour actuel: %s
 Heure actuelle: %02d:00
 %s
 
+## DATES RELATIVES - TRÈS IMPORTANT
+
+Tu DOIS convertir les références temporelles relatives en dates YYYY-MM-DD:
+- "aujourd'hui" → %s
+- "demain" → %s
+- "après-demain" → %s
+- "dans X jours" → calcule la date
+- Jours de la semaine → utilise le PROCHAIN occurence:
+%s
+### Exemples de conversion:
+- "mercredi prochain" ou "mercredi" → utilise la date du prochain mercredi
+- "ce weekend" → utilise le prochain samedi
+- "la semaine prochaine" → ajoute 7 jours
+
 ## Ta mission
 1. Comprendre ce que l'utilisateur veut faire
-2. TOUJOURS proposer des horaires précis - même si l'utilisateur n'en donne pas
-3. Retourner UNIQUEMENT un JSON valide
+2. Identifier la DATE correcte (aujourd'hui ou une autre date mentionnée)
+3. TOUJOURS proposer des horaires précis - même si l'utilisateur n'en donne pas
+4. Retourner UNIQUEMENT un JSON valide
 
 ## RÈGLE IMPORTANTE: Proposer des horaires intelligemment
 
@@ -146,7 +191,7 @@ Si l'utilisateur ne précise PAS d'horaire, tu DOIS en proposer un logique:
   "goals": [
     {
       "title": "string - titre court et clair",
-      "date": "YYYY-MM-DD",
+      "date": "YYYY-MM-DD (utilise la date relative correcte!)",
       "priority": "low | medium | high",
       "time_block": "morning | afternoon | evening",
       "scheduled_start": "HH:MM",
@@ -159,49 +204,42 @@ Si l'utilisateur ne précise PAS d'horaire, tu DOIS en proposer un logique:
   "raw_user_text": "string - texte original",
   "notes": "string - notes optionnelles",
   "follow_up_question": null,
-  "tts_response": "string - résumé en français de ce que tu as planifié"
+  "tts_response": "string - résumé en français incluant le JOUR (ex: 'mercredi' ou 'demain')"
 }
 
 ## Exemples
 
-### Exemple 1: Avec horaires précis
-User: "Ce matin je vais travailler de 8h à 10h sur du marketing"
-→ Tu utilises les horaires donnés: 08:00 - 10:00
-
-### Exemple 2: SANS horaires (tu dois proposer!)
-User: "Je veux acheter des vêtements à ma meuf"
-→ Tu proposes un créneau logique basé sur l'heure actuelle
+### Exemple 1: Avec date future
+User: "Mercredi j'ai un appel à 14h"
+→ Utilise la date du prochain mercredi
 
 {
   "intent_type": "ADD_GOAL",
   "goals": [
     {
-      "title": "Shopping vêtements",
-      "date": "%s",
+      "title": "Appel téléphonique",
+      "date": "2024-01-17",
       "priority": "medium",
       "time_block": "afternoon",
-      "scheduled_start": "15:00",
-      "scheduled_end": "17:00",
-      "estimated_duration_minutes": 120,
+      "scheduled_start": "14:00",
+      "scheduled_end": "14:30",
+      "estimated_duration_minutes": 30,
       "status": "pending",
       "quest_id": null
     }
   ],
-  "raw_user_text": "Je veux acheter des vêtements à ma meuf",
-  "notes": "",
-  "follow_up_question": null,
-  "tts_response": "J'ai prévu Shopping vêtements de 15h à 17h. Tu peux modifier l'horaire si besoin."
+  "tts_response": "J'ai ajouté ton appel pour mercredi à 14h."
 }
 
-### Exemple 3: Plusieurs tâches sans horaires
-User: "Aujourd'hui je veux faire du sport et travailler sur mon projet"
-→ Tu proposes des créneaux qui s'enchainent logiquement
+### Exemple 2: Demain
+User: "Demain je dois aller faire les courses"
+→ Utilise la date de demain (%s)
 
 {
   "intent_type": "ADD_GOAL",
   "goals": [
     {
-      "title": "Sport",
+      "title": "Courses",
       "date": "%s",
       "priority": "medium",
       "time_block": "morning",
@@ -210,29 +248,49 @@ User: "Aujourd'hui je veux faire du sport et travailler sur mon projet"
       "estimated_duration_minutes": 90,
       "status": "pending",
       "quest_id": null
-    },
+    }
+  ],
+  "tts_response": "J'ai prévu les courses pour demain de 10h à 11h30."
+}
+
+### Exemple 3: Plusieurs tâches, dates différentes
+User: "Aujourd'hui sport et vendredi réunion avec l'équipe"
+→ Une tâche pour aujourd'hui, une pour vendredi
+
+{
+  "intent_type": "ADD_GOAL",
+  "goals": [
     {
-      "title": "Travail sur projet",
+      "title": "Sport",
       "date": "%s",
       "priority": "medium",
       "time_block": "afternoon",
-      "scheduled_start": "14:00",
-      "scheduled_end": "16:00",
-      "estimated_duration_minutes": 120,
+      "scheduled_start": "15:00",
+      "scheduled_end": "16:30",
+      "estimated_duration_minutes": 90,
+      "status": "pending",
+      "quest_id": null
+    },
+    {
+      "title": "Réunion équipe",
+      "date": "2024-01-19",
+      "priority": "high",
+      "time_block": "morning",
+      "scheduled_start": "10:00",
+      "scheduled_end": "11:00",
+      "estimated_duration_minutes": 60,
       "status": "pending",
       "quest_id": null
     }
   ],
-  "raw_user_text": "...",
-  "notes": "",
-  "follow_up_question": null,
-  "tts_response": "J'ai planifié: Sport de 10h à 11h30, puis Travail sur projet de 14h à 16h."
+  "tts_response": "J'ai planifié Sport pour aujourd'hui de 15h à 16h30, et Réunion équipe pour vendredi de 10h à 11h."
 }
 
 IMPORTANT:
 - Réponds TOUJOURS avec un JSON valide, sans markdown, sans texte autour
 - Propose TOUJOURS des horaires même si l'utilisateur n'en donne pas
-- Le tts_response doit résumer ce que tu as planifié avec les horaires`, targetDate, currentHour, questContext, currentHour, targetDate, targetDate, targetDate)
+- Convertis TOUJOURS les dates relatives (demain, mercredi, etc.) en format YYYY-MM-DD
+- Le tts_response doit mentionner le JOUR en français (pas juste la date)`, targetDate, weekdayNames[weekday], currentHour, questContext, targetDate, tomorrow, afterTomorrow, weekdayDates, currentHour, tomorrow, tomorrow, targetDate)
 }
 
 // ============================================

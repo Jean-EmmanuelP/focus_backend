@@ -140,20 +140,35 @@ func main() {
 		r.Get("/streak/day", streaksHandler.GetDayValidation)
 		r.Post("/streak/recalculate", streaksHandler.RecalculateStreak)
 
-		// Crew / Social
-		r.Get("/crew/members", crewHandler.ListMembers)
-		r.Delete("/crew/members/{id}", crewHandler.RemoveMember)
-		r.Get("/crew/requests/received", crewHandler.ListReceivedRequests)
-		r.Get("/crew/requests/sent", crewHandler.ListSentRequests)
-		r.Post("/crew/requests", crewHandler.SendRequest)
-		r.Post("/crew/requests/{id}/accept", crewHandler.AcceptRequest)
-		r.Post("/crew/requests/{id}/reject", crewHandler.RejectRequest)
-		r.Get("/crew/search", crewHandler.SearchUsers)
-		r.Get("/crew/leaderboard", crewHandler.GetLeaderboard)
-		r.Get("/crew/members/{id}/day", crewHandler.GetMemberDay)
+		// Friends / Social
+		r.Get("/friends", crewHandler.ListMembers)
+		r.Delete("/friends/{id}", crewHandler.RemoveMember)
+		r.Get("/friends/{id}/day", crewHandler.GetMemberDay)
+		r.Get("/friends/leaderboard", crewHandler.GetLeaderboard)
+
+		// Friend Requests
+		r.Get("/friend-requests/received", crewHandler.ListReceivedRequests)
+		r.Get("/friend-requests/sent", crewHandler.ListSentRequests)
+		r.Post("/friend-requests", crewHandler.SendRequest)
+		r.Post("/friend-requests/{id}/accept", crewHandler.AcceptRequest)
+		r.Post("/friend-requests/{id}/reject", crewHandler.RejectRequest)
+
+		// User Search & Suggestions
+		r.Get("/users/search", crewHandler.SearchUsers)
+		r.Get("/users/suggestions", crewHandler.GetSuggestedUsers)
+
+		// Profile
 		r.Patch("/me/visibility", crewHandler.UpdateVisibility)
 		r.Get("/me/stats", crewHandler.GetMyStats)
-		r.Get("/crew/suggestions", crewHandler.GetSuggestedUsers)
+
+		// Friend Groups (custom friend grouping)
+		r.Get("/friend-groups", crewHandler.ListGroups)
+		r.Post("/friend-groups", crewHandler.CreateGroup)
+		r.Get("/friend-groups/{id}", crewHandler.GetGroup)
+		r.Patch("/friend-groups/{id}", crewHandler.UpdateGroup)
+		r.Delete("/friend-groups/{id}", crewHandler.DeleteGroup)
+		r.Post("/friend-groups/{id}/members", crewHandler.AddGroupMembers)
+		r.Delete("/friend-groups/{id}/members/{memberId}", crewHandler.RemoveGroupMember)
 
 		// Routine Likes
 		r.Post("/completions/{id}/like", crewHandler.LikeCompletion)

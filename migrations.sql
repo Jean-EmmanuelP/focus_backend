@@ -233,3 +233,57 @@ create table public.day_plans (
 alter table public.day_plans enable row level security;
 create policy "Users can manage own day_plans" on public.day_plans
   using (auth.uid() = user_id);
+
+
+-- ==========================================
+-- 9. FRIEND GROUPS (Custom friend groups)
+-- ==========================================
+create table public.friend_groups (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid not null references auth.users on delete cascade,
+
+  name text not null,            -- "Gym Buddies", "Work Team"
+  description text,              -- Optional description
+  icon text default '👥',        -- Emoji icon
+  color text default '#6366F1',  -- Hex color for display
+
+  created_at timestamp with time zone default now(),
+  updated_at timestamp with time zone default now()
+);
+
+-- RLS: Only own groups
+alter table public.friend_groups enable row level security;
+create policy "Users can manage own friend_groups" on public.friend_groups
+  using (auth.uid() = user_id);
+
+-- Indexes
+create index idx_friend_groups_user on public.friend_groups(user_id);
+
+
+-- ==========================================
+-- 10. FRIEND GROUP MEMBERS (Members in groups)
+-- ==========================================
+create table public.friend_group_members (
+  id uuid default gen_random_uuid() primary key,
+  group_id uuid not null references public.friend_groups on delete cascade,
+  member_id uuid not null references auth.users on delete cascade,
+
+  added_at timestamp with time zone default now(),
+
+  -- Prevent duplicate members in same group
+  unique (group_id, member_id)
+);
+
+-- RLS: Users can manage members of their own groups
+alter table public.friend_group_members enable row level security;
+create policy "Users can manage own friend_group_members" on public.friend_group_members
+  using (
+    exists (
+      select 1 from public.friend_groups g
+      where g.id = group_id and g.user_id = auth.uid()
+    )
+  );
+
+-- Indexes
+create index idx_friend_group_members_group on public.friend_group_members(group_id);
+create index idx_friend_group_members_member on public.friend_group_members(member_id);
