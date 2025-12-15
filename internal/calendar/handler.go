@@ -14,11 +14,23 @@ import (
 )
 
 type Handler struct {
-	db *pgxpool.Pool
+	db           *pgxpool.Pool
+	googleCalSvc GoogleCalendarSyncer
+}
+
+// GoogleCalendarSyncer interface for Google Calendar sync
+type GoogleCalendarSyncer interface {
+	SyncTaskToGoogleCalendar(ctx context.Context, userID, taskID, title string, description *string, date string, startTime, endTime *string) error
+	DeleteGoogleCalendarEvent(ctx context.Context, userID, googleEventID string) error
 }
 
 func NewHandler(db *pgxpool.Pool) *Handler {
 	return &Handler{db: db}
+}
+
+// SetGoogleCalendarSyncer sets the Google Calendar syncer
+func (h *Handler) SetGoogleCalendarSyncer(syncer GoogleCalendarSyncer) {
+	h.googleCalSvc = syncer
 }
 
 // ==========================================
@@ -500,6 +512,17 @@ func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		task.ScheduledEnd = &s
 	}
 
+	// Sync to Google Calendar (async, don't block response)
+	if h.googleCalSvc != nil {
+		go func() {
+			ctx := context.Background()
+			err := h.googleCalSvc.SyncTaskToGoogleCalendar(ctx, userID, task.ID, task.Title, task.Description, task.Date, task.ScheduledStart, task.ScheduledEnd)
+			if err != nil {
+				log.Printf("[CreateTask] Google Calendar sync failed: %v", err)
+			}
+		}()
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(task)
@@ -566,6 +589,17 @@ func (h *Handler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 	if scheduledEnd != nil {
 		s := scheduledEnd.Format("15:04")
 		task.ScheduledEnd = &s
+	}
+
+	// Sync to Google Calendar (async, don't block response)
+	if h.googleCalSvc != nil {
+		go func() {
+			ctx := context.Background()
+			err := h.googleCalSvc.SyncTaskToGoogleCalendar(ctx, userID, task.ID, task.Title, task.Description, task.Date, task.ScheduledStart, task.ScheduledEnd)
+			if err != nil {
+				log.Printf("[UpdateTask] Google Calendar sync failed: %v", err)
+			}
+		}()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -657,6 +691,10 @@ func (h *Handler) DeleteTask(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 	taskID := chi.URLParam(r, "id")
 
+	// Get Google event ID before deleting
+	var googleEventID *string
+	h.db.QueryRow(r.Context(), `SELECT google_event_id FROM tasks WHERE id = $1 AND user_id = $2`, taskID, userID).Scan(&googleEventID)
+
 	result, err := h.db.Exec(r.Context(), `
 		DELETE FROM tasks WHERE id = $1 AND user_id = $2
 	`, taskID, userID)
@@ -664,6 +702,17 @@ func (h *Handler) DeleteTask(w http.ResponseWriter, r *http.Request) {
 	if err != nil || result.RowsAffected() == 0 {
 		http.Error(w, "Task not found", http.StatusNotFound)
 		return
+	}
+
+	// Delete from Google Calendar (async)
+	if h.googleCalSvc != nil && googleEventID != nil && *googleEventID != "" {
+		go func() {
+			ctx := context.Background()
+			err := h.googleCalSvc.DeleteGoogleCalendarEvent(ctx, userID, *googleEventID)
+			if err != nil {
+				log.Printf("[DeleteTask] Google Calendar delete failed: %v", err)
+			}
+		}()
 	}
 
 	w.WriteHeader(http.StatusNoContent)

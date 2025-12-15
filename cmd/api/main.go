@@ -16,6 +16,7 @@ import (
 	"firelevel-backend/internal/crew"
 	"firelevel-backend/internal/database"
 	"firelevel-backend/internal/focus"
+	"firelevel-backend/internal/googlecalendar"
 	"firelevel-backend/internal/intentions"
 	"firelevel-backend/internal/onboarding"
 	"firelevel-backend/internal/quests"
@@ -64,6 +65,10 @@ func main() {
 	calendarHandler := calendar.NewHandler(pool)
 	calendarAIHandler := calendar.NewAIHandler(pool)
 	voiceHandler := voice.NewHandler(pool)
+	googleCalendarHandler := googlecalendar.NewHandler(pool)
+
+	// Connect Google Calendar sync to Calendar handler
+	calendarHandler.SetGoogleCalendarSyncer(googleCalendarHandler)
 
 	// 4. Setup Router
 	r := chi.NewRouter()
@@ -162,13 +167,22 @@ func main() {
 		r.Get("/me/stats", crewHandler.GetMyStats)
 
 		// Friend Groups (custom friend grouping)
-		r.Get("/friend-groups", crewHandler.ListGroups)
+		r.Get("/friend-groups", crewHandler.ListGroupsShared) // Shows groups where user is owner OR member
 		r.Post("/friend-groups", crewHandler.CreateGroup)
 		r.Get("/friend-groups/{id}", crewHandler.GetGroup)
 		r.Patch("/friend-groups/{id}", crewHandler.UpdateGroup)
 		r.Delete("/friend-groups/{id}", crewHandler.DeleteGroup)
 		r.Post("/friend-groups/{id}/members", crewHandler.AddGroupMembers)
 		r.Delete("/friend-groups/{id}/members/{memberId}", crewHandler.RemoveGroupMember)
+		r.Post("/friend-groups/{id}/invite", crewHandler.InviteToGroup)
+		r.Post("/friend-groups/{id}/leave", crewHandler.LeaveGroup)
+
+		// Group Invitations
+		r.Get("/group-invitations/received", crewHandler.ListReceivedGroupInvitations)
+		r.Get("/group-invitations/sent", crewHandler.ListSentGroupInvitations)
+		r.Post("/group-invitations/{id}/accept", crewHandler.AcceptGroupInvitation)
+		r.Post("/group-invitations/{id}/reject", crewHandler.RejectGroupInvitation)
+		r.Delete("/group-invitations/{id}", crewHandler.CancelGroupInvitation)
 
 		// Routine Likes
 		r.Post("/completions/{id}/like", crewHandler.LikeCompletion)
@@ -220,6 +234,13 @@ func main() {
 		r.Post("/daily-goals/{id}/complete", voiceHandler.CompleteDailyGoal)
 		r.Get("/daily-goals/{id}/subtasks", voiceHandler.GetGoalSubtasks)
 		r.Post("/calendar/schedule-goals", voiceHandler.ScheduleGoalsToCalendar)
+
+		// Google Calendar Integration
+		r.Get("/google-calendar/config", googleCalendarHandler.GetConfig)
+		r.Post("/google-calendar/tokens", googleCalendarHandler.SaveTokens)
+		r.Patch("/google-calendar/config", googleCalendarHandler.UpdateConfig)
+		r.Delete("/google-calendar/config", googleCalendarHandler.Disconnect)
+		r.Post("/google-calendar/sync", googleCalendarHandler.SyncNow)
 	})
 
 	port := os.Getenv("PORT")
