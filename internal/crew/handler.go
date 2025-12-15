@@ -1699,3 +1699,437 @@ func joinStrings(strs []string, sep string) string {
 	}
 	return result
 }
+
+// ============================================================================
+// GROUP INVITATIONS - Invite members to join shared groups
+// ============================================================================
+
+type GroupInvitation struct {
+	ID         string         `json:"id"`
+	GroupID    string         `json:"group_id"`
+	FromUserID string         `json:"from_user_id"`
+	ToUserID   string         `json:"to_user_id"`
+	Status     string         `json:"status"`
+	Message    *string        `json:"message"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  *time.Time     `json:"updated_at"`
+	FromUser   *CrewUserInfo  `json:"from_user,omitempty"`
+	ToUser     *CrewUserInfo  `json:"to_user,omitempty"`
+	Group      *GroupInfoBrief `json:"group,omitempty"`
+}
+
+type GroupInfoBrief struct {
+	ID    string  `json:"id"`
+	Name  string  `json:"name"`
+	Icon  string  `json:"icon"`
+	Color string  `json:"color"`
+}
+
+type InviteToGroupDTO struct {
+	UserIDs []string `json:"user_ids"`
+	Message *string  `json:"message"`
+}
+
+// ============================================================================
+// GET /group-invitations/received - List received group invitations
+// ============================================================================
+
+func (h *Handler) ListReceivedGroupInvitations(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+
+	query := `
+		SELECT
+			gi.id, gi.group_id, gi.from_user_id, gi.to_user_id, gi.status, gi.message,
+			gi.created_at, gi.updated_at,
+			u.id, u.pseudo, u.first_name, u.last_name, u.email, u.avatar_url,
+			g.id, g.name, g.icon, g.color
+		FROM group_invitations gi
+		JOIN users u ON gi.from_user_id = u.id
+		JOIN friend_groups g ON gi.group_id = g.id
+		WHERE gi.to_user_id = $1 AND gi.status = 'pending'
+		ORDER BY gi.created_at DESC
+	`
+
+	rows, err := h.db.Query(r.Context(), query, userID)
+	if err != nil {
+		fmt.Println("List received group invitations error:", err)
+		http.Error(w, "Failed to list invitations", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	invitations := []GroupInvitation{}
+	for rows.Next() {
+		var inv GroupInvitation
+		var fromUser CrewUserInfo
+		var group GroupInfoBrief
+		if err := rows.Scan(
+			&inv.ID, &inv.GroupID, &inv.FromUserID, &inv.ToUserID, &inv.Status, &inv.Message,
+			&inv.CreatedAt, &inv.UpdatedAt,
+			&fromUser.ID, &fromUser.Pseudo, &fromUser.FirstName, &fromUser.LastName, &fromUser.Email, &fromUser.AvatarUrl,
+			&group.ID, &group.Name, &group.Icon, &group.Color,
+		); err != nil {
+			fmt.Println("Scan group invitation error:", err)
+			continue
+		}
+		inv.FromUser = &fromUser
+		inv.Group = &group
+		invitations = append(invitations, inv)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(invitations)
+}
+
+// ============================================================================
+// GET /group-invitations/sent - List sent group invitations
+// ============================================================================
+
+func (h *Handler) ListSentGroupInvitations(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+
+	query := `
+		SELECT
+			gi.id, gi.group_id, gi.from_user_id, gi.to_user_id, gi.status, gi.message,
+			gi.created_at, gi.updated_at,
+			u.id, u.pseudo, u.first_name, u.last_name, u.email, u.avatar_url,
+			g.id, g.name, g.icon, g.color
+		FROM group_invitations gi
+		JOIN users u ON gi.to_user_id = u.id
+		JOIN friend_groups g ON gi.group_id = g.id
+		WHERE gi.from_user_id = $1
+		ORDER BY gi.created_at DESC
+	`
+
+	rows, err := h.db.Query(r.Context(), query, userID)
+	if err != nil {
+		fmt.Println("List sent group invitations error:", err)
+		http.Error(w, "Failed to list invitations", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	invitations := []GroupInvitation{}
+	for rows.Next() {
+		var inv GroupInvitation
+		var toUser CrewUserInfo
+		var group GroupInfoBrief
+		if err := rows.Scan(
+			&inv.ID, &inv.GroupID, &inv.FromUserID, &inv.ToUserID, &inv.Status, &inv.Message,
+			&inv.CreatedAt, &inv.UpdatedAt,
+			&toUser.ID, &toUser.Pseudo, &toUser.FirstName, &toUser.LastName, &toUser.Email, &toUser.AvatarUrl,
+			&group.ID, &group.Name, &group.Icon, &group.Color,
+		); err != nil {
+			fmt.Println("Scan group invitation error:", err)
+			continue
+		}
+		inv.ToUser = &toUser
+		inv.Group = &group
+		invitations = append(invitations, inv)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(invitations)
+}
+
+// ============================================================================
+// POST /friend-groups/{id}/invite - Invite users to group
+// ============================================================================
+
+func (h *Handler) InviteToGroup(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	groupID := chi.URLParam(r, "id")
+
+	var dto InviteToGroupDTO
+	if err := json.NewDecoder(r.Body).Decode(&dto); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if len(dto.UserIDs) == 0 {
+		http.Error(w, "No users specified", http.StatusBadRequest)
+		return
+	}
+
+	// Verify user is a member of the group (either owner or member)
+	var isMember bool
+	err := h.db.QueryRow(r.Context(), `
+		SELECT EXISTS(
+			SELECT 1 FROM friend_groups WHERE id = $1 AND user_id = $2
+			UNION
+			SELECT 1 FROM friend_group_members WHERE group_id = $1 AND member_id = $2
+		)
+	`, groupID, userID).Scan(&isMember)
+	if err != nil || !isMember {
+		http.Error(w, "Not a member of this group", http.StatusForbidden)
+		return
+	}
+
+	invited := 0
+	for _, inviteeID := range dto.UserIDs {
+		// Can't invite yourself
+		if inviteeID == userID {
+			continue
+		}
+
+		// Check if already a member
+		var alreadyMember bool
+		h.db.QueryRow(r.Context(), `
+			SELECT EXISTS(
+				SELECT 1 FROM friend_groups WHERE id = $1 AND user_id = $2
+				UNION
+				SELECT 1 FROM friend_group_members WHERE group_id = $1 AND member_id = $2
+			)
+		`, groupID, inviteeID).Scan(&alreadyMember)
+		if alreadyMember {
+			continue
+		}
+
+		// Must be a friend to invite
+		var isFriend bool
+		h.db.QueryRow(r.Context(), `
+			SELECT EXISTS(SELECT 1 FROM friendships WHERE user_id = $1 AND member_id = $2)
+		`, userID, inviteeID).Scan(&isFriend)
+		if !isFriend {
+			continue
+		}
+
+		// Create invitation (ON CONFLICT handles duplicate pending invites)
+		_, err = h.db.Exec(r.Context(), `
+			INSERT INTO group_invitations (group_id, from_user_id, to_user_id, message, status)
+			VALUES ($1, $2, $3, $4, 'pending')
+			ON CONFLICT (group_id, to_user_id, status)
+			WHERE status = 'pending'
+			DO NOTHING
+		`, groupID, userID, inviteeID, dto.Message)
+		if err != nil {
+			fmt.Printf("Error inviting user %s to group %s: %v\n", inviteeID, groupID, err)
+			continue
+		}
+		invited++
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]int{"invited": invited})
+}
+
+// ============================================================================
+// POST /group-invitations/{id}/accept - Accept a group invitation
+// ============================================================================
+
+func (h *Handler) AcceptGroupInvitation(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	invitationID := chi.URLParam(r, "id")
+
+	ctx := r.Context()
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	// Get invitation and verify it's for this user
+	var groupID string
+	err = tx.QueryRow(ctx, `
+		SELECT group_id FROM group_invitations
+		WHERE id = $1 AND to_user_id = $2 AND status = 'pending'
+	`, invitationID, userID).Scan(&groupID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			http.Error(w, "Invitation not found or already processed", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Failed to get invitation", http.StatusInternalServerError)
+		return
+	}
+
+	// Update invitation status
+	_, err = tx.Exec(ctx, `
+		UPDATE group_invitations SET status = 'accepted', updated_at = NOW()
+		WHERE id = $1
+	`, invitationID)
+	if err != nil {
+		http.Error(w, "Failed to update invitation", http.StatusInternalServerError)
+		return
+	}
+
+	// Add user to group members
+	_, err = tx.Exec(ctx, `
+		INSERT INTO friend_group_members (group_id, member_id)
+		VALUES ($1, $2)
+		ON CONFLICT (group_id, member_id) DO NOTHING
+	`, groupID, userID)
+	if err != nil {
+		http.Error(w, "Failed to add to group", http.StatusInternalServerError)
+		return
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":  true,
+		"group_id": groupID,
+	})
+}
+
+// ============================================================================
+// POST /group-invitations/{id}/reject - Reject a group invitation
+// ============================================================================
+
+func (h *Handler) RejectGroupInvitation(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	invitationID := chi.URLParam(r, "id")
+
+	result, err := h.db.Exec(r.Context(), `
+		UPDATE group_invitations SET status = 'rejected', updated_at = NOW()
+		WHERE id = $1 AND to_user_id = $2 AND status = 'pending'
+	`, invitationID, userID)
+	if err != nil {
+		http.Error(w, "Failed to reject invitation", http.StatusInternalServerError)
+		return
+	}
+
+	if result.RowsAffected() == 0 {
+		http.Error(w, "Invitation not found or already processed", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+// ============================================================================
+// DELETE /group-invitations/{id} - Cancel a sent invitation
+// ============================================================================
+
+func (h *Handler) CancelGroupInvitation(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	invitationID := chi.URLParam(r, "id")
+
+	result, err := h.db.Exec(r.Context(), `
+		DELETE FROM group_invitations
+		WHERE id = $1 AND from_user_id = $2 AND status = 'pending'
+	`, invitationID, userID)
+	if err != nil {
+		http.Error(w, "Failed to cancel invitation", http.StatusInternalServerError)
+		return
+	}
+
+	if result.RowsAffected() == 0 {
+		http.Error(w, "Invitation not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ============================================================================
+// POST /friend-groups/{id}/leave - Leave a group (for non-owners)
+// ============================================================================
+
+func (h *Handler) LeaveGroup(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	groupID := chi.URLParam(r, "id")
+
+	// Check if user is the owner
+	var isOwner bool
+	err := h.db.QueryRow(r.Context(), `
+		SELECT EXISTS(SELECT 1 FROM friend_groups WHERE id = $1 AND user_id = $2)
+	`, groupID, userID).Scan(&isOwner)
+	if err != nil {
+		http.Error(w, "Failed to check ownership", http.StatusInternalServerError)
+		return
+	}
+
+	if isOwner {
+		http.Error(w, "Owner cannot leave group. Transfer ownership or delete the group.", http.StatusForbidden)
+		return
+	}
+
+	// Remove from group members
+	result, err := h.db.Exec(r.Context(), `
+		DELETE FROM friend_group_members
+		WHERE group_id = $1 AND member_id = $2
+	`, groupID, userID)
+	if err != nil {
+		http.Error(w, "Failed to leave group", http.StatusInternalServerError)
+		return
+	}
+
+	if result.RowsAffected() == 0 {
+		http.Error(w, "Not a member of this group", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ============================================================================
+// Updated GET /crew/groups - List groups where user is owner OR member
+// ============================================================================
+
+func (h *Handler) ListGroupsShared(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+
+	query := `
+		SELECT
+			g.id,
+			g.name,
+			g.description,
+			g.icon,
+			g.color,
+			g.user_id as owner_id,
+			g.created_at,
+			g.updated_at,
+			COALESCE(mc.member_count, 0) + 1 as member_count,
+			(g.user_id = $1) as is_owner
+		FROM friend_groups g
+		LEFT JOIN (
+			SELECT group_id, COUNT(*)::int as member_count
+			FROM friend_group_members
+			GROUP BY group_id
+		) mc ON g.id = mc.group_id
+		WHERE g.user_id = $1
+		   OR EXISTS (SELECT 1 FROM friend_group_members gm WHERE gm.group_id = g.id AND gm.member_id = $1)
+		ORDER BY g.name
+	`
+
+	rows, err := h.db.Query(r.Context(), query, userID)
+	if err != nil {
+		fmt.Println("List groups error:", err)
+		http.Error(w, "Failed to list groups", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type SharedGroup struct {
+		ID          string    `json:"id"`
+		Name        string    `json:"name"`
+		Description *string   `json:"description"`
+		Icon        string    `json:"icon"`
+		Color       string    `json:"color"`
+		OwnerID     string    `json:"owner_id"`
+		MemberCount int       `json:"member_count"`
+		IsOwner     bool      `json:"is_owner"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
+	}
+
+	groups := []SharedGroup{}
+	for rows.Next() {
+		var g SharedGroup
+		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.Icon, &g.Color, &g.OwnerID, &g.CreatedAt, &g.UpdatedAt, &g.MemberCount, &g.IsOwner); err != nil {
+			fmt.Println("Scan group error:", err)
+			continue
+		}
+		groups = append(groups, g)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(groups)
+}
