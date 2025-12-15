@@ -583,6 +583,93 @@ func (h *Handler) createOrUpdateGoogleEvent(ctx context.Context, config GoogleCa
 	return eventResponse.ID, nil
 }
 
+// createWeeklyRoutineEvents creates 7 individual events for a routine (one per day for the next 7 days)
+func (h *Handler) createWeeklyRoutineEvents(ctx context.Context, config GoogleCalendarConfig, title string, startTime, endTime *string) (string, error) {
+	var firstEventID string
+
+	// Create events for the next 7 days
+	for i := 0; i < 7; i++ {
+		date := time.Now().AddDate(0, 0, i).Format("2006-01-02")
+
+		// Build event times
+		startDateTime := date + "T09:00:00"
+		endDateTime := date + "T09:30:00"
+
+		if startTime != nil && *startTime != "" {
+			startDateTime = date + "T" + *startTime + ":00"
+		}
+		if endTime != nil && *endTime != "" {
+			endDateTime = date + "T" + *endTime + ":00"
+		}
+
+		// Build event payload
+		eventPayload := map[string]interface{}{
+			"summary": title,
+			"start": map[string]string{
+				"dateTime": startDateTime,
+				"timeZone": "Europe/Paris",
+			},
+			"end": map[string]string{
+				"dateTime": endDateTime,
+				"timeZone": "Europe/Paris",
+			},
+		}
+
+		// Marshal payload to JSON
+		payloadBytes, err := json.Marshal(eventPayload)
+		if err != nil {
+			log.Printf("[GoogleCalendar] Failed to marshal event payload for day %d: %v", i, err)
+			continue
+		}
+
+		// Create new event
+		url := fmt.Sprintf("https://www.googleapis.com/calendar/v3/calendars/%s/events", config.CalendarID)
+
+		log.Printf("[GoogleCalendar] POST %s - title: %s, date: %s (day %d/7)", url, title, date, i+1)
+
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payloadBytes))
+		if err != nil {
+			log.Printf("[GoogleCalendar] Failed to create request for day %d: %v", i, err)
+			continue
+		}
+
+		req.Header.Set("Authorization", "Bearer "+config.AccessToken)
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Printf("[GoogleCalendar] Failed to call API for day %d: %v", i, err)
+			continue
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode == 401 {
+			return "", fmt.Errorf("token expired, please reconnect to Google Calendar")
+		}
+
+		if resp.StatusCode != 200 {
+			log.Printf("[GoogleCalendar] Error response for day %d: %s", i, string(body))
+			continue
+		}
+
+		// Parse response to get event ID
+		var eventResponse struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(body, &eventResponse); err == nil && firstEventID == "" {
+			firstEventID = eventResponse.ID
+		}
+
+		log.Printf("[GoogleCalendar] Created event for %s: %s", date, eventResponse.ID)
+	}
+
+	log.Printf("[GoogleCalendar] Created 7 daily events for routine, first event ID: %s", firstEventID)
+	return firstEventID, nil
+}
+
 // SyncTaskToGoogleCalendar syncs a task to Google Calendar (called from calendar handler)
 // This is an exported function that can be called when a task is created/updated
 func (h *Handler) SyncTaskToGoogleCalendar(ctx context.Context, userID, taskID, title string, description *string, date string, startTime, endTime *string) error {
@@ -670,8 +757,8 @@ func (h *Handler) DeleteGoogleCalendarEvent(ctx context.Context, userID, googleE
 	return nil
 }
 
-// SyncRoutineToGoogleCalendar syncs a routine to Google Calendar as a recurring event
-// Routines are synced for today's date with their scheduled time
+// SyncRoutineToGoogleCalendar syncs a routine to Google Calendar for the next 7 days
+// Creates 7 individual events (one per day) for easy viewing
 func (h *Handler) SyncRoutineToGoogleCalendar(ctx context.Context, userID, routineID, title string, scheduledTime *string) error {
 	config, err := h.getConfig(ctx, userID)
 	if err != nil {
@@ -694,36 +781,28 @@ func (h *Handler) SyncRoutineToGoogleCalendar(ctx context.Context, userID, routi
 		return nil
 	}
 
-	// Get existing google_event_id if any
-	var googleEventID *string
-	h.db.QueryRow(ctx, `SELECT google_event_id FROM routines WHERE id = $1 AND user_id = $2`, routineID, userID).Scan(&googleEventID)
-
-	// Build event times - use today's date with scheduled time, or default to 09:00
-	today := time.Now().Format("2006-01-02")
+	// Build event times - default to 09:00 if no scheduled time
 	startTime := "09:00"
 	if scheduledTime != nil && *scheduledTime != "" {
 		startTime = *scheduledTime
 	}
 
-	// End time is 30 minutes after start (routines are typically short)
-	startDateTime := today + "T" + startTime + ":00"
-
-	// Parse start time to calculate end time
+	// Parse start time to calculate end time (30 minutes duration)
 	startParsed, _ := time.Parse("15:04", startTime)
 	endParsed := startParsed.Add(30 * time.Minute)
 	endTime := endParsed.Format("15:04")
-	endDateTime := today + "T" + endTime + ":00"
 
 	// Create event with routine prefix
 	eventTitle := "🔄 " + title
 
-	eventID, err := h.createOrUpdateGoogleEvent(ctx, *config, googleEventID, eventTitle, nil, today, &startTime, &endTime)
+	// Create 7 daily events for the routine
+	eventID, err := h.createWeeklyRoutineEvents(ctx, *config, eventTitle, &startTime, &endTime)
 	if err != nil {
 		log.Printf("[SyncRoutineToGoogleCalendar] Failed to sync routine %s: %v", routineID, err)
 		return err
 	}
 
-	// Update routine with Google event ID
+	// Update routine with first Google event ID (for reference)
 	_, err = h.db.Exec(ctx, `
 		UPDATE routines SET google_event_id = $1, google_calendar_id = $2
 		WHERE id = $3 AND user_id = $4
@@ -733,7 +812,7 @@ func (h *Handler) SyncRoutineToGoogleCalendar(ctx context.Context, userID, routi
 		log.Printf("[SyncRoutineToGoogleCalendar] Failed to update routine with event ID: %v", err)
 	}
 
-	log.Printf("[SyncRoutineToGoogleCalendar] Successfully synced routine %s to Google Calendar event %s (start: %s, end: %s)", routineID, eventID, startDateTime, endDateTime)
+	log.Printf("[SyncRoutineToGoogleCalendar] Successfully synced routine %s to Google Calendar (7 days, start: %s)", routineID, startTime)
 	return nil
 }
 
