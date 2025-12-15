@@ -67,8 +67,9 @@ func main() {
 	voiceHandler := voice.NewHandler(pool)
 	googleCalendarHandler := googlecalendar.NewHandler(pool)
 
-	// Connect Google Calendar sync to Calendar handler
+	// Connect Google Calendar sync to handlers
 	calendarHandler.SetGoogleCalendarSyncer(googleCalendarHandler)
+	routinesHandler.SetGoogleCalendarSyncer(googleCalendarHandler)
 
 	// 4. Setup Router
 	r := chi.NewRouter()

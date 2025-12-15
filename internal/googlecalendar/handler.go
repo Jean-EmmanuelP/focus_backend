@@ -168,6 +168,14 @@ func (h *Handler) SaveTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Retroactive sync: sync all existing tasks and routines to Google Calendar
+	go func() {
+		ctx := context.Background()
+		tasksSynced, _ := h.SyncAllTasksToGoogleCalendar(ctx, userID)
+		routinesSynced, _ := h.SyncAllRoutinesToGoogleCalendar(ctx, userID)
+		log.Printf("[SaveTokens] Retroactive sync completed for user %s: %d tasks, %d routines", userID, tasksSynced, routinesSynced)
+	}()
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(GoogleCalendarConfigResponse{
 		IsConnected:   true,
@@ -660,4 +668,157 @@ func (h *Handler) DeleteGoogleCalendarEvent(ctx context.Context, userID, googleE
 
 	log.Printf("[GoogleCalendar] Deleted event %s", googleEventID)
 	return nil
+}
+
+// SyncRoutineToGoogleCalendar syncs a routine to Google Calendar as a recurring event
+// Routines are synced for today's date with their scheduled time
+func (h *Handler) SyncRoutineToGoogleCalendar(ctx context.Context, userID, routineID, title string, scheduledTime *string) error {
+	config, err := h.getConfig(ctx, userID)
+	if err != nil {
+		log.Printf("[SyncRoutineToGoogleCalendar] No Google config for user %s: %v", userID, err)
+		return nil
+	}
+
+	if !config.IsEnabled {
+		log.Printf("[SyncRoutineToGoogleCalendar] Google Calendar sync is disabled for user %s", userID)
+		return nil
+	}
+
+	if config.SyncDirection != "bidirectional" && config.SyncDirection != "to_google" {
+		log.Printf("[SyncRoutineToGoogleCalendar] Sync direction is %s, not syncing to Google", config.SyncDirection)
+		return nil
+	}
+
+	if time.Now().After(config.TokenExpiry) {
+		log.Printf("[SyncRoutineToGoogleCalendar] Token expired for user %s", userID)
+		return nil
+	}
+
+	// Get existing google_event_id if any
+	var googleEventID *string
+	h.db.QueryRow(ctx, `SELECT google_event_id FROM routines WHERE id = $1 AND user_id = $2`, routineID, userID).Scan(&googleEventID)
+
+	// Build event times - use today's date with scheduled time, or default to 09:00
+	today := time.Now().Format("2006-01-02")
+	startTime := "09:00"
+	if scheduledTime != nil && *scheduledTime != "" {
+		startTime = *scheduledTime
+	}
+
+	// End time is 30 minutes after start (routines are typically short)
+	startDateTime := today + "T" + startTime + ":00"
+
+	// Parse start time to calculate end time
+	startParsed, _ := time.Parse("15:04", startTime)
+	endParsed := startParsed.Add(30 * time.Minute)
+	endTime := endParsed.Format("15:04")
+	endDateTime := today + "T" + endTime + ":00"
+
+	// Create event with routine prefix
+	eventTitle := "🔄 " + title
+
+	eventID, err := h.createOrUpdateGoogleEvent(ctx, *config, googleEventID, eventTitle, nil, today, &startTime, &endTime)
+	if err != nil {
+		log.Printf("[SyncRoutineToGoogleCalendar] Failed to sync routine %s: %v", routineID, err)
+		return err
+	}
+
+	// Update routine with Google event ID
+	_, err = h.db.Exec(ctx, `
+		UPDATE routines SET google_event_id = $1, google_calendar_id = $2
+		WHERE id = $3 AND user_id = $4
+	`, eventID, config.CalendarID, routineID, userID)
+
+	if err != nil {
+		log.Printf("[SyncRoutineToGoogleCalendar] Failed to update routine with event ID: %v", err)
+	}
+
+	log.Printf("[SyncRoutineToGoogleCalendar] Successfully synced routine %s to Google Calendar event %s (start: %s, end: %s)", routineID, eventID, startDateTime, endDateTime)
+	return nil
+}
+
+// SyncAllRoutinesToGoogleCalendar syncs all routines for a user (called when enabling sync)
+func (h *Handler) SyncAllRoutinesToGoogleCalendar(ctx context.Context, userID string) (int, error) {
+	config, err := h.getConfig(ctx, userID)
+	if err != nil || !config.IsEnabled {
+		return 0, nil
+	}
+
+	if config.SyncDirection != "bidirectional" && config.SyncDirection != "to_google" {
+		return 0, nil
+	}
+
+	// Get all routines for user
+	rows, err := h.db.Query(ctx, `
+		SELECT id, title, scheduled_time, google_event_id
+		FROM routines
+		WHERE user_id = $1
+		ORDER BY created_at
+	`, userID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	synced := 0
+	for rows.Next() {
+		var id, title string
+		var scheduledTime, googleEventID *string
+		if err := rows.Scan(&id, &title, &scheduledTime, &googleEventID); err != nil {
+			continue
+		}
+
+		// Sync routine
+		if err := h.SyncRoutineToGoogleCalendar(ctx, userID, id, title, scheduledTime); err != nil {
+			log.Printf("[SyncAllRoutines] Failed to sync routine %s: %v", id, err)
+			continue
+		}
+		synced++
+	}
+
+	log.Printf("[SyncAllRoutines] Synced %d routines for user %s", synced, userID)
+	return synced, nil
+}
+
+// SyncAllTasksToGoogleCalendar syncs all future tasks for a user (called when enabling sync)
+func (h *Handler) SyncAllTasksToGoogleCalendar(ctx context.Context, userID string) (int, error) {
+	config, err := h.getConfig(ctx, userID)
+	if err != nil || !config.IsEnabled {
+		return 0, nil
+	}
+
+	if config.SyncDirection != "bidirectional" && config.SyncDirection != "to_google" {
+		return 0, nil
+	}
+
+	// Get all future tasks for user
+	rows, err := h.db.Query(ctx, `
+		SELECT id, title, description, date, scheduled_start::text, scheduled_end::text, google_event_id
+		FROM tasks
+		WHERE user_id = $1 AND date >= CURRENT_DATE
+		ORDER BY date, scheduled_start
+	`, userID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	synced := 0
+	for rows.Next() {
+		var id, title, date string
+		var description, scheduledStart, scheduledEnd, googleEventID *string
+		if err := rows.Scan(&id, &title, &description, &date, &scheduledStart, &scheduledEnd, &googleEventID); err != nil {
+			continue
+		}
+
+		// Sync task
+		if err := h.SyncTaskToGoogleCalendar(ctx, userID, id, title, description, date, scheduledStart, scheduledEnd); err != nil {
+			log.Printf("[SyncAllTasks] Failed to sync task %s: %v", id, err)
+			continue
+		}
+		synced++
+	}
+
+	log.Printf("[SyncAllTasks] Synced %d tasks for user %s", synced, userID)
+	return synced, nil
 }

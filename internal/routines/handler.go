@@ -1,8 +1,10 @@
 package routines
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -41,11 +43,23 @@ type UpdateRoutineRequest struct {
 }
 
 type Handler struct {
-	db *pgxpool.Pool
+	db           *pgxpool.Pool
+	googleCalSvc GoogleCalendarSyncer
+}
+
+// GoogleCalendarSyncer interface for Google Calendar sync
+type GoogleCalendarSyncer interface {
+	SyncRoutineToGoogleCalendar(ctx context.Context, userID, routineID, title string, scheduledTime *string) error
+	DeleteGoogleCalendarEvent(ctx context.Context, userID, googleEventID string) error
 }
 
 func NewHandler(db *pgxpool.Pool) *Handler {
 	return &Handler{db: db}
+}
+
+// SetGoogleCalendarSyncer sets the Google Calendar syncer
+func (h *Handler) SetGoogleCalendarSyncer(syncer GoogleCalendarSyncer) {
+	h.googleCalSvc = syncer
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +137,16 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		rt.Icon = *icon
 	}
 
+	// Sync to Google Calendar (async)
+	if h.googleCalSvc != nil {
+		go func() {
+			ctx := context.Background()
+			if err := h.googleCalSvc.SyncRoutineToGoogleCalendar(ctx, userID, rt.ID, rt.Title, rt.ScheduledTime); err != nil {
+				log.Printf("[CreateRoutine] Google Calendar sync failed: %v", err)
+			}
+		}()
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(rt)
 }
@@ -188,6 +212,16 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		rt.Icon = *icon
 	}
 
+	// Sync to Google Calendar (async)
+	if h.googleCalSvc != nil {
+		go func() {
+			ctx := context.Background()
+			if err := h.googleCalSvc.SyncRoutineToGoogleCalendar(ctx, userID, rt.ID, rt.Title, rt.ScheduledTime); err != nil {
+				log.Printf("[UpdateRoutine] Google Calendar sync failed: %v", err)
+			}
+		}()
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(rt)
 }
@@ -196,10 +230,24 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 	routineID := chi.URLParam(r, "id")
 
+	// Get Google event ID before deleting
+	var googleEventID *string
+	h.db.QueryRow(r.Context(), `SELECT google_event_id FROM routines WHERE id = $1 AND user_id = $2`, routineID, userID).Scan(&googleEventID)
+
 	query := `DELETE FROM public.routines WHERE user_id = $1 AND id = $2`
 	if _, err := h.db.Exec(r.Context(), query, userID, routineID); err != nil {
 		http.Error(w, "Failed to delete routine", http.StatusInternalServerError)
 		return
+	}
+
+	// Delete from Google Calendar (async)
+	if h.googleCalSvc != nil && googleEventID != nil && *googleEventID != "" {
+		go func() {
+			ctx := context.Background()
+			if err := h.googleCalSvc.DeleteGoogleCalendarEvent(ctx, userID, *googleEventID); err != nil {
+				log.Printf("[DeleteRoutine] Google Calendar delete failed: %v", err)
+			}
+		}()
 	}
 
 	w.WriteHeader(http.StatusOK)
