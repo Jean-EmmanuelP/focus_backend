@@ -53,10 +53,10 @@ type GoogleCalendarConfigResponse struct {
 }
 
 type SaveTokensRequest struct {
-	AccessToken  string `json:"accessToken"`
-	RefreshToken string `json:"refreshToken"`
-	ExpiresIn    int    `json:"expiresIn"` // seconds until expiry
-	GoogleEmail  string `json:"googleEmail"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"` // seconds until expiry
+	GoogleEmail  string `json:"google_email"`
 }
 
 type UpdateConfigRequest struct {
