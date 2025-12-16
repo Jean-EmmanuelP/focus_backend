@@ -641,7 +641,7 @@ func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, con
 				}
 			}
 
-			// Update routine title
+			// Update routine title in our DB
 			result, err := h.db.Exec(ctx, `
 				UPDATE routines SET title = $1
 				WHERE id = $2 AND user_id = $3 AND title != $1
@@ -651,6 +651,54 @@ func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, con
 			} else if result.RowsAffected() > 0 {
 				imported++
 				log.Printf("[ImportFromGoogle] Updated routine from Google: %s", cleanTitle)
+
+				// Also update ALL other Google Calendar events for this routine
+				// So they all have the same title
+				go func(rID, uID, title string) {
+					ctx := context.Background()
+					newTitle := "🔄 " + title
+
+					// Get all events for this routine
+					rows, err := h.db.Query(ctx, `
+						SELECT google_event_id, google_calendar_id FROM routine_google_events
+						WHERE routine_id = $1 AND user_id = $2
+					`, rID, uID)
+					if err != nil {
+						log.Printf("[ImportFromGoogle] Failed to get routine events: %v", err)
+						return
+					}
+					defer rows.Close()
+
+					for rows.Next() {
+						var eventID, calendarID string
+						if err := rows.Scan(&eventID, &calendarID); err != nil {
+							continue
+						}
+
+						// Update event in Google Calendar
+						payload := map[string]interface{}{"summary": newTitle}
+						payloadBytes, _ := json.Marshal(payload)
+
+						url := fmt.Sprintf("https://www.googleapis.com/calendar/v3/calendars/%s/events/%s", calendarID, eventID)
+						req, err := http.NewRequestWithContext(ctx, "PATCH", url, bytes.NewReader(payloadBytes))
+						if err != nil {
+							continue
+						}
+						req.Header.Set("Authorization", "Bearer "+config.AccessToken)
+						req.Header.Set("Content-Type", "application/json")
+
+						client := &http.Client{Timeout: 10 * time.Second}
+						resp, err := client.Do(req)
+						if err != nil {
+							continue
+						}
+						resp.Body.Close()
+
+						if resp.StatusCode == 200 {
+							log.Printf("[ImportFromGoogle] Updated Google event %s with new title: %s", eventID, newTitle)
+						}
+					}
+				}(routineID, userID, cleanTitle)
 			}
 			continue
 		}
