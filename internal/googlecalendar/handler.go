@@ -629,19 +629,19 @@ func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, con
 		`, userID, event.ID).Scan(&routineID, &routineEventDate)
 
 		if errRoutine == nil {
-			// This is a routine event - update the routine title if changed
+			// This IS a routine event - always skip creating a task for it
+			log.Printf("[ImportFromGoogle] Event %s is a routine event (routine_id=%s), checking for title change", event.ID, routineID)
+
 			// Remove the 🔄 prefix if present to get clean title
 			cleanTitle := event.Summary
-			if len(cleanTitle) > 2 && cleanTitle[:4] == "🔄 " {
-				cleanTitle = cleanTitle[5:] // Remove "🔄 " prefix (emoji + space)
-			} else if len(cleanTitle) > 0 && cleanTitle[0] == 0xF0 {
-				// Handle raw emoji bytes
-				if idx := strings.Index(cleanTitle, " "); idx > 0 {
-					cleanTitle = cleanTitle[idx+1:]
-				}
+			if strings.HasPrefix(cleanTitle, "🔄 ") {
+				cleanTitle = strings.TrimPrefix(cleanTitle, "🔄 ")
+			} else if strings.HasPrefix(cleanTitle, "🔄") {
+				cleanTitle = strings.TrimPrefix(cleanTitle, "🔄")
+				cleanTitle = strings.TrimSpace(cleanTitle)
 			}
 
-			// Update routine title in our DB
+			// Update routine title in our DB only if it changed
 			result, err := h.db.Exec(ctx, `
 				UPDATE routines SET title = $1
 				WHERE id = $2 AND user_id = $3 AND title != $1
@@ -650,15 +650,13 @@ func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, con
 				errors = append(errors, fmt.Sprintf("Failed to update routine %s: %v", cleanTitle, err))
 			} else if result.RowsAffected() > 0 {
 				imported++
-				log.Printf("[ImportFromGoogle] Updated routine from Google: %s", cleanTitle)
+				log.Printf("[ImportFromGoogle] Updated routine title from Google: %s", cleanTitle)
 
 				// Also update ALL other Google Calendar events for this routine
-				// So they all have the same title
-				go func(rID, uID, title string) {
+				go func(rID, uID, title string, cfg GoogleCalendarConfig) {
 					ctx := context.Background()
 					newTitle := "🔄 " + title
 
-					// Get all events for this routine
 					rows, err := h.db.Query(ctx, `
 						SELECT google_event_id, google_calendar_id FROM routine_google_events
 						WHERE routine_id = $1 AND user_id = $2
@@ -675,7 +673,6 @@ func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, con
 							continue
 						}
 
-						// Update event in Google Calendar
 						payload := map[string]interface{}{"summary": newTitle}
 						payloadBytes, _ := json.Marshal(payload)
 
@@ -684,7 +681,7 @@ func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, con
 						if err != nil {
 							continue
 						}
-						req.Header.Set("Authorization", "Bearer "+config.AccessToken)
+						req.Header.Set("Authorization", "Bearer "+cfg.AccessToken)
 						req.Header.Set("Content-Type", "application/json")
 
 						client := &http.Client{Timeout: 10 * time.Second}
@@ -698,8 +695,11 @@ func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, con
 							log.Printf("[ImportFromGoogle] Updated Google event %s with new title: %s", eventID, newTitle)
 						}
 					}
-				}(routineID, userID, cleanTitle)
+				}(routineID, userID, cleanTitle, config)
+			} else {
+				log.Printf("[ImportFromGoogle] Routine %s title unchanged, skipping", routineID)
 			}
+			// ALWAYS continue here - never create a task for a routine event
 			continue
 		}
 
