@@ -514,15 +514,32 @@ func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, con
 }
 
 func (h *Handler) createOrUpdateGoogleEvent(ctx context.Context, config GoogleCalendarConfig, existingEventID *string, title string, description *string, date string, startTime, endTime *string) (string, error) {
-	// Build event times
+	// Build event times - Google Calendar requires RFC3339 format
 	startDateTime := date + "T09:00:00"
 	endDateTime := date + "T10:00:00"
 
 	if startTime != nil && *startTime != "" {
-		startDateTime = date + "T" + *startTime + ":00"
+		// Handle various time formats from DB (HH:MM, HH:MM:SS, HH:MM:SS.microseconds)
+		t := *startTime
+		// Remove microseconds if present (e.g., "09:30:00.000000" -> "09:30:00")
+		if idx := len(t); idx > 8 {
+			t = t[:8]
+		}
+		// Ensure we have HH:MM:SS format
+		if len(t) == 5 {
+			t = t + ":00" // HH:MM -> HH:MM:SS
+		}
+		startDateTime = date + "T" + t
 	}
 	if endTime != nil && *endTime != "" {
-		endDateTime = date + "T" + *endTime + ":00"
+		t := *endTime
+		if idx := len(t); idx > 8 {
+			t = t[:8]
+		}
+		if len(t) == 5 {
+			t = t + ":00"
+		}
+		endDateTime = date + "T" + t
 	}
 
 	// Build event payload
@@ -562,7 +579,7 @@ func (h *Handler) createOrUpdateGoogleEvent(ctx context.Context, config GoogleCa
 		method = "POST"
 	}
 
-	log.Printf("[GoogleCalendar] %s %s - title: %s, start: %s, end: %s", method, url, title, startDateTime, endDateTime)
+	log.Printf("[GoogleCalendar] %s %s - title: %s, start: %s, end: %s, payload: %s", method, url, title, startDateTime, endDateTime, string(payloadBytes))
 
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(payloadBytes))
 	if err != nil {
@@ -619,15 +636,31 @@ func (h *Handler) createOrUpdateWeeklyRoutineEvents(ctx context.Context, config 
 		eventDate := time.Now().AddDate(0, 0, i)
 		date := eventDate.Format("2006-01-02")
 
-		// Build event times
+		// Build event times - ensure proper HH:MM:SS format
 		startDateTime := date + "T09:00:00"
 		endDateTime := date + "T09:30:00"
 
 		if startTime != nil && *startTime != "" {
-			startDateTime = date + "T" + *startTime + ":00"
+			t := *startTime
+			// Remove microseconds if present
+			if len(t) > 8 {
+				t = t[:8]
+			}
+			// Ensure HH:MM:SS format
+			if len(t) == 5 {
+				t = t + ":00"
+			}
+			startDateTime = date + "T" + t
 		}
 		if endTime != nil && *endTime != "" {
-			endDateTime = date + "T" + *endTime + ":00"
+			t := *endTime
+			if len(t) > 8 {
+				t = t[:8]
+			}
+			if len(t) == 5 {
+				t = t + ":00"
+			}
+			endDateTime = date + "T" + t
 		}
 
 		// Build event payload
