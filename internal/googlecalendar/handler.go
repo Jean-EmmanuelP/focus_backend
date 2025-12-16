@@ -643,7 +643,7 @@ func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, con
 
 			// Update routine title
 			result, err := h.db.Exec(ctx, `
-				UPDATE routines SET title = $1, updated_at = now()
+				UPDATE routines SET title = $1
 				WHERE id = $2 AND user_id = $3 AND title != $1
 			`, cleanTitle, routineID, userID)
 			if err != nil {
