@@ -507,10 +507,172 @@ func (h *Handler) syncTasksToGoogle(ctx context.Context, userID string, config G
 }
 
 func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, config GoogleCalendarConfig) (int, []string) {
-	// This would call Google Calendar API to get events
-	// For now, return 0 as this requires the Google API client
-	// The iOS app handles this directly with the Google SDK
-	return 0, nil
+	var imported int
+	var errors []string
+
+	// Fetch events from Google Calendar for the next 30 days
+	now := time.Now()
+	timeMin := now.Format(time.RFC3339)
+	timeMax := now.AddDate(0, 0, 30).Format(time.RFC3339)
+
+	url := fmt.Sprintf(
+		"https://www.googleapis.com/calendar/v3/calendars/%s/events?timeMin=%s&timeMax=%s&singleEvents=true&orderBy=startTime&maxResults=100",
+		config.CalendarID, timeMin, timeMax,
+	)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return 0, []string{fmt.Sprintf("Failed to create request: %v", err)}
+	}
+
+	req.Header.Set("Authorization", "Bearer "+config.AccessToken)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, []string{fmt.Sprintf("Failed to fetch events: %v", err)}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return 0, []string{fmt.Sprintf("Google API error %d: %s", resp.StatusCode, string(body))}
+	}
+
+	// Parse response
+	var eventsResponse struct {
+		Items []struct {
+			ID          string `json:"id"`
+			Summary     string `json:"summary"`
+			Description string `json:"description"`
+			Status      string `json:"status"` // "confirmed", "tentative", "cancelled"
+			Start       struct {
+				DateTime string `json:"dateTime"`
+				Date     string `json:"date"` // All-day events
+			} `json:"start"`
+			End struct {
+				DateTime string `json:"dateTime"`
+				Date     string `json:"date"`
+			} `json:"end"`
+			Updated string `json:"updated"` // RFC3339 timestamp
+		} `json:"items"`
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(body, &eventsResponse); err != nil {
+		return 0, []string{fmt.Sprintf("Failed to parse response: %v", err)}
+	}
+
+	log.Printf("[ImportFromGoogle] Found %d events for user %s", len(eventsResponse.Items), userID)
+
+	for _, event := range eventsResponse.Items {
+		// Skip events created by our app (they have our prefix or are already synced)
+		if event.Summary == "" {
+			continue
+		}
+
+		// Skip cancelled events
+		if event.Status == "cancelled" {
+			// Check if we have this event in our DB and delete it
+			result, err := h.db.Exec(ctx, `
+				DELETE FROM tasks WHERE user_id = $1 AND google_event_id = $2
+			`, userID, event.ID)
+			if err == nil && result.RowsAffected() > 0 {
+				log.Printf("[ImportFromGoogle] Deleted cancelled event: %s", event.Summary)
+			}
+			continue
+		}
+
+		// Parse event date and times
+		var eventDate, startTime, endTime string
+
+		if event.Start.DateTime != "" {
+			// Timed event
+			startParsed, err := time.Parse(time.RFC3339, event.Start.DateTime)
+			if err != nil {
+				errors = append(errors, fmt.Sprintf("Failed to parse start time for %s: %v", event.Summary, err))
+				continue
+			}
+			eventDate = startParsed.Format("2006-01-02")
+			startTime = startParsed.Format("15:04")
+
+			if event.End.DateTime != "" {
+				endParsed, _ := time.Parse(time.RFC3339, event.End.DateTime)
+				endTime = endParsed.Format("15:04")
+			}
+		} else if event.Start.Date != "" {
+			// All-day event
+			eventDate = event.Start.Date
+		} else {
+			continue
+		}
+
+		// Check if this event already exists in our DB (by google_event_id)
+		var existingTaskID string
+		var existingUpdatedAt time.Time
+		err := h.db.QueryRow(ctx, `
+			SELECT id, updated_at FROM tasks WHERE user_id = $1 AND google_event_id = $2
+		`, userID, event.ID).Scan(&existingTaskID, &existingUpdatedAt)
+
+		if err == nil {
+			// Event exists - check if Google version is newer
+			googleUpdated, _ := time.Parse(time.RFC3339, event.Updated)
+			if googleUpdated.After(existingUpdatedAt) {
+				// Google version is newer - update our task
+				_, err = h.db.Exec(ctx, `
+					UPDATE tasks SET
+						title = $1,
+						description = $2,
+						date = $3,
+						scheduled_start = $4::time,
+						scheduled_end = $5::time,
+						updated_at = now(),
+						last_synced_at = now()
+					WHERE id = $6 AND user_id = $7
+				`, event.Summary, event.Description, eventDate, nullIfEmpty(startTime), nullIfEmpty(endTime), existingTaskID, userID)
+				if err != nil {
+					errors = append(errors, fmt.Sprintf("Failed to update task %s: %v", event.Summary, err))
+				} else {
+					imported++
+					log.Printf("[ImportFromGoogle] Updated task from Google: %s", event.Summary)
+				}
+			}
+		} else {
+			// New event from Google - create task in our DB
+			// Skip if it looks like it was created by our app (has routine prefix)
+			if len(event.Summary) > 2 && event.Summary[:2] == "🔄" {
+				continue // Skip routine events
+			}
+
+			var description *string
+			if event.Description != "" {
+				description = &event.Description
+			}
+
+			_, err = h.db.Exec(ctx, `
+				INSERT INTO tasks (user_id, title, description, date, scheduled_start, scheduled_end, google_event_id, google_calendar_id, last_synced_at)
+				VALUES ($1, $2, $3, $4, $5::time, $6::time, $7, $8, now())
+			`, userID, event.Summary, description, eventDate, nullIfEmpty(startTime), nullIfEmpty(endTime), event.ID, config.CalendarID)
+
+			if err != nil {
+				errors = append(errors, fmt.Sprintf("Failed to create task %s: %v", event.Summary, err))
+			} else {
+				imported++
+				log.Printf("[ImportFromGoogle] Created task from Google: %s on %s", event.Summary, eventDate)
+			}
+		}
+	}
+
+	log.Printf("[ImportFromGoogle] Imported %d events for user %s", imported, userID)
+	return imported, errors
+}
+
+// nullIfEmpty returns nil if the string is empty, otherwise returns a pointer to it
+func nullIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func (h *Handler) createOrUpdateGoogleEvent(ctx context.Context, config GoogleCalendarConfig, existingEventID *string, title string, description *string, date string, startTime, endTime *string) (string, error) {
