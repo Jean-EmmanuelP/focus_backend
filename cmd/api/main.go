@@ -242,6 +242,7 @@ func main() {
 		r.Patch("/google-calendar/config", googleCalendarHandler.UpdateConfig)
 		r.Delete("/google-calendar/config", googleCalendarHandler.Disconnect)
 		r.Post("/google-calendar/sync", googleCalendarHandler.SyncNow)
+		r.Get("/google-calendar/check-weekly", googleCalendarHandler.CheckWeeklySync)
 	})
 
 	port := os.Getenv("PORT")

@@ -49,8 +49,8 @@ type Handler struct {
 
 // GoogleCalendarSyncer interface for Google Calendar sync
 type GoogleCalendarSyncer interface {
-	SyncRoutineToGoogleCalendar(ctx context.Context, userID, routineID, title string, scheduledTime *string) error
-	DeleteGoogleCalendarEvent(ctx context.Context, userID, googleEventID string) error
+	SyncRoutineToGoogleCalendar(ctx context.Context, userID, routineID, title string, scheduledTime *string, durationMinutes *int) error
+	DeleteRoutineGoogleEvents(ctx context.Context, userID, routineID string) error
 }
 
 func NewHandler(db *pgxpool.Pool) *Handler {
@@ -141,7 +141,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if h.googleCalSvc != nil {
 		go func() {
 			ctx := context.Background()
-			if err := h.googleCalSvc.SyncRoutineToGoogleCalendar(ctx, userID, rt.ID, rt.Title, rt.ScheduledTime); err != nil {
+			// Get duration from DB (default 30 minutes)
+			var durationMinutes *int
+			h.db.QueryRow(ctx, `SELECT duration_minutes FROM routines WHERE id = $1`, rt.ID).Scan(&durationMinutes)
+			if err := h.googleCalSvc.SyncRoutineToGoogleCalendar(ctx, userID, rt.ID, rt.Title, rt.ScheduledTime, durationMinutes); err != nil {
 				log.Printf("[CreateRoutine] Google Calendar sync failed: %v", err)
 			}
 		}()
@@ -212,11 +215,15 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		rt.Icon = *icon
 	}
 
-	// Sync to Google Calendar (async)
+	// Sync to Google Calendar (async) - updates existing events, creates missing ones
 	if h.googleCalSvc != nil {
 		go func() {
 			ctx := context.Background()
-			if err := h.googleCalSvc.SyncRoutineToGoogleCalendar(ctx, userID, rt.ID, rt.Title, rt.ScheduledTime); err != nil {
+			// Get duration from DB
+			var durationMinutes *int
+			h.db.QueryRow(ctx, `SELECT duration_minutes FROM routines WHERE id = $1`, rt.ID).Scan(&durationMinutes)
+			// Sync will update existing events and create new ones for missing days
+			if err := h.googleCalSvc.SyncRoutineToGoogleCalendar(ctx, userID, rt.ID, rt.Title, rt.ScheduledTime, durationMinutes); err != nil {
 				log.Printf("[UpdateRoutine] Google Calendar sync failed: %v", err)
 			}
 		}()
@@ -230,24 +237,20 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 	routineID := chi.URLParam(r, "id")
 
-	// Get Google event ID before deleting
-	var googleEventID *string
-	h.db.QueryRow(r.Context(), `SELECT google_event_id FROM routines WHERE id = $1 AND user_id = $2`, routineID, userID).Scan(&googleEventID)
+	// Delete from Google Calendar first (async) - uses routine_google_events table
+	if h.googleCalSvc != nil {
+		go func() {
+			ctx := context.Background()
+			if err := h.googleCalSvc.DeleteRoutineGoogleEvents(ctx, userID, routineID); err != nil {
+				log.Printf("[DeleteRoutine] Google Calendar delete failed: %v", err)
+			}
+		}()
+	}
 
 	query := `DELETE FROM public.routines WHERE user_id = $1 AND id = $2`
 	if _, err := h.db.Exec(r.Context(), query, userID, routineID); err != nil {
 		http.Error(w, "Failed to delete routine", http.StatusInternalServerError)
 		return
-	}
-
-	// Delete from Google Calendar (async)
-	if h.googleCalSvc != nil && googleEventID != nil && *googleEventID != "" {
-		go func() {
-			ctx := context.Background()
-			if err := h.googleCalSvc.DeleteGoogleCalendarEvent(ctx, userID, *googleEventID); err != nil {
-				log.Printf("[DeleteRoutine] Google Calendar delete failed: %v", err)
-			}
-		}()
 	}
 
 	w.WriteHeader(http.StatusOK)
