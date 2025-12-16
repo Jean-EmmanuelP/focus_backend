@@ -511,6 +511,8 @@ func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, con
 	var imported int
 	var errors []string
 
+	log.Printf("[ImportFromGoogle] Starting import for user %s, direction: %s, calendar: %s", userID, config.SyncDirection, config.CalendarID)
+
 	// Fetch events from Google Calendar for the next 30 days
 	now := time.Now()
 	timeMin := now.Format(time.RFC3339)
@@ -521,8 +523,11 @@ func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, con
 		config.CalendarID, timeMin, timeMax,
 	)
 
+	log.Printf("[ImportFromGoogle] Fetching from URL: %s", url)
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
+		log.Printf("[ImportFromGoogle] Failed to create request: %v", err)
 		return 0, []string{fmt.Sprintf("Failed to create request: %v", err)}
 	}
 
@@ -531,12 +536,16 @@ func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, con
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Printf("[ImportFromGoogle] Failed to fetch events: %v", err)
 		return 0, []string{fmt.Sprintf("Failed to fetch events: %v", err)}
 	}
 	defer resp.Body.Close()
 
+	log.Printf("[ImportFromGoogle] Google API response status: %d", resp.StatusCode)
+
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
+		log.Printf("[ImportFromGoogle] Google API error: %s", string(body))
 		return 0, []string{fmt.Sprintf("Google API error %d: %s", resp.StatusCode, string(body))}
 	}
 
@@ -567,8 +576,11 @@ func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, con
 	log.Printf("[ImportFromGoogle] Found %d events for user %s", len(eventsResponse.Items), userID)
 
 	for _, event := range eventsResponse.Items {
+		log.Printf("[ImportFromGoogle] Processing event: ID=%s, Summary=%s, Status=%s", event.ID, event.Summary, event.Status)
+
 		// Skip events created by our app (they have our prefix or are already synced)
 		if event.Summary == "" {
+			log.Printf("[ImportFromGoogle] Skipping event with empty summary")
 			continue
 		}
 
