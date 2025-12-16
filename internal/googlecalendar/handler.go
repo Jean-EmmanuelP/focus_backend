@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"firelevel-backend/internal/auth"
@@ -607,7 +608,42 @@ func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, con
 			continue
 		}
 
-		// Check if this event already exists in our DB (by google_event_id)
+		// First check if this is a routine event (stored in routine_google_events)
+		var routineID string
+		var routineEventDate string
+		errRoutine := h.db.QueryRow(ctx, `
+			SELECT routine_id, event_date FROM routine_google_events
+			WHERE user_id = $1 AND google_event_id = $2
+		`, userID, event.ID).Scan(&routineID, &routineEventDate)
+
+		if errRoutine == nil {
+			// This is a routine event - update the routine title if changed
+			// Remove the 🔄 prefix if present to get clean title
+			cleanTitle := event.Summary
+			if len(cleanTitle) > 2 && cleanTitle[:4] == "🔄 " {
+				cleanTitle = cleanTitle[5:] // Remove "🔄 " prefix (emoji + space)
+			} else if len(cleanTitle) > 0 && cleanTitle[0] == 0xF0 {
+				// Handle raw emoji bytes
+				if idx := strings.Index(cleanTitle, " "); idx > 0 {
+					cleanTitle = cleanTitle[idx+1:]
+				}
+			}
+
+			// Update routine title
+			result, err := h.db.Exec(ctx, `
+				UPDATE routines SET title = $1, updated_at = now()
+				WHERE id = $2 AND user_id = $3 AND title != $1
+			`, cleanTitle, routineID, userID)
+			if err != nil {
+				errors = append(errors, fmt.Sprintf("Failed to update routine %s: %v", cleanTitle, err))
+			} else if result.RowsAffected() > 0 {
+				imported++
+				log.Printf("[ImportFromGoogle] Updated routine from Google: %s", cleanTitle)
+			}
+			continue
+		}
+
+		// Check if this event already exists in our tasks table (by google_event_id)
 		var existingTaskID string
 		var existingUpdatedAt time.Time
 		err := h.db.QueryRow(ctx, `
@@ -640,8 +676,8 @@ func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, con
 		} else {
 			// New event from Google - create task in our DB
 			// Skip if it looks like it was created by our app (has routine prefix)
-			if len(event.Summary) > 2 && event.Summary[:2] == "🔄" {
-				continue // Skip routine events
+			if len(event.Summary) > 2 && (event.Summary[:2] == "🔄" || strings.HasPrefix(event.Summary, "🔄")) {
+				continue // Skip routine events that we don't have tracked
 			}
 
 			var description *string
