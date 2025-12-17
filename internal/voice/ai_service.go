@@ -64,31 +64,66 @@ func (s *AIService) callGemini(systemPrompt, userText string) (*IntentResponse, 
 	// Combine system prompt and user text
 	fullPrompt := systemPrompt + "\n\nUser input:\n" + userText
 
-	// Use gemini-2.5-flash model via official SDK
-	result, err := s.genaiClient.Models.GenerateContent(
-		ctx,
-		"gemini-2.5-flash",
-		genai.Text(fullPrompt),
-		nil,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("Gemini API error: %w", err)
+	// Models to try in order (primary, then fallbacks)
+	models := []string{
+		"gemini-2.0-flash",     // Primary - newest and fastest
+		"gemini-1.5-flash",     // Fallback 1 - very stable
+		"gemini-1.5-pro",       // Fallback 2 - most capable
 	}
 
-	// Extract text from response
-	responseText := result.Text()
-	if responseText == "" {
-		return nil, fmt.Errorf("no response from Gemini")
+	var lastErr error
+	for i, model := range models {
+		// Try each model with retry
+		for retry := 0; retry < 2; retry++ {
+			result, err := s.genaiClient.Models.GenerateContent(
+				ctx,
+				model,
+				genai.Text(fullPrompt),
+				nil,
+			)
+
+			if err != nil {
+				lastErr = err
+				errStr := err.Error()
+
+				// Check if it's an overload/unavailable error
+				if strings.Contains(errStr, "503") ||
+				   strings.Contains(errStr, "overloaded") ||
+				   strings.Contains(errStr, "UNAVAILABLE") ||
+				   strings.Contains(errStr, "RESOURCE_EXHAUSTED") {
+					fmt.Printf("[AI] Model %s overloaded (attempt %d), trying next...\n", model, retry+1)
+					time.Sleep(time.Duration(500*(retry+1)) * time.Millisecond) // Exponential backoff
+					continue
+				}
+
+				// For other errors, try next model
+				fmt.Printf("[AI] Model %s error: %v, trying fallback...\n", model, err)
+				break
+			}
+
+			// Success - extract response
+			responseText := result.Text()
+			if responseText == "" {
+				lastErr = fmt.Errorf("no response from %s", model)
+				break // Try next model
+			}
+
+			content := cleanJSONResponse(responseText)
+
+			var intentResp IntentResponse
+			if err := json.Unmarshal([]byte(content), &intentResp); err != nil {
+				lastErr = fmt.Errorf("failed to parse response from %s: %w (content: %s)", model, err, content)
+				break // Try next model
+			}
+
+			if i > 0 {
+				fmt.Printf("[AI] Successfully used fallback model: %s\n", model)
+			}
+			return &intentResp, nil
+		}
 	}
 
-	content := cleanJSONResponse(responseText)
-
-	var intentResp IntentResponse
-	if err := json.Unmarshal([]byte(content), &intentResp); err != nil {
-		return nil, fmt.Errorf("failed to parse intent response: %w (content: %s)", err, content)
-	}
-
-	return &intentResp, nil
+	return nil, fmt.Errorf("all Gemini models failed: %w", lastErr)
 }
 
 func cleanJSONResponse(content string) string {

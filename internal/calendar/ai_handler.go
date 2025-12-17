@@ -316,7 +316,12 @@ func (h *AIHandler) callGemini(prompt string) (string, error) {
 		return "", fmt.Errorf("GEMINI_API_KEY not configured")
 	}
 
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=%s", h.apiKey)
+	// Models to try in order (primary, then fallbacks)
+	models := []string{
+		"gemini-2.0-flash",  // Primary - newest
+		"gemini-1.5-flash",  // Fallback 1 - stable
+		"gemini-1.5-pro",    // Fallback 2 - most capable
+	}
 
 	reqBody := GeminiRequest{
 		Contents: []GeminiContent{
@@ -333,31 +338,57 @@ func (h *AIHandler) callGemini(prompt string) (string, error) {
 		return "", err
 	}
 
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonBody))
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
+	var lastErr error
+	for i, model := range models {
+		// Try each model with retry
+		for retry := 0; retry < 2; retry++ {
+			url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", model, h.apiKey)
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
+			resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonBody))
+			if err != nil {
+				lastErr = err
+				break // Network error, try next model
+			}
+
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				lastErr = err
+				break
+			}
+
+			if resp.StatusCode != http.StatusOK {
+				lastErr = fmt.Errorf("Gemini API error (%s): %s", model, string(body))
+
+				// Check if it's an overload error
+				if resp.StatusCode == 503 || strings.Contains(string(body), "overloaded") || strings.Contains(string(body), "UNAVAILABLE") {
+					fmt.Printf("[AI] Model %s overloaded (attempt %d), retrying...\n", model, retry+1)
+					time.Sleep(time.Duration(500*(retry+1)) * time.Millisecond)
+					continue
+				}
+				// Other error, try next model
+				break
+			}
+
+			var geminiResp GeminiResponse
+			if err := json.Unmarshal(body, &geminiResp); err != nil {
+				lastErr = err
+				break
+			}
+
+			if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
+				lastErr = fmt.Errorf("empty response from %s", model)
+				break
+			}
+
+			if i > 0 {
+				fmt.Printf("[AI] Successfully used fallback model: %s\n", model)
+			}
+			return geminiResp.Candidates[0].Content.Parts[0].Text, nil
+		}
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Gemini API error: %s", string(body))
-	}
-
-	var geminiResp GeminiResponse
-	if err := json.Unmarshal(body, &geminiResp); err != nil {
-		return "", err
-	}
-
-	if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
-		return "", fmt.Errorf("empty response from Gemini")
-	}
-
-	return geminiResp.Candidates[0].Content.Parts[0].Text, nil
+	return "", fmt.Errorf("all Gemini models failed: %w", lastErr)
 }
 
 // ==========================================
