@@ -390,3 +390,80 @@ create policy "Users can view own reports" on public.community_post_reports
 
 -- Index for pending reports
 create index idx_community_post_reports_pending on public.community_post_reports(created_at) where status = 'pending';
+
+
+-- ==========================================
+-- 14. JOURNAL ENTRIES (Audio/Video Progress Journal)
+-- ==========================================
+create table public.journal_entries (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid not null references auth.users on delete cascade,
+
+  -- Media
+  media_type text not null check (media_type in ('audio', 'video')),
+  media_url text not null,
+  duration_seconds integer not null,
+
+  -- AI Analysis
+  transcript text,
+  summary text,              -- 3-5 bullet points
+  title text,                -- AI-generated title
+  mood text,                 -- 'great', 'good', 'neutral', 'low', 'bad'
+  mood_score integer,        -- 1-10 for graphing
+  tags text[],               -- AI-detected themes
+
+  -- Metadata
+  entry_date date not null default current_date,
+  created_at timestamp with time zone default now(),
+  updated_at timestamp with time zone default now(),
+
+  -- One entry per day per user
+  constraint unique_daily_entry unique (user_id, entry_date)
+);
+
+-- RLS
+alter table public.journal_entries enable row level security;
+
+create policy "Users can manage own journal entries" on public.journal_entries
+  using (auth.uid() = user_id);
+
+-- Indexes
+create index idx_journal_entries_user on public.journal_entries(user_id);
+create index idx_journal_entries_date on public.journal_entries(entry_date desc);
+create index idx_journal_entries_user_date on public.journal_entries(user_id, entry_date desc);
+
+
+-- ==========================================
+-- 15. JOURNAL BILANS (Weekly/Monthly Summaries)
+-- ==========================================
+create table public.journal_bilans (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid not null references auth.users on delete cascade,
+
+  bilan_type text not null check (bilan_type in ('weekly', 'monthly')),
+  period_start date not null,
+  period_end date not null,
+
+  -- AI-generated content
+  summary text not null,
+  wins text[],
+  improvements text[],
+  mood_trend text,             -- 'improving', 'stable', 'declining'
+  avg_mood_score decimal(3,1),
+  suggested_goals text[],      -- For monthly only
+
+  created_at timestamp with time zone default now(),
+
+  -- One bilan per type per period per user
+  constraint unique_bilan unique (user_id, bilan_type, period_start)
+);
+
+-- RLS
+alter table public.journal_bilans enable row level security;
+
+create policy "Users can manage own journal bilans" on public.journal_bilans
+  using (auth.uid() = user_id);
+
+-- Indexes
+create index idx_journal_bilans_user on public.journal_bilans(user_id);
+create index idx_journal_bilans_period on public.journal_bilans(user_id, bilan_type, period_start desc);

@@ -19,6 +19,7 @@ import (
 	"firelevel-backend/internal/focus"
 	"firelevel-backend/internal/googlecalendar"
 	"firelevel-backend/internal/intentions"
+	"firelevel-backend/internal/journal"
 	"firelevel-backend/internal/onboarding"
 	"firelevel-backend/internal/quests"
 	"firelevel-backend/internal/reflections"
@@ -68,6 +69,7 @@ func main() {
 	calendarAIHandler := calendar.NewAIHandler(pool)
 	voiceHandler := voice.NewHandler(pool)
 	googleCalendarHandler := googlecalendar.NewHandler(pool)
+	journalHandler := journal.NewHandler(pool)
 
 	// Connect Google Calendar sync to handlers
 	calendarHandler.SetGoogleCalendarSyncer(googleCalendarHandler)
@@ -257,7 +259,22 @@ func main() {
 		r.Get("/community/my-posts", communityHandler.GetMyPosts)
 		r.Get("/tasks/{id}/posts", communityHandler.GetTaskPosts)
 		r.Get("/routines/{id}/posts", communityHandler.GetRoutinePosts)
+
+		// Journal - Audio/Video Progress Journal
+		r.Post("/journal/entries", journalHandler.CreateEntry)
+		r.Get("/journal/entries", journalHandler.ListEntries)
+		r.Get("/journal/entries/today", journalHandler.GetTodayEntry)
+		r.Get("/journal/entries/streak", journalHandler.GetStreak)
+		r.Get("/journal/entries/{id}", journalHandler.GetEntry)
+		r.Delete("/journal/entries/{id}", journalHandler.DeleteEntry)
+		r.Get("/journal/stats", journalHandler.GetStats)
+		r.Post("/journal/bilans/weekly", journalHandler.GenerateWeeklyBilan)
+		r.Post("/journal/bilans/monthly", journalHandler.GenerateMonthlyBilan)
+		r.Get("/journal/bilans", journalHandler.ListBilans)
 	})
+
+	// Cron/Job endpoints (protected by X-Cron-Secret header)
+	r.Post("/jobs/journal/monthly-analysis", journalHandler.RunMonthlyAnalysis)
 
 	port := os.Getenv("PORT")
 	if port == "" {
