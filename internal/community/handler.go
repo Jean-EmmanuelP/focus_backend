@@ -579,7 +579,11 @@ func (h *Handler) uploadImageToStorage(userID string, imageData []byte, contentT
 	supabaseURL := os.Getenv("SUPABASE_URL")
 	serviceRoleKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
 
+	log.Printf("[uploadImageToStorage] Starting upload - userID: %s, imageSize: %d bytes, contentType: %s", userID, len(imageData), contentType)
+	log.Printf("[uploadImageToStorage] SUPABASE_URL set: %v, SERVICE_ROLE_KEY set: %v", supabaseURL != "", serviceRoleKey != "")
+
 	if supabaseURL == "" || serviceRoleKey == "" {
+		log.Printf("[uploadImageToStorage] Missing config - URL: %v, KEY: %v", supabaseURL == "", serviceRoleKey == "")
 		return "", fmt.Errorf("missing Supabase configuration")
 	}
 
