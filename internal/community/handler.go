@@ -611,8 +611,9 @@ func (h *Handler) uploadImageToStorage(userID string, imageData []byte, contentT
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != 200 && resp.StatusCode != 201 {
 		body, _ := io.ReadAll(resp.Body)
+		log.Printf("[uploadImageToStorage] Storage error %d: %s (url: %s)", resp.StatusCode, string(body), url)
 		return "", fmt.Errorf("storage error %d: %s", resp.StatusCode, string(body))
 	}
 
