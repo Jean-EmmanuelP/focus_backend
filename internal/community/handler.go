@@ -57,11 +57,11 @@ type PostUser struct {
 }
 
 type CreatePostRequest struct {
-	ImageBase64 string  `json:"imageBase64"` // Base64 encoded image
+	ImageBase64 string  `json:"image_base64"` // Base64 encoded image
 	Caption     *string `json:"caption,omitempty"`
-	TaskID      *string `json:"taskId,omitempty"`
-	RoutineID   *string `json:"routineId,omitempty"`
-	ContentType string  `json:"contentType"` // image/jpeg or image/png
+	TaskID      *string `json:"task_id,omitempty"`
+	RoutineID   *string `json:"routine_id,omitempty"`
+	ContentType string  `json:"content_type"` // image/jpeg or image/png
 }
 
 type ReportPostRequest struct {
@@ -86,14 +86,18 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 
 	var req CreatePostRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("[CreatePost] Failed to decode request body: %v", err)
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
 	// Task/routine link is now optional
+	log.Printf("[CreatePost] Received request - imageBase64 length: %d, caption: %v, taskId: %v, routineId: %v",
+		len(req.ImageBase64), req.Caption, req.TaskID, req.RoutineID)
 
 	// Validate image
 	if req.ImageBase64 == "" {
+		log.Printf("[CreatePost] Image is empty!")
 		http.Error(w, "Image is required", http.StatusBadRequest)
 		return
 	}
