@@ -317,10 +317,11 @@ func (h *AIHandler) callGemini(prompt string) (string, error) {
 	}
 
 	// Models to try in order (primary, then fallbacks)
+	// See: https://ai.google.dev/gemini-api/docs/models
 	models := []string{
-		"gemini-2.0-flash",  // Primary - newest
-		"gemini-1.5-flash",  // Fallback 1 - stable
-		"gemini-1.5-pro",    // Fallback 2 - most capable
+		"gemini-2.5-flash",      // Primary - best price-performance
+		"gemini-2.0-flash",      // Fallback 1 - previous gen, stable
+		"gemini-2.5-flash-lite", // Fallback 2 - lightweight, high throughput
 	}
 
 	reqBody := GeminiRequest{
