@@ -481,14 +481,17 @@ func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var task Task
-	var scheduledStart, scheduledEnd *time.Time
+	var scheduledStartStr, scheduledEndStr *string
 	err := h.db.QueryRow(r.Context(), `
 		INSERT INTO tasks (user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, priority, due_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7::time, $8::time, $9, $10, $11, $12, $13)
-		RETURNING id, user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
+		RETURNING id, user_id, quest_id, area_id, title, description, date,
+			TO_CHAR(scheduled_start, 'HH24:MI') as scheduled_start,
+			TO_CHAR(scheduled_end, 'HH24:MI') as scheduled_end,
+			time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
 	`, userID, req.QuestID, req.AreaID, req.Title, req.Description, req.Date, req.ScheduledStart, req.ScheduledEnd, timeBlock, position, req.EstimatedMinutes, priority, req.DueAt).Scan(
 		&task.ID, &task.UserID, &task.QuestID, &task.AreaID,
-		&task.Title, &task.Description, &task.Date, &scheduledStart, &scheduledEnd,
+		&task.Title, &task.Description, &task.Date, &scheduledStartStr, &scheduledEndStr,
 		&task.TimeBlock, &task.Position, &task.EstimatedMinutes, &task.ActualMinutes,
 		&task.Priority, &task.Status, &task.DueAt, &task.CompletedAt,
 		&task.IsAIGenerated, &task.AINotes, &task.CreatedAt, &task.UpdatedAt,
@@ -503,14 +506,12 @@ func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[CreateTask] SUCCESS: created task id=%s, title=%s", task.ID, task.Title)
 
-	// Convert times to HH:mm format
-	if scheduledStart != nil {
-		s := scheduledStart.Format("15:04")
-		task.ScheduledStart = &s
+	// Use times directly from SQL (already formatted as HH:mm)
+	if scheduledStartStr != nil && *scheduledStartStr != "" {
+		task.ScheduledStart = scheduledStartStr
 	}
-	if scheduledEnd != nil {
-		s := scheduledEnd.Format("15:04")
-		task.ScheduledEnd = &s
+	if scheduledEndStr != nil && *scheduledEndStr != "" {
+		task.ScheduledEnd = scheduledEndStr
 	}
 
 	// Sync to Google Calendar (async, don't block response)
@@ -547,7 +548,7 @@ func (h *Handler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var task Task
-	var scheduledStart, scheduledEnd *time.Time
+	var scheduledStartStr, scheduledEndStr *string
 	err := h.db.QueryRow(r.Context(), `
 		UPDATE tasks
 		SET
@@ -568,10 +569,13 @@ func (h *Handler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 			area_id = COALESCE($17, area_id),
 			updated_at = now()
 		WHERE id = $1 AND user_id = $2
-		RETURNING id, user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
+		RETURNING id, user_id, quest_id, area_id, title, description, date,
+			TO_CHAR(scheduled_start, 'HH24:MI') as scheduled_start,
+			TO_CHAR(scheduled_end, 'HH24:MI') as scheduled_end,
+			time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
 	`, taskID, userID, req.Title, req.Description, req.Date, req.ScheduledStart, req.ScheduledEnd, req.TimeBlock, req.Position, req.EstimatedMinutes, req.ActualMinutes, req.Priority, req.Status, req.DueAt, completedAt, req.QuestID, req.AreaID).Scan(
 		&task.ID, &task.UserID, &task.QuestID, &task.AreaID,
-		&task.Title, &task.Description, &task.Date, &scheduledStart, &scheduledEnd,
+		&task.Title, &task.Description, &task.Date, &scheduledStartStr, &scheduledEndStr,
 		&task.TimeBlock, &task.Position, &task.EstimatedMinutes, &task.ActualMinutes,
 		&task.Priority, &task.Status, &task.DueAt, &task.CompletedAt,
 		&task.IsAIGenerated, &task.AINotes, &task.CreatedAt, &task.UpdatedAt,
@@ -582,14 +586,12 @@ func (h *Handler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert times to HH:mm format
-	if scheduledStart != nil {
-		s := scheduledStart.Format("15:04")
-		task.ScheduledStart = &s
+	// Use times directly from SQL (already formatted as HH:mm)
+	if scheduledStartStr != nil && *scheduledStartStr != "" {
+		task.ScheduledStart = scheduledStartStr
 	}
-	if scheduledEnd != nil {
-		s := scheduledEnd.Format("15:04")
-		task.ScheduledEnd = &s
+	if scheduledEndStr != nil && *scheduledEndStr != "" {
+		task.ScheduledEnd = scheduledEndStr
 	}
 
 	// Sync to Google Calendar (async, don't block response)
@@ -612,15 +614,18 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
 
 	var task Task
-	var scheduledStart, scheduledEnd *time.Time
+	var scheduledStartStr, scheduledEndStr *string
 	err := h.db.QueryRow(r.Context(), `
 		UPDATE tasks
 		SET status = 'completed', completed_at = now(), updated_at = now()
 		WHERE id = $1 AND user_id = $2
-		RETURNING id, user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
+		RETURNING id, user_id, quest_id, area_id, title, description, date,
+			TO_CHAR(scheduled_start, 'HH24:MI') as scheduled_start,
+			TO_CHAR(scheduled_end, 'HH24:MI') as scheduled_end,
+			time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
 	`, taskID, userID).Scan(
 		&task.ID, &task.UserID, &task.QuestID, &task.AreaID,
-		&task.Title, &task.Description, &task.Date, &scheduledStart, &scheduledEnd,
+		&task.Title, &task.Description, &task.Date, &scheduledStartStr, &scheduledEndStr,
 		&task.TimeBlock, &task.Position, &task.EstimatedMinutes, &task.ActualMinutes,
 		&task.Priority, &task.Status, &task.DueAt, &task.CompletedAt,
 		&task.IsAIGenerated, &task.AINotes, &task.CreatedAt, &task.UpdatedAt,
@@ -631,14 +636,12 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert times
-	if scheduledStart != nil {
-		s := scheduledStart.Format("15:04")
-		task.ScheduledStart = &s
+	// Use times directly from SQL (already formatted as HH:mm)
+	if scheduledStartStr != nil && *scheduledStartStr != "" {
+		task.ScheduledStart = scheduledStartStr
 	}
-	if scheduledEnd != nil {
-		s := scheduledEnd.Format("15:04")
-		task.ScheduledEnd = &s
+	if scheduledEndStr != nil && *scheduledEndStr != "" {
+		task.ScheduledEnd = scheduledEndStr
 	}
 
 	// Update quest progress if linked
@@ -655,15 +658,18 @@ func (h *Handler) UncompleteTask(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
 
 	var task Task
-	var scheduledStart, scheduledEnd *time.Time
+	var scheduledStartStr, scheduledEndStr *string
 	err := h.db.QueryRow(r.Context(), `
 		UPDATE tasks
 		SET status = 'pending', completed_at = NULL, updated_at = now()
 		WHERE id = $1 AND user_id = $2
-		RETURNING id, user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
+		RETURNING id, user_id, quest_id, area_id, title, description, date,
+			TO_CHAR(scheduled_start, 'HH24:MI') as scheduled_start,
+			TO_CHAR(scheduled_end, 'HH24:MI') as scheduled_end,
+			time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
 	`, taskID, userID).Scan(
 		&task.ID, &task.UserID, &task.QuestID, &task.AreaID,
-		&task.Title, &task.Description, &task.Date, &scheduledStart, &scheduledEnd,
+		&task.Title, &task.Description, &task.Date, &scheduledStartStr, &scheduledEndStr,
 		&task.TimeBlock, &task.Position, &task.EstimatedMinutes, &task.ActualMinutes,
 		&task.Priority, &task.Status, &task.DueAt, &task.CompletedAt,
 		&task.IsAIGenerated, &task.AINotes, &task.CreatedAt, &task.UpdatedAt,
@@ -674,14 +680,12 @@ func (h *Handler) UncompleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert times
-	if scheduledStart != nil {
-		s := scheduledStart.Format("15:04")
-		task.ScheduledStart = &s
+	// Use times directly from SQL (already formatted as HH:mm)
+	if scheduledStartStr != nil && *scheduledStartStr != "" {
+		task.ScheduledStart = scheduledStartStr
 	}
-	if scheduledEnd != nil {
-		s := scheduledEnd.Format("15:04")
-		task.ScheduledEnd = &s
+	if scheduledEndStr != nil && *scheduledEndStr != "" {
+		task.ScheduledEnd = scheduledEndStr
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -770,7 +774,9 @@ func (h *Handler) getTasksForDay(ctx context.Context, userID, date string, dayPl
 	rows, err := h.db.Query(ctx, `
 		SELECT
 			t.id, t.user_id, t.quest_id, t.area_id,
-			t.title, t.description, t.date, t.scheduled_start, t.scheduled_end,
+			t.title, t.description, t.date,
+			TO_CHAR(t.scheduled_start, 'HH24:MI') as scheduled_start,
+			TO_CHAR(t.scheduled_end, 'HH24:MI') as scheduled_end,
 			t.time_block, t.position, t.estimated_minutes, t.actual_minutes,
 			t.priority, t.status, t.due_at, t.completed_at, t.is_ai_generated,
 			t.ai_notes, t.created_at, t.updated_at,
@@ -791,7 +797,7 @@ func (h *Handler) getTasksForDay(ctx context.Context, userID, date string, dayPl
 	var tasks []Task
 	for rows.Next() {
 		var t Task
-		var scheduledStart, scheduledEnd *time.Time
+		var scheduledStart, scheduledEnd *string
 		var timeBlock *string
 		var photosCount int
 		err := rows.Scan(
@@ -817,16 +823,14 @@ func (h *Handler) getTasksForDay(ctx context.Context, userID, date string, dayPl
 			t.TimeBlock = "morning"
 		}
 
-		if scheduledStart != nil {
-			s := scheduledStart.Format("15:04")
-			t.ScheduledStart = &s
+		if scheduledStart != nil && *scheduledStart != "" {
+			t.ScheduledStart = scheduledStart
 		} else {
 			defaultStart := getDefaultStartTime(t.TimeBlock)
 			t.ScheduledStart = &defaultStart
 		}
-		if scheduledEnd != nil {
-			s := scheduledEnd.Format("15:04")
-			t.ScheduledEnd = &s
+		if scheduledEnd != nil && *scheduledEnd != "" {
+			t.ScheduledEnd = scheduledEnd
 		} else {
 			defaultEnd := getDefaultEndTime(t.TimeBlock)
 			t.ScheduledEnd = &defaultEnd
@@ -996,7 +1000,9 @@ func (h *Handler) getTasksForWeek(ctx context.Context, userID, startDate, endDat
 	rows, err := h.db.Query(ctx, `
 		SELECT
 			t.id, t.user_id, t.quest_id, t.area_id,
-			t.title, t.description, t.date, t.scheduled_start, t.scheduled_end,
+			t.title, t.description, t.date,
+			TO_CHAR(t.scheduled_start, 'HH24:MI') as scheduled_start,
+			TO_CHAR(t.scheduled_end, 'HH24:MI') as scheduled_end,
 			COALESCE(t.time_block, 'morning') as time_block,
 			COALESCE(t.position, 0) as position,
 			t.estimated_minutes,
@@ -1023,7 +1029,7 @@ func (h *Handler) getTasksForWeek(ctx context.Context, userID, startDate, endDat
 	var tasks []Task
 	for rows.Next() {
 		var t Task
-		var scheduledStart, scheduledEnd *time.Time
+		var scheduledStart, scheduledEnd *string
 		var timeBlock string
 		err := rows.Scan(
 			&t.ID, &t.UserID, &t.QuestID, &t.AreaID,
@@ -1039,17 +1045,15 @@ func (h *Handler) getTasksForWeek(ctx context.Context, userID, startDate, endDat
 		}
 		t.TimeBlock = timeBlock
 
-		// Convert time.Time to HH:mm string format, or use default based on time_block
-		if scheduledStart != nil {
-			s := scheduledStart.Format("15:04")
-			t.ScheduledStart = &s
+		// Use string directly from SQL, or use default based on time_block
+		if scheduledStart != nil && *scheduledStart != "" {
+			t.ScheduledStart = scheduledStart
 		} else {
 			defaultStart := getDefaultStartTime(t.TimeBlock)
 			t.ScheduledStart = &defaultStart
 		}
-		if scheduledEnd != nil {
-			s := scheduledEnd.Format("15:04")
-			t.ScheduledEnd = &s
+		if scheduledEnd != nil && *scheduledEnd != "" {
+			t.ScheduledEnd = scheduledEnd
 		} else {
 			defaultEnd := getDefaultEndTime(t.TimeBlock)
 			t.ScheduledEnd = &defaultEnd
@@ -1088,7 +1092,7 @@ func (h *Handler) RescheduleTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var task Task
-	var scheduledStart, scheduledEnd *time.Time
+	var scheduledStartStr, scheduledEndStr *string
 	err := h.db.QueryRow(r.Context(), `
 		UPDATE tasks
 		SET
@@ -1097,10 +1101,13 @@ func (h *Handler) RescheduleTask(w http.ResponseWriter, r *http.Request) {
 			scheduled_end = $5::time,
 			updated_at = NOW()
 		WHERE id = $1 AND user_id = $2
-		RETURNING id, user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
+		RETURNING id, user_id, quest_id, area_id, title, description, date,
+			TO_CHAR(scheduled_start, 'HH24:MI') as scheduled_start,
+			TO_CHAR(scheduled_end, 'HH24:MI') as scheduled_end,
+			time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
 	`, taskID, userID, req.Date, req.ScheduledStart, req.ScheduledEnd).Scan(
 		&task.ID, &task.UserID, &task.QuestID, &task.AreaID,
-		&task.Title, &task.Description, &task.Date, &scheduledStart, &scheduledEnd,
+		&task.Title, &task.Description, &task.Date, &scheduledStartStr, &scheduledEndStr,
 		&task.TimeBlock, &task.Position, &task.EstimatedMinutes, &task.ActualMinutes,
 		&task.Priority, &task.Status, &task.DueAt, &task.CompletedAt,
 		&task.IsAIGenerated, &task.AINotes, &task.CreatedAt, &task.UpdatedAt,
@@ -1111,14 +1118,12 @@ func (h *Handler) RescheduleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert times
-	if scheduledStart != nil {
-		s := scheduledStart.Format("15:04")
-		task.ScheduledStart = &s
+	// Use times directly from SQL (already formatted as HH:mm)
+	if scheduledStartStr != nil && *scheduledStartStr != "" {
+		task.ScheduledStart = scheduledStartStr
 	}
-	if scheduledEnd != nil {
-		s := scheduledEnd.Format("15:04")
-		task.ScheduledEnd = &s
+	if scheduledEndStr != nil && *scheduledEndStr != "" {
+		task.ScheduledEnd = scheduledEndStr
 	}
 
 	w.Header().Set("Content-Type", "application/json")
