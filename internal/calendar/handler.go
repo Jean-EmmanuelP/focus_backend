@@ -101,6 +101,7 @@ type Task struct {
 	QuestTitle       *string    `json:"questTitle,omitempty"`
 	AreaName         *string    `json:"areaName,omitempty"`
 	AreaIcon         *string    `json:"areaIcon,omitempty"`
+	PhotosCount      *int       `json:"photosCount,omitempty"` // Number of community posts linked to this task
 }
 
 // ==========================================
@@ -773,7 +774,8 @@ func (h *Handler) getTasksForDay(ctx context.Context, userID, date string, dayPl
 			t.time_block, t.position, t.estimated_minutes, t.actual_minutes,
 			t.priority, t.status, t.due_at, t.completed_at, t.is_ai_generated,
 			t.ai_notes, t.created_at, t.updated_at,
-			q.title as quest_title, a.name as area_name, a.icon as area_icon
+			q.title as quest_title, a.name as area_name, a.icon as area_icon,
+			(SELECT COUNT(*) FROM community_posts cp WHERE cp.task_id = t.id AND cp.is_hidden = false) as photos_count
 		FROM tasks t
 		LEFT JOIN quests q ON t.quest_id = q.id
 		LEFT JOIN areas a ON t.area_id = a.id
@@ -791,16 +793,22 @@ func (h *Handler) getTasksForDay(ctx context.Context, userID, date string, dayPl
 		var t Task
 		var scheduledStart, scheduledEnd *time.Time
 		var timeBlock *string
+		var photosCount int
 		err := rows.Scan(
 			&t.ID, &t.UserID, &t.QuestID, &t.AreaID,
 			&t.Title, &t.Description, &t.Date, &scheduledStart, &scheduledEnd,
 			&timeBlock, &t.Position, &t.EstimatedMinutes, &t.ActualMinutes,
 			&t.Priority, &t.Status, &t.DueAt, &t.CompletedAt, &t.IsAIGenerated,
 			&t.AINotes, &t.CreatedAt, &t.UpdatedAt,
-			&t.QuestTitle, &t.AreaName, &t.AreaIcon,
+			&t.QuestTitle, &t.AreaName, &t.AreaIcon, &photosCount,
 		)
 		if err != nil {
 			continue
+		}
+
+		// Set photos count if > 0
+		if photosCount > 0 {
+			t.PhotosCount = &photosCount
 		}
 
 		if timeBlock != nil {

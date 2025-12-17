@@ -736,7 +736,8 @@ func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, con
 		} else {
 			// New event from Google - create task in our DB
 			// Skip if it looks like it was created by our app (has routine prefix)
-			if len(event.Summary) > 2 && (event.Summary[:2] == "🔄" || strings.HasPrefix(event.Summary, "🔄")) {
+			if strings.HasPrefix(event.Summary, "🔄") {
+				log.Printf("[ImportFromGoogle] Skipping untracked routine event: %s", event.Summary)
 				continue // Skip routine events that we don't have tracked
 			}
 

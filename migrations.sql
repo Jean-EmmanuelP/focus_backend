@@ -287,3 +287,108 @@ create policy "Users can manage own friend_group_members" on public.friend_group
 -- Indexes
 create index idx_friend_group_members_group on public.friend_group_members(group_id);
 create index idx_friend_group_members_member on public.friend_group_members(member_id);
+
+
+-- ==========================================
+-- 11. COMMUNITY POSTS (Social Feed)
+-- ==========================================
+create table public.community_posts (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid not null references auth.users on delete cascade,
+
+  -- Link to task OR routine (at least one required)
+  task_id uuid references public.tasks on delete set null,
+  routine_id uuid references public.routines on delete set null,
+
+  -- Content
+  image_url text not null,           -- URL to Supabase Storage
+  caption text,                      -- Optional description
+
+  -- Engagement
+  likes_count integer default 0,
+
+  -- Moderation
+  is_hidden boolean default false,   -- Hidden if reported & reviewed
+
+  created_at timestamp with time zone default now(),
+
+  -- At least one of task_id or routine_id must be set
+  constraint post_must_have_link check (task_id is not null or routine_id is not null)
+);
+
+-- RLS: Public read (non-hidden), own write
+alter table public.community_posts enable row level security;
+
+-- Anyone can read visible posts
+create policy "Anyone can read visible posts" on public.community_posts
+  for select using (is_hidden = false);
+
+-- Users can manage own posts
+create policy "Users can manage own posts" on public.community_posts
+  for all using (auth.uid() = user_id);
+
+-- Indexes
+create index idx_community_posts_user on public.community_posts(user_id);
+create index idx_community_posts_created on public.community_posts(created_at desc);
+create index idx_community_posts_task on public.community_posts(task_id) where task_id is not null;
+create index idx_community_posts_routine on public.community_posts(routine_id) where routine_id is not null;
+create index idx_community_posts_visible on public.community_posts(created_at desc) where is_hidden = false;
+
+
+-- ==========================================
+-- 12. COMMUNITY POST LIKES
+-- ==========================================
+create table public.community_post_likes (
+  id uuid default gen_random_uuid() primary key,
+  post_id uuid not null references public.community_posts on delete cascade,
+  user_id uuid not null references auth.users on delete cascade,
+
+  created_at timestamp with time zone default now(),
+
+  -- Prevent duplicate likes
+  unique (post_id, user_id)
+);
+
+-- RLS
+alter table public.community_post_likes enable row level security;
+
+create policy "Anyone can read likes" on public.community_post_likes
+  for select using (true);
+
+create policy "Users can manage own likes" on public.community_post_likes
+  for all using (auth.uid() = user_id);
+
+-- Indexes
+create index idx_community_post_likes_post on public.community_post_likes(post_id);
+create index idx_community_post_likes_user on public.community_post_likes(user_id);
+
+
+-- ==========================================
+-- 13. COMMUNITY POST REPORTS (Moderation)
+-- ==========================================
+create table public.community_post_reports (
+  id uuid default gen_random_uuid() primary key,
+  post_id uuid not null references public.community_posts on delete cascade,
+  reporter_id uuid not null references auth.users on delete cascade,
+
+  reason text not null,              -- 'inappropriate', 'spam', 'harassment', 'other'
+  details text,                      -- Optional additional details
+  status text default 'pending',     -- 'pending', 'reviewed', 'dismissed'
+
+  created_at timestamp with time zone default now(),
+
+  -- One report per user per post
+  unique (post_id, reporter_id)
+);
+
+-- RLS: Only admins should review reports, but users can create their own
+alter table public.community_post_reports enable row level security;
+
+create policy "Users can create own reports" on public.community_post_reports
+  for insert with check (auth.uid() = reporter_id);
+
+create policy "Users can view own reports" on public.community_post_reports
+  for select using (auth.uid() = reporter_id);
+
+-- Index for pending reports
+create index idx_community_post_reports_pending on public.community_post_reports(created_at) where status = 'pending';

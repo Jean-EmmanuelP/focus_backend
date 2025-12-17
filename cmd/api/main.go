@@ -13,6 +13,7 @@ import (
 	"firelevel-backend/internal/areas"
 	"firelevel-backend/internal/auth"
 	"firelevel-backend/internal/calendar"
+	"firelevel-backend/internal/community"
 	"firelevel-backend/internal/crew"
 	"firelevel-backend/internal/database"
 	"firelevel-backend/internal/focus"
@@ -62,6 +63,7 @@ func main() {
 	crewHandler := crew.NewHandler(pool)
 	streaksHandler := streaks.NewHandler(pool)
 	onboardingHandler := onboarding.NewHandler(pool)
+	communityHandler := community.NewHandler(pool)
 	calendarHandler := calendar.NewHandler(pool)
 	calendarAIHandler := calendar.NewAIHandler(pool)
 	voiceHandler := voice.NewHandler(pool)
@@ -243,6 +245,18 @@ func main() {
 		r.Delete("/google-calendar/config", googleCalendarHandler.Disconnect)
 		r.Post("/google-calendar/sync", googleCalendarHandler.SyncNow)
 		r.Get("/google-calendar/check-weekly", googleCalendarHandler.CheckWeeklySync)
+
+		// Community Feed
+		r.Post("/community/posts", communityHandler.CreatePost)
+		r.Get("/community/feed", communityHandler.GetFeed)
+		r.Get("/community/posts/{id}", communityHandler.GetPost)
+		r.Delete("/community/posts/{id}", communityHandler.DeletePost)
+		r.Post("/community/posts/{id}/like", communityHandler.LikePost)
+		r.Delete("/community/posts/{id}/like", communityHandler.UnlikePost)
+		r.Post("/community/posts/{id}/report", communityHandler.ReportPost)
+		r.Get("/community/my-posts", communityHandler.GetMyPosts)
+		r.Get("/tasks/{id}/posts", communityHandler.GetTaskPosts)
+		r.Get("/routines/{id}/posts", communityHandler.GetRoutinePosts)
 	})
 
 	port := os.Getenv("PORT")
