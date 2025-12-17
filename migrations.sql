@@ -310,10 +310,8 @@ create table public.community_posts (
   -- Moderation
   is_hidden boolean default false,   -- Hidden if reported & reviewed
 
-  created_at timestamp with time zone default now(),
-
-  -- At least one of task_id or routine_id must be set
-  constraint post_must_have_link check (task_id is not null or routine_id is not null)
+  created_at timestamp with time zone default now()
+  -- task_id and routine_id are optional
 );
 
 -- RLS: Public read (non-hidden), own write

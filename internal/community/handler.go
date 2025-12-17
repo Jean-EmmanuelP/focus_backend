@@ -90,11 +90,7 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate: must have task_id or routine_id
-	if req.TaskID == nil && req.RoutineID == nil {
-		http.Error(w, "Must link to a task or routine", http.StatusBadRequest)
-		return
-	}
+	// Task/routine link is now optional
 
 	// Validate image
 	if req.ImageBase64 == "" {
