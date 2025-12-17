@@ -577,13 +577,16 @@ func (h *Handler) getPostByID(ctx context.Context, postID, userID string) (*Comm
 
 func (h *Handler) uploadImageToStorage(userID string, imageData []byte, contentType string) (string, error) {
 	supabaseURL := os.Getenv("SUPABASE_URL")
+	// Try SUPABASE_SERVICE_ROLE_KEY first, fallback to SUPABASE_KEY
 	serviceRoleKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+	if serviceRoleKey == "" {
+		serviceRoleKey = os.Getenv("SUPABASE_KEY")
+	}
 
 	log.Printf("[uploadImageToStorage] Starting upload - userID: %s, imageSize: %d bytes, contentType: %s", userID, len(imageData), contentType)
-	log.Printf("[uploadImageToStorage] SUPABASE_URL set: %v, SERVICE_ROLE_KEY set: %v", supabaseURL != "", serviceRoleKey != "")
 
 	if supabaseURL == "" || serviceRoleKey == "" {
-		log.Printf("[uploadImageToStorage] Missing config - URL: %v, KEY: %v", supabaseURL == "", serviceRoleKey == "")
+		log.Printf("[uploadImageToStorage] Missing config - URL empty: %v, KEY empty: %v", supabaseURL == "", serviceRoleKey == "")
 		return "", fmt.Errorf("missing Supabase configuration")
 	}
 
