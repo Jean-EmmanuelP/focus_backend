@@ -182,6 +182,11 @@ func main() {
 		r.Post("/friend-groups/{id}/invite", crewHandler.InviteToGroup)
 		r.Post("/friend-groups/{id}/leave", crewHandler.LeaveGroup)
 
+		// Group Routines (shared routines for accountability)
+		r.Get("/friend-groups/{id}/routines", crewHandler.ListGroupRoutines)
+		r.Post("/friend-groups/{id}/routines", crewHandler.ShareRoutineWithGroup)
+		r.Delete("/friend-groups/{id}/routines/{groupRoutineId}", crewHandler.RemoveGroupRoutine)
+
 		// Group Invitations
 		r.Get("/group-invitations/received", crewHandler.ListReceivedGroupInvitations)
 		r.Get("/group-invitations/sent", crewHandler.ListSentGroupInvitations)

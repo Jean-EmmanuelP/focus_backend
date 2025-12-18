@@ -2206,3 +2206,305 @@ func (h *Handler) ListGroupsShared(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(groups)
 }
+
+// ============================================================================
+// GROUP ROUTINES - Shared routines for group accountability
+// ============================================================================
+
+// Models for group routines
+type GroupRoutine struct {
+	ID                string                         `json:"id"`
+	GroupID           string                         `json:"group_id"`
+	RoutineID         string                         `json:"routine_id"`
+	Title             string                         `json:"title"`
+	Icon              *string                        `json:"icon"`
+	Frequency         string                         `json:"frequency"`
+	ScheduledTime     *string                        `json:"scheduled_time"`
+	SharedBy          *CrewUserInfo                  `json:"shared_by"`
+	MemberCompletions []GroupRoutineMemberCompletion `json:"member_completions"`
+	CompletionCount   int                            `json:"completion_count"`
+	TotalMembers      int                            `json:"total_members"`
+	CreatedAt         time.Time                      `json:"created_at"`
+}
+
+type GroupRoutineMemberCompletion struct {
+	UserID      string     `json:"user_id"`
+	Pseudo      *string    `json:"pseudo"`
+	FirstName   *string    `json:"first_name"`
+	AvatarUrl   *string    `json:"avatar_url"`
+	Completed   bool       `json:"completed"`
+	CompletedAt *time.Time `json:"completed_at"`
+}
+
+type ShareRoutineDTO struct {
+	RoutineID string `json:"routine_id"`
+}
+
+type GroupRoutinesResponse struct {
+	Routines []GroupRoutine `json:"routines"`
+}
+
+// ============================================================================
+// POST /friend-groups/{id}/routines - Share a routine with a group
+// ============================================================================
+
+func (h *Handler) ShareRoutineWithGroup(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	groupID := chi.URLParam(r, "id")
+
+	var dto ShareRoutineDTO
+	if err := json.NewDecoder(r.Body).Decode(&dto); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if dto.RoutineID == "" {
+		http.Error(w, "routine_id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Verify user is member or owner of the group
+	var hasAccess bool
+	err := h.db.QueryRow(r.Context(), `
+		SELECT EXISTS(
+			SELECT 1 FROM friend_groups WHERE id = $1 AND user_id = $2
+			UNION
+			SELECT 1 FROM friend_group_members WHERE group_id = $1 AND member_id = $2
+		)
+	`, groupID, userID).Scan(&hasAccess)
+	if err != nil || !hasAccess {
+		http.Error(w, "Not a member of this group", http.StatusForbidden)
+		return
+	}
+
+	// Verify user owns the routine
+	var routineExists bool
+	err = h.db.QueryRow(r.Context(), `
+		SELECT EXISTS(SELECT 1 FROM routines WHERE id = $1 AND user_id = $2)
+	`, dto.RoutineID, userID).Scan(&routineExists)
+	if err != nil || !routineExists {
+		http.Error(w, "Routine not found or not owned by you", http.StatusNotFound)
+		return
+	}
+
+	// Insert into group_routines
+	var groupRoutineID string
+	var createdAt time.Time
+	err = h.db.QueryRow(r.Context(), `
+		INSERT INTO group_routines (group_id, routine_id, shared_by)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (group_id, routine_id) DO NOTHING
+		RETURNING id, created_at
+	`, groupID, dto.RoutineID, userID).Scan(&groupRoutineID, &createdAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			http.Error(w, "Routine already shared with this group", http.StatusConflict)
+			return
+		}
+		fmt.Println("Share routine error:", err)
+		http.Error(w, "Failed to share routine", http.StatusInternalServerError)
+		return
+	}
+
+	// Fetch the routine details and return the full response
+	var routine GroupRoutine
+	routine.ID = groupRoutineID
+	routine.GroupID = groupID
+	routine.RoutineID = dto.RoutineID
+	routine.CreatedAt = createdAt
+
+	var sharer CrewUserInfo
+	err = h.db.QueryRow(r.Context(), `
+		SELECT r.title, r.icon, r.frequency, r.scheduled_time,
+		       u.id, u.pseudo, u.first_name, u.last_name, u.avatar_url
+		FROM routines r
+		JOIN users u ON r.user_id = u.id
+		WHERE r.id = $1
+	`, dto.RoutineID).Scan(
+		&routine.Title, &routine.Icon, &routine.Frequency, &routine.ScheduledTime,
+		&sharer.ID, &sharer.Pseudo, &sharer.FirstName, &sharer.LastName, &sharer.AvatarUrl,
+	)
+	if err != nil {
+		fmt.Println("Fetch routine details error:", err)
+	}
+	routine.SharedBy = &sharer
+
+	routine.MemberCompletions = []GroupRoutineMemberCompletion{}
+	routine.CompletionCount = 0
+	routine.TotalMembers = 0
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(routine)
+}
+
+// ============================================================================
+// GET /friend-groups/{id}/routines - List group's shared routines with completions
+// ============================================================================
+
+func (h *Handler) ListGroupRoutines(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	groupID := chi.URLParam(r, "id")
+	dateStr := r.URL.Query().Get("date")
+
+	// Default to today if no date provided
+	if dateStr == "" {
+		dateStr = time.Now().Format("2006-01-02")
+	}
+
+	// Verify user is member or owner of the group
+	var hasAccess bool
+	err := h.db.QueryRow(r.Context(), `
+		SELECT EXISTS(
+			SELECT 1 FROM friend_groups WHERE id = $1 AND user_id = $2
+			UNION
+			SELECT 1 FROM friend_group_members WHERE group_id = $1 AND member_id = $2
+		)
+	`, groupID, userID).Scan(&hasAccess)
+	if err != nil || !hasAccess {
+		http.Error(w, "Not a member of this group", http.StatusForbidden)
+		return
+	}
+
+	// Fetch all shared routines for this group
+	routinesQuery := `
+		SELECT gr.id, gr.group_id, gr.routine_id, gr.created_at,
+		       r.title, r.icon, r.frequency, r.scheduled_time,
+		       u.id as sharer_id, u.pseudo as sharer_pseudo, u.first_name as sharer_first_name,
+		       u.last_name as sharer_last_name, u.avatar_url as sharer_avatar
+		FROM group_routines gr
+		JOIN routines r ON gr.routine_id = r.id
+		JOIN users u ON gr.shared_by = u.id
+		WHERE gr.group_id = $1
+		ORDER BY r.scheduled_time NULLS LAST, r.title
+	`
+
+	rows, err := h.db.Query(r.Context(), routinesQuery, groupID)
+	if err != nil {
+		fmt.Println("List group routines error:", err)
+		http.Error(w, "Failed to list group routines", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	routines := []GroupRoutine{}
+	for rows.Next() {
+		var gr GroupRoutine
+		var sharer CrewUserInfo
+		if err := rows.Scan(
+			&gr.ID, &gr.GroupID, &gr.RoutineID, &gr.CreatedAt,
+			&gr.Title, &gr.Icon, &gr.Frequency, &gr.ScheduledTime,
+			&sharer.ID, &sharer.Pseudo, &sharer.FirstName, &sharer.LastName, &sharer.AvatarUrl,
+		); err != nil {
+			fmt.Println("Scan group routine error:", err)
+			continue
+		}
+		gr.SharedBy = &sharer
+		gr.MemberCompletions = []GroupRoutineMemberCompletion{}
+		routines = append(routines, gr)
+	}
+
+	// For each routine, fetch member completions
+	for i := range routines {
+		completionsQuery := `
+			SELECT
+				u.id,
+				u.pseudo,
+				u.first_name,
+				u.avatar_url,
+				CASE WHEN rc.id IS NOT NULL THEN true ELSE false END as completed,
+				rc.completed_at
+			FROM (
+				SELECT member_id as user_id FROM friend_group_members WHERE group_id = $1
+				UNION
+				SELECT user_id FROM friend_groups WHERE id = $1
+			) members
+			JOIN users u ON members.user_id = u.id
+			LEFT JOIN routine_completions rc
+				ON rc.user_id = u.id
+				AND rc.routine_id = $2
+				AND rc.completion_date = $3::date
+			ORDER BY completed DESC, u.pseudo, u.first_name
+		`
+
+		compRows, err := h.db.Query(r.Context(), completionsQuery, groupID, routines[i].RoutineID, dateStr)
+		if err != nil {
+			fmt.Println("Fetch completions error:", err)
+			continue
+		}
+
+		completionCount := 0
+		totalMembers := 0
+		for compRows.Next() {
+			var mc GroupRoutineMemberCompletion
+			if err := compRows.Scan(&mc.UserID, &mc.Pseudo, &mc.FirstName, &mc.AvatarUrl, &mc.Completed, &mc.CompletedAt); err != nil {
+				fmt.Println("Scan completion error:", err)
+				continue
+			}
+			routines[i].MemberCompletions = append(routines[i].MemberCompletions, mc)
+			totalMembers++
+			if mc.Completed {
+				completionCount++
+			}
+		}
+		compRows.Close()
+
+		routines[i].CompletionCount = completionCount
+		routines[i].TotalMembers = totalMembers
+	}
+
+	response := GroupRoutinesResponse{Routines: routines}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// ============================================================================
+// DELETE /friend-groups/{groupId}/routines/{groupRoutineId} - Remove routine from group
+// ============================================================================
+
+func (h *Handler) RemoveGroupRoutine(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	groupID := chi.URLParam(r, "id")
+	groupRoutineID := chi.URLParam(r, "groupRoutineId")
+
+	// Check if user is the sharer OR the group owner
+	var canDelete bool
+	err := h.db.QueryRow(r.Context(), `
+		SELECT EXISTS(
+			SELECT 1 FROM group_routines gr
+			WHERE gr.id = $1 AND gr.group_id = $2 AND gr.shared_by = $3
+			UNION
+			SELECT 1 FROM group_routines gr
+			JOIN friend_groups g ON gr.group_id = g.id
+			WHERE gr.id = $1 AND gr.group_id = $2 AND g.user_id = $3
+		)
+	`, groupRoutineID, groupID, userID).Scan(&canDelete)
+	if err != nil {
+		fmt.Println("Check delete permission error:", err)
+		http.Error(w, "Failed to check permissions", http.StatusInternalServerError)
+		return
+	}
+
+	if !canDelete {
+		http.Error(w, "Only the sharer or group owner can remove this routine", http.StatusForbidden)
+		return
+	}
+
+	// Delete the group routine
+	result, err := h.db.Exec(r.Context(), `
+		DELETE FROM group_routines
+		WHERE id = $1 AND group_id = $2
+	`, groupRoutineID, groupID)
+	if err != nil {
+		fmt.Println("Delete group routine error:", err)
+		http.Error(w, "Failed to remove routine from group", http.StatusInternalServerError)
+		return
+	}
+
+	if result.RowsAffected() == 0 {
+		http.Error(w, "Group routine not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}

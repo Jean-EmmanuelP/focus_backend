@@ -290,6 +290,62 @@ create index idx_friend_group_members_member on public.friend_group_members(memb
 
 
 -- ==========================================
+-- 10b. GROUP ROUTINES (Shared Routines)
+-- ==========================================
+-- Links routines to groups for shared accountability
+create table public.group_routines (
+  id uuid default gen_random_uuid() primary key,
+  group_id uuid not null references public.friend_groups on delete cascade,
+  routine_id uuid not null references public.routines on delete cascade,
+  shared_by uuid not null references auth.users on delete cascade,
+  created_at timestamp with time zone default now(),
+
+  -- A routine can only be shared once per group
+  unique (group_id, routine_id)
+);
+
+-- RLS: Group members can read, sharer/owner can manage
+alter table public.group_routines enable row level security;
+
+-- Group members can view shared routines
+create policy "Group members can view shared routines" on public.group_routines
+  for select using (
+    exists (
+      select 1 from public.friend_groups g
+      where g.id = group_id and g.user_id = auth.uid()
+    )
+    or exists (
+      select 1 from public.friend_group_members gm
+      where gm.group_id = group_routines.group_id and gm.member_id = auth.uid()
+    )
+  );
+
+-- Users can share their own routines
+create policy "Users can share own routines" on public.group_routines
+  for insert with check (
+    auth.uid() = shared_by
+    and exists (
+      select 1 from public.routines r
+      where r.id = routine_id and r.user_id = auth.uid()
+    )
+  );
+
+-- Group owner or sharer can delete
+create policy "Owner or sharer can delete" on public.group_routines
+  for delete using (
+    auth.uid() = shared_by
+    or exists (
+      select 1 from public.friend_groups g
+      where g.id = group_id and g.user_id = auth.uid()
+    )
+  );
+
+-- Indexes
+create index idx_group_routines_group on public.group_routines(group_id);
+create index idx_group_routines_routine on public.group_routines(routine_id);
+
+
+-- ==========================================
 -- 11. COMMUNITY POSTS (Social Feed)
 -- ==========================================
 create table public.community_posts (
