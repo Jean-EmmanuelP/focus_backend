@@ -39,6 +39,7 @@ type GoogleCalendarConfig struct {
 	SyncDirection string     `json:"syncDirection"` // bidirectional, to_google, from_google
 	CalendarID    string     `json:"calendarId"`
 	GoogleEmail   *string    `json:"googleEmail,omitempty"`
+	Timezone      string     `json:"timezone"` // User's timezone for events
 	LastSyncAt    *time.Time `json:"lastSyncAt,omitempty"`
 	CreatedAt     time.Time  `json:"createdAt"`
 	UpdatedAt     time.Time  `json:"updatedAt"`
@@ -413,18 +414,25 @@ func (h *Handler) SyncTask(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) getConfig(ctx context.Context, userID string) (*GoogleCalendarConfig, error) {
 	var config GoogleCalendarConfig
+	var timezone *string
 	err := h.db.QueryRow(ctx, `
-		SELECT id, user_id, access_token, refresh_token, token_expiry, is_enabled, sync_direction, calendar_id, google_email
+		SELECT id, user_id, access_token, refresh_token, token_expiry, is_enabled, sync_direction, calendar_id, google_email, COALESCE(timezone, 'Europe/Paris')
 		FROM google_calendar_config
 		WHERE user_id = $1
 	`, userID).Scan(
 		&config.ID, &config.UserID, &config.AccessToken, &config.RefreshToken,
 		&config.TokenExpiry, &config.IsEnabled, &config.SyncDirection,
-		&config.CalendarID, &config.GoogleEmail,
+		&config.CalendarID, &config.GoogleEmail, &timezone,
 	)
 
 	if err != nil {
 		return nil, err
+	}
+
+	if timezone != nil {
+		config.Timezone = *timezone
+	} else {
+		config.Timezone = "Europe/Paris"
 	}
 
 	return &config, nil
@@ -801,16 +809,20 @@ func (h *Handler) createOrUpdateGoogleEvent(ctx context.Context, config GoogleCa
 		endDateTime = date + "T" + t
 	}
 
-	// Build event payload
+	// Build event payload - use timezone from config
+	tz := config.Timezone
+	if tz == "" {
+		tz = "Europe/Paris"
+	}
 	eventPayload := map[string]interface{}{
 		"summary": title,
 		"start": map[string]string{
 			"dateTime": startDateTime,
-			"timeZone": "Europe/Paris",
+			"timeZone": tz,
 		},
 		"end": map[string]string{
 			"dateTime": endDateTime,
-			"timeZone": "Europe/Paris",
+			"timeZone": tz,
 		},
 	}
 
@@ -922,16 +934,20 @@ func (h *Handler) createOrUpdateWeeklyRoutineEvents(ctx context.Context, config 
 			endDateTime = date + "T" + t
 		}
 
-		// Build event payload
+		// Build event payload - use timezone from config
+		tz := config.Timezone
+		if tz == "" {
+			tz = "Europe/Paris"
+		}
 		eventPayload := map[string]interface{}{
 			"summary": title,
 			"start": map[string]string{
 				"dateTime": startDateTime,
-				"timeZone": "Europe/Paris",
+				"timeZone": tz,
 			},
 			"end": map[string]string{
 				"dateTime": endDateTime,
-				"timeZone": "Europe/Paris",
+				"timeZone": tz,
 			},
 		}
 

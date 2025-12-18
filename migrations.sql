@@ -60,12 +60,14 @@ create policy "Users can manage own quests" on public.quests
 create table public.routines (
   id uuid default gen_random_uuid() primary key,
   user_id uuid not null references auth.users on delete cascade,
-  area_id uuid not null references public.areas on delete cascade,
-  
+  area_id uuid references public.areas on delete cascade,
+
   title text not null,         -- "Drink 2L Water"
   frequency text default 'daily', -- "daily", "weekly"
   icon text,                   -- "water-drop"
-  
+  scheduled_time text,         -- HH:mm format for calendar display
+  duration_minutes integer default 30, -- Duration for Google Calendar events
+
   created_at timestamp with time zone default now()
 );
 
@@ -193,6 +195,11 @@ create table public.tasks (
   -- AI fields
   is_ai_generated boolean default false,
   ai_notes text,
+
+  -- Google Calendar sync fields
+  google_event_id text,
+  google_calendar_id text,
+  last_synced_at timestamp with time zone,
 
   -- Timestamps
   created_at timestamp with time zone default now(),
@@ -523,3 +530,66 @@ create policy "Users can manage own journal bilans" on public.journal_bilans
 -- Indexes
 create index idx_journal_bilans_user on public.journal_bilans(user_id);
 create index idx_journal_bilans_period on public.journal_bilans(user_id, bilan_type, period_start desc);
+
+
+-- ==========================================
+-- 16. GOOGLE CALENDAR CONFIG
+-- ==========================================
+create table public.google_calendar_config (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid not null references auth.users on delete cascade,
+
+  -- OAuth tokens
+  access_token text not null,
+  refresh_token text not null,
+  token_expiry timestamp with time zone not null,
+
+  -- Configuration
+  is_enabled boolean default true,
+  sync_direction text default 'bidirectional', -- bidirectional, to_google, from_google
+  calendar_id text default 'primary',
+  google_email text,
+  timezone text default 'Europe/Paris', -- User's timezone for Google Calendar events
+
+  -- Sync tracking
+  last_sync_at timestamp with time zone,
+  last_routine_sync_at timestamp with time zone,
+
+  created_at timestamp with time zone default now(),
+  updated_at timestamp with time zone default now(),
+
+  -- One config per user
+  unique (user_id)
+);
+
+-- RLS
+alter table public.google_calendar_config enable row level security;
+create policy "Users can manage own google_calendar_config" on public.google_calendar_config
+  using (auth.uid() = user_id);
+
+
+-- ==========================================
+-- 17. ROUTINE GOOGLE EVENTS
+-- Tracks weekly routine events in Google Calendar
+-- ==========================================
+create table public.routine_google_events (
+  routine_id uuid not null references public.routines on delete cascade,
+  user_id uuid not null references auth.users on delete cascade,
+  google_event_id text not null,
+  google_calendar_id text not null,
+  event_date date not null,
+
+  created_at timestamp with time zone default now(),
+
+  -- One event per routine per date
+  primary key (routine_id, event_date)
+);
+
+-- RLS
+alter table public.routine_google_events enable row level security;
+create policy "Users can manage own routine_google_events" on public.routine_google_events
+  using (auth.uid() = user_id);
+
+-- Indexes
+create index idx_routine_google_events_user on public.routine_google_events(user_id);
+create index idx_routine_google_events_routine on public.routine_google_events(routine_id);
