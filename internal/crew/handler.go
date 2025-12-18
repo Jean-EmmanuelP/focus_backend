@@ -1305,8 +1305,9 @@ type AddGroupMembersDTO struct {
 func (h *Handler) ListGroups(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 
+	// Get groups where user is owner OR member
 	query := `
-		SELECT
+		SELECT DISTINCT
 			g.id,
 			g.name,
 			g.description,
@@ -1314,7 +1315,8 @@ func (h *Handler) ListGroups(w http.ResponseWriter, r *http.Request) {
 			g.color,
 			g.created_at,
 			g.updated_at,
-			COALESCE(mc.member_count, 0) as member_count
+			COALESCE(mc.member_count, 0) + 1 as member_count,
+			(g.user_id = $1) as is_owner
 		FROM friend_groups g
 		LEFT JOIN (
 			SELECT group_id, COUNT(*)::int as member_count
@@ -1322,6 +1324,7 @@ func (h *Handler) ListGroups(w http.ResponseWriter, r *http.Request) {
 			GROUP BY group_id
 		) mc ON g.id = mc.group_id
 		WHERE g.user_id = $1
+		   OR g.id IN (SELECT group_id FROM friend_group_members WHERE member_id = $1)
 		ORDER BY g.name
 	`
 
@@ -1335,7 +1338,8 @@ func (h *Handler) ListGroups(w http.ResponseWriter, r *http.Request) {
 	groups := []CrewGroup{}
 	for rows.Next() {
 		var g CrewGroup
-		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.Icon, &g.Color, &g.CreatedAt, &g.UpdatedAt, &g.MemberCount); err != nil {
+		var isOwner bool
+		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.Icon, &g.Color, &g.CreatedAt, &g.UpdatedAt, &g.MemberCount, &isOwner); err != nil {
 			continue
 		}
 		groups = append(groups, g)
@@ -1441,13 +1445,27 @@ func (h *Handler) GetGroup(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 	groupID := chi.URLParam(r, "id")
 
-	// Get group (verify ownership)
-	var group CrewGroup
+	// Verify user is owner OR member of the group
+	var hasAccess bool
 	err := h.db.QueryRow(r.Context(), `
+		SELECT EXISTS(
+			SELECT 1 FROM friend_groups WHERE id = $1 AND user_id = $2
+			UNION
+			SELECT 1 FROM friend_group_members WHERE group_id = $1 AND member_id = $2
+		)
+	`, groupID, userID).Scan(&hasAccess)
+	if err != nil || !hasAccess {
+		http.Error(w, "Group not found", http.StatusNotFound)
+		return
+	}
+
+	// Get group details
+	var group CrewGroup
+	err = h.db.QueryRow(r.Context(), `
 		SELECT id, name, description, icon, color, created_at, updated_at
 		FROM friend_groups
-		WHERE id = $1 AND user_id = $2
-	`, groupID, userID).Scan(&group.ID, &group.Name, &group.Description, &group.Icon, &group.Color, &group.CreatedAt, &group.UpdatedAt)
+		WHERE id = $1
+	`, groupID).Scan(&group.ID, &group.Name, &group.Description, &group.Icon, &group.Color, &group.CreatedAt, &group.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			http.Error(w, "Group not found", http.StatusNotFound)

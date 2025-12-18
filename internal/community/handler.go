@@ -384,6 +384,13 @@ func (h *Handler) ReportPost(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetMyPosts(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 
+	// Parse pagination (optional, defaults to all posts)
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 50 {
+		limit = 50
+	}
+
 	rows, err := h.db.Query(r.Context(), `
 		SELECT
 			p.id, p.user_id, p.task_id, p.routine_id, p.image_url, p.caption, p.likes_count, p.created_at,
@@ -396,7 +403,8 @@ func (h *Handler) GetMyPosts(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN routines ro ON ro.id = p.routine_id
 		WHERE p.user_id = $1
 		ORDER BY p.created_at DESC
-	`, userID)
+		LIMIT $2 OFFSET $3
+	`, userID, limit+1, offset)
 
 	if err != nil {
 		log.Printf("[GetMyPosts] Query error: %v", err)
@@ -429,8 +437,21 @@ func (h *Handler) GetMyPosts(w http.ResponseWriter, r *http.Request) {
 		posts = append(posts, post)
 	}
 
+	// Check if there's more
+	hasMore := len(posts) > limit
+	if hasMore {
+		posts = posts[:limit]
+	}
+
+	// Return FeedResponse format (same as GetFeed)
+	response := FeedResponse{
+		Posts:      posts,
+		HasMore:    hasMore,
+		NextOffset: offset + limit,
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(posts)
+	json.NewEncoder(w).Encode(response)
 }
 
 // GetTaskPosts returns posts linked to a specific task
