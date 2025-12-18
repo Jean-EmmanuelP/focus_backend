@@ -74,6 +74,7 @@ type LeaderboardEntry struct {
 	IsCrewMember        bool    `json:"is_crew_member"`
 	HasPendingRequest   bool    `json:"has_pending_request"`
 	RequestDirection    *string `json:"request_direction"`
+	IsSelf              bool    `json:"is_self"`
 }
 
 type SearchUserResult struct {
@@ -90,6 +91,7 @@ type SearchUserResult struct {
 	IsCrewMember      bool    `json:"is_crew_member"`
 	HasPendingRequest bool    `json:"has_pending_request"`
 	RequestDirection  *string `json:"request_direction"`
+	IsSelf            bool    `json:"is_self"`
 }
 
 type CrewMemberDay struct {
@@ -736,6 +738,7 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		e.Rank = int(rank)
+		e.IsSelf = (e.ID == userID)
 		if lastActive != nil {
 			formatted := lastActive.Format(time.RFC3339)
 			e.LastActive = &formatted
@@ -769,13 +772,42 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if current user is in their crew
+	// Check if current user is in their crew (friends)
 	var isCrewMember bool
 	crewQuery := `SELECT EXISTS(SELECT 1 FROM friendships WHERE user_id = $1 AND member_id = $2)`
 	if err := h.db.QueryRow(r.Context(), crewQuery, userID, memberID).Scan(&isCrewMember); err != nil {
 		fmt.Println("Check crew member error:", err)
-		// Assume not a crew member on error
 		isCrewMember = false
+	}
+
+	// Check if users share a group (either as owner or member)
+	var sharesGroup bool
+	groupQuery := `
+		SELECT EXISTS(
+			-- Both are in same group as members
+			SELECT 1 FROM friend_group_members gm1
+			JOIN friend_group_members gm2 ON gm1.group_id = gm2.group_id
+			WHERE gm1.member_id = $1 AND gm2.member_id = $2
+			UNION
+			-- User is member, target is owner
+			SELECT 1 FROM friend_group_members gm
+			JOIN friend_groups g ON gm.group_id = g.id
+			WHERE gm.member_id = $1 AND g.user_id = $2
+			UNION
+			-- User is owner, target is member
+			SELECT 1 FROM friend_groups g
+			JOIN friend_group_members gm ON g.id = gm.group_id
+			WHERE g.user_id = $1 AND gm.member_id = $2
+			UNION
+			-- Both are owners of same group (edge case)
+			SELECT 1 FROM friend_groups g1
+			JOIN friend_groups g2 ON g1.id = g2.id
+			WHERE g1.user_id = $1 AND g2.user_id = $2
+		)
+	`
+	if err := h.db.QueryRow(r.Context(), groupQuery, userID, memberID).Scan(&sharesGroup); err != nil {
+		fmt.Println("Check group membership error:", err)
+		sharesGroup = false
 	}
 
 	// Check permission
@@ -783,8 +815,8 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Day is private", http.StatusForbidden)
 		return
 	}
-	if visibility == "crew" && !isCrewMember {
-		http.Error(w, "Not a crew member", http.StatusForbidden)
+	if visibility == "crew" && !isCrewMember && !sharesGroup {
+		http.Error(w, "Not a crew member or group member", http.StatusForbidden)
 		return
 	}
 
@@ -1277,6 +1309,7 @@ type CrewGroupMember struct {
 	Email     *string `json:"email"`
 	AvatarUrl *string `json:"avatar_url"`
 	AddedAt   string  `json:"added_at"`
+	IsOwner   bool    `json:"is_owner"`
 }
 
 type CreateGroupDTO struct {
@@ -1459,13 +1492,19 @@ func (h *Handler) GetGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get group details
+	// Get group details with owner info
 	var group CrewGroup
+	var ownerID string
+	var ownerPseudo, ownerFirstName, ownerLastName, ownerEmail, ownerAvatarUrl *string
+	var groupCreatedAt time.Time
 	err = h.db.QueryRow(r.Context(), `
-		SELECT id, name, description, icon, color, created_at, updated_at
-		FROM friend_groups
-		WHERE id = $1
-	`, groupID).Scan(&group.ID, &group.Name, &group.Description, &group.Icon, &group.Color, &group.CreatedAt, &group.UpdatedAt)
+		SELECT g.id, g.name, g.description, g.icon, g.color, g.created_at, g.updated_at,
+		       g.user_id, u.pseudo, u.first_name, u.last_name, u.email, u.avatar_url
+		FROM friend_groups g
+		JOIN users u ON g.user_id = u.id
+		WHERE g.id = $1
+	`, groupID).Scan(&group.ID, &group.Name, &group.Description, &group.Icon, &group.Color, &group.CreatedAt, &group.UpdatedAt,
+		&ownerID, &ownerPseudo, &ownerFirstName, &ownerLastName, &ownerEmail, &ownerAvatarUrl)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			http.Error(w, "Group not found", http.StatusNotFound)
@@ -1474,8 +1513,24 @@ func (h *Handler) GetGroup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to get group", http.StatusInternalServerError)
 		return
 	}
+	groupCreatedAt = group.CreatedAt
 
-	// Get members with user info
+	// Start with owner as first member
+	members := []CrewGroupMember{
+		{
+			ID:        ownerID, // Use owner's user ID as member ID
+			MemberID:  ownerID,
+			Pseudo:    ownerPseudo,
+			FirstName: ownerFirstName,
+			LastName:  ownerLastName,
+			Email:     ownerEmail,
+			AvatarUrl: ownerAvatarUrl,
+			AddedAt:   groupCreatedAt.Format(time.RFC3339),
+			IsOwner:   true,
+		},
+	}
+
+	// Get other members
 	rows, err := h.db.Query(r.Context(), `
 		SELECT
 			gm.id,
@@ -1497,7 +1552,6 @@ func (h *Handler) GetGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	members := []CrewGroupMember{}
 	for rows.Next() {
 		var m CrewGroupMember
 		var addedAt time.Time
@@ -1505,6 +1559,7 @@ func (h *Handler) GetGroup(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		m.AddedAt = addedAt.Format(time.RFC3339)
+		m.IsOwner = false
 		members = append(members, m)
 	}
 
