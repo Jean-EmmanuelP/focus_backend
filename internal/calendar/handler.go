@@ -192,7 +192,13 @@ func (h *Handler) GetDayPlan(w http.ResponseWriter, r *http.Request) {
 		date = time.Now().Format("2006-01-02")
 	}
 
+	// Always fetch tasks and time blocks, regardless of day_plan existence
+	timeBlocks, _ := h.getTimeBlocksForDay(r.Context(), userID, date)
+	tasks, _ := h.getTasksForDay(r.Context(), userID, date, nil)
+
+	// Try to get day_plan (optional)
 	var plan DayPlan
+	var dayPlanPtr *DayPlan
 	err := h.db.QueryRow(r.Context(), `
 		SELECT id, user_id, date, ideal_day_prompt, ai_summary, progress, status, created_at, updated_at
 		FROM day_plans
@@ -203,31 +209,32 @@ func (h *Handler) GetDayPlan(w http.ResponseWriter, r *http.Request) {
 		&plan.CreatedAt, &plan.UpdatedAt,
 	)
 
-	if err != nil {
-		// No plan for this day - return empty response
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(CalendarDayResponse{
-			TimeBlocks: []TimeBlock{},
-			Tasks:      []Task{},
-			Progress:   0,
-		})
-		return
+	if err == nil {
+		plan.TimeBlocks = timeBlocks
+		plan.Tasks = tasks
+		dayPlanPtr = &plan
 	}
 
-	// Get time blocks for this day
-	timeBlocks, _ := h.getTimeBlocksForDay(r.Context(), userID, date)
-	plan.TimeBlocks = timeBlocks
-
-	// Get tasks for this day
-	tasks, _ := h.getTasksForDay(r.Context(), userID, date, nil)
-	plan.Tasks = tasks
+	// Calculate progress from tasks if no day_plan
+	progress := 0
+	if dayPlanPtr != nil {
+		progress = plan.Progress
+	} else if len(tasks) > 0 {
+		completedCount := 0
+		for _, t := range tasks {
+			if t.Status == "completed" {
+				completedCount++
+			}
+		}
+		progress = (completedCount * 100) / len(tasks)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(CalendarDayResponse{
-		DayPlan:    &plan,
+		DayPlan:    dayPlanPtr,
 		TimeBlocks: timeBlocks,
 		Tasks:      tasks,
-		Progress:   plan.Progress,
+		Progress:   progress,
 	})
 }
 
