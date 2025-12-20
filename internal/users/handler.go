@@ -113,6 +113,11 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Debug log for productivity peak
+	if req.ProductivityPeak != nil {
+		fmt.Println("📊 Updating ProductivityPeak to:", *req.ProductivityPeak)
+	}
+
 	// Dynamic SQL Builder - only update fields that were sent
 	setParts := []string{}
 	args := []interface{}{}
