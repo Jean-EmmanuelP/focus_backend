@@ -593,3 +593,10 @@ create policy "Users can manage own routine_google_events" on public.routine_goo
 -- Indexes
 create index idx_routine_google_events_user on public.routine_google_events(user_id);
 create index idx_routine_google_events_routine on public.routine_google_events(routine_id);
+
+-- ==========================================
+-- 18. USER PRODUCTIVITY PREFERENCES
+-- Add productivity_peak column to users
+-- Values: 'morning', 'afternoon', 'evening'
+-- ==========================================
+alter table public.users add column if not exists productivity_peak text;

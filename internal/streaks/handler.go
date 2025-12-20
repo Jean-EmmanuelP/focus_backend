@@ -42,17 +42,14 @@ type DayValidation struct {
 	TotalTasks        int    `json:"total_tasks"`
 	CompletedTasks    int    `json:"completed_tasks"`
 	TaskRate          int    `json:"task_rate"` // percentage
-	FocusSessions     int    `json:"focus_sessions"`
 	TotalItems        int    `json:"total_items"` // tasks + routines
 	CompletedItems    int    `json:"completed_items"`
 	OverallRate       int    `json:"overall_rate"` // combined percentage
 	IsValid           bool   `json:"is_valid"`
-	// Validation requirements
+	// Validation requirements (simplified: 60% completion + at least 1 task)
 	RequiredCompletionRate int  `json:"required_completion_rate"` // 60%
-	RequiredFocusSessions  int  `json:"required_focus_sessions"`  // 2
-	RequiredMinTasks       int  `json:"required_min_tasks"`       // 2
+	RequiredMinTasks       int  `json:"required_min_tasks"`       // 1
 	MeetsCompletionRate    bool `json:"meets_completion_rate"`
-	MeetsFocusSessions     bool `json:"meets_focus_sessions"`
 	MeetsMinTasks          bool `json:"meets_min_tasks"`
 }
 
@@ -113,17 +110,15 @@ func (h *Handler) GetDayValidation(w http.ResponseWriter, r *http.Request) {
 }
 
 // validateDay checks if a specific day counts towards the streak
-// Rules:
+// Rules (simplified):
 // 1. At least 60% of daily items (tasks + routines) completed
-// 2. At least 2 focus sessions completed
-// 3. At least 2 tasks in the calendar for the day
+// 2. At least 1 task in the calendar for the day
 func (h *Handler) validateDay(ctx context.Context, userID string, date string) DayValidation {
 	validation := DayValidation{
 		Date:                   date,
 		IsValid:                false,
 		RequiredCompletionRate: 60,
-		RequiredFocusSessions:  2,
-		RequiredMinTasks:       2,
+		RequiredMinTasks:       1,
 	}
 
 	// Parse date for day of week calculation
@@ -241,22 +236,7 @@ func (h *Handler) validateDay(ctx context.Context, userID string, date string) D
 		validation.TaskRate = 100
 	}
 
-	// 4. Count focus sessions for the day
-	var focusSessions int
-	err = h.db.QueryRow(ctx, `
-		SELECT COUNT(*)
-		FROM public.focus_sessions
-		WHERE user_id = $1
-		AND DATE(started_at) = $2::date
-		AND status = 'completed'
-	`, userID, date).Scan(&focusSessions)
-	if err != nil {
-		fmt.Printf("❌ Streak: Error counting focus sessions: %v\n", err)
-	}
-
-	validation.FocusSessions = focusSessions
-
-	// 5. Calculate overall completion rate (tasks + routines)
+	// Calculate overall completion rate (tasks + routines)
 	validation.TotalItems = totalTasks + totalRoutines
 	validation.CompletedItems = completedTasks + completedRoutines
 
@@ -267,18 +247,14 @@ func (h *Handler) validateDay(ctx context.Context, userID string, date string) D
 		validation.OverallRate = 0
 	}
 
-	// 6. Check validation requirements
+	// Check validation requirements (simplified)
 	validation.MeetsCompletionRate = validation.OverallRate >= validation.RequiredCompletionRate
-	validation.MeetsFocusSessions = validation.FocusSessions >= validation.RequiredFocusSessions
-	validation.MeetsMinTasks = validation.TotalTasks >= validation.RequiredMinTasks
+	validation.MeetsMinTasks = validation.TotalItems >= validation.RequiredMinTasks
 
-	// Day is valid if ALL conditions are met:
+	// Day is valid if:
 	// 1. At least 60% of items completed
-	// 2. At least 2 focus sessions
-	// 3. At least 2 tasks in calendar
-	validation.IsValid = validation.MeetsCompletionRate &&
-		validation.MeetsFocusSessions &&
-		validation.MeetsMinTasks
+	// 2. At least 1 task/routine in calendar
+	validation.IsValid = validation.MeetsCompletionRate && validation.MeetsMinTasks
 
 	return validation
 }

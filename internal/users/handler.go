@@ -18,32 +18,34 @@ import (
 
 // 1. The Model: Represents the database row in 'public.users'
 type User struct {
-	ID            string  `json:"id"`
-	Email         *string `json:"email"`
-	Pseudo        *string `json:"pseudo"`         // Display name / username
-	FirstName     *string `json:"first_name"`
-	LastName      *string `json:"last_name"`
-	Gender        *string `json:"gender"`         // male, female, other, prefer_not_to_say
-	Age           *int    `json:"age"`
-	Description   *string `json:"description"`    // Bio / tagline
-	Hobbies       *string `json:"hobbies"`        // Comma-separated or free text
-	LifeGoal      *string `json:"life_goal"`      // What they want to achieve
-	AvatarURL     *string `json:"avatar_url"`
-	DayVisibility *string `json:"day_visibility"` // public, crew, private
+	ID              string  `json:"id"`
+	Email           *string `json:"email"`
+	Pseudo          *string `json:"pseudo"`           // Display name / username
+	FirstName       *string `json:"first_name"`
+	LastName        *string `json:"last_name"`
+	Gender          *string `json:"gender"`           // male, female, other, prefer_not_to_say
+	Age             *int    `json:"age"`
+	Description     *string `json:"description"`      // Bio / tagline
+	Hobbies         *string `json:"hobbies"`          // Comma-separated or free text
+	LifeGoal        *string `json:"life_goal"`        // What they want to achieve
+	AvatarURL       *string `json:"avatar_url"`
+	DayVisibility   *string `json:"day_visibility"`   // public, crew, private
+	ProductivityPeak *string `json:"productivity_peak"` // morning, afternoon, evening
 }
 
 // 2. The DTO: Represents what a user is ALLOWED to update
 // The DTO needs pointers to distinguish between "empty string" and "missing field"
 type UpdateUserRequest struct {
-	Pseudo      *string `json:"pseudo"`
-	FirstName   *string `json:"first_name"`
-	LastName    *string `json:"last_name"`
-	Gender      *string `json:"gender"`
-	Age         *int    `json:"age"`
-	Description *string `json:"description"`
-	Hobbies     *string `json:"hobbies"`
-	LifeGoal    *string `json:"life_goal"`
-	AvatarURL   *string `json:"avatar_url"`
+	Pseudo           *string `json:"pseudo"`
+	FirstName        *string `json:"first_name"`
+	LastName         *string `json:"last_name"`
+	Gender           *string `json:"gender"`
+	Age              *int    `json:"age"`
+	Description      *string `json:"description"`
+	Hobbies          *string `json:"hobbies"`
+	LifeGoal         *string `json:"life_goal"`
+	AvatarURL        *string `json:"avatar_url"`
+	ProductivityPeak *string `json:"productivity_peak"`
 }
 
 // 3. The Handler: Holds dependencies (the database client)
@@ -66,7 +68,8 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	query := `
 		SELECT id, email, pseudo, first_name, last_name, gender, age,
 		       description, hobbies, life_goal, avatar_url,
-		       COALESCE(day_visibility, 'crew') as day_visibility
+		       COALESCE(day_visibility, 'crew') as day_visibility,
+		       productivity_peak
 		FROM public.users
 		WHERE id = $1
 	`
@@ -85,6 +88,7 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		&user.LifeGoal,
 		&user.AvatarURL,
 		&user.DayVisibility,
+		&user.ProductivityPeak,
 	)
 
 	if err != nil {
@@ -168,6 +172,12 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		argId++
 	}
 
+	if req.ProductivityPeak != nil {
+		setParts = append(setParts, fmt.Sprintf("productivity_peak = $%d", argId))
+		args = append(args, *req.ProductivityPeak)
+		argId++
+	}
+
 	if len(setParts) == 0 {
 		http.Error(w, "No fields to update", http.StatusBadRequest)
 		return
@@ -177,7 +187,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	args = append(args, userID)
 	query := fmt.Sprintf(
 		`UPDATE public.users SET %s WHERE id = $%d
-		 RETURNING id, email, pseudo, first_name, last_name, gender, age, description, hobbies, life_goal, avatar_url`,
+		 RETURNING id, email, pseudo, first_name, last_name, gender, age, description, hobbies, life_goal, avatar_url, day_visibility, productivity_peak`,
 		strings.Join(setParts, ", "),
 		argId,
 	)
@@ -196,6 +206,8 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		&updatedUser.Hobbies,
 		&updatedUser.LifeGoal,
 		&updatedUser.AvatarURL,
+		&updatedUser.DayVisibility,
+		&updatedUser.ProductivityPeak,
 	)
 
 	if err != nil {
