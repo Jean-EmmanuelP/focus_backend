@@ -1,6 +1,7 @@
 package focus
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"firelevel-backend/internal/auth"
+	ws "firelevel-backend/internal/websocket"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -94,6 +96,11 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Broadcast focus started to WebSocket clients (only for active sessions)
+	if status == "active" {
+		go h.broadcastFocusUpdate(r.Context(), userID, true, &s.StartedAt, &req.DurationMinutes)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(s)
 }
@@ -152,6 +159,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Failed to update session", http.StatusInternalServerError)
 		return
+	}
+
+	// Broadcast focus stopped if session was completed or cancelled
+	if req.Status != nil && (*req.Status == "completed" || *req.Status == "cancelled") {
+		go h.broadcastFocusUpdate(r.Context(), userID, false, nil, nil)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -215,5 +227,43 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Broadcast focus stopped when session is deleted
+	go h.broadcastFocusUpdate(r.Context(), userID, false, nil, nil)
+
 	w.WriteHeader(http.StatusOK)
+}
+
+// broadcastFocusUpdate sends a WebSocket message to all clients about a focus status change
+func (h *Handler) broadcastFocusUpdate(ctx context.Context, userID string, isLive bool, startedAt *time.Time, durationMins *int) {
+	if ws.GlobalHub == nil {
+		return
+	}
+
+	// Fetch user info for the broadcast
+	var pseudo *string
+	var avatarURL *string
+	query := `SELECT pseudo, avatar_url FROM users WHERE id = $1`
+	_ = h.db.QueryRow(ctx, query, userID).Scan(&pseudo, &avatarURL)
+
+	pseudoStr := ""
+	if pseudo != nil {
+		pseudoStr = *pseudo
+	}
+
+	update := ws.FocusUpdate{
+		UserID:    userID,
+		Pseudo:    pseudoStr,
+		AvatarURL: avatarURL,
+		IsLive:    isLive,
+	}
+
+	if startedAt != nil {
+		startedStr := startedAt.Format(time.RFC3339)
+		update.StartedAt = &startedStr
+	}
+	if durationMins != nil {
+		update.DurationMins = durationMins
+	}
+
+	ws.GlobalHub.BroadcastFocusUpdate(update)
 }

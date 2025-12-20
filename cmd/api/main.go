@@ -28,6 +28,7 @@ import (
 	"firelevel-backend/internal/streaks"
 	"firelevel-backend/internal/users"
 	"firelevel-backend/internal/voice"
+	ws "firelevel-backend/internal/websocket"
 )
 
 func main() {
@@ -74,6 +75,9 @@ func main() {
 	// Connect Google Calendar sync to handlers
 	calendarHandler.SetGoogleCalendarSyncer(googleCalendarHandler)
 	routinesHandler.SetGoogleCalendarSyncer(googleCalendarHandler)
+
+	// Initialize WebSocket hub for real-time updates
+	ws.InitGlobalHub()
 
 	// 4. Setup Router
 	r := chi.NewRouter()
@@ -280,6 +284,15 @@ func main() {
 
 	// Cron/Job endpoints (protected by X-Cron-Secret header)
 	r.Post("/jobs/journal/monthly-analysis", journalHandler.RunMonthlyAnalysis)
+
+	// WebSocket endpoint for real-time updates (requires auth)
+	r.Group(func(r chi.Router) {
+		r.Use(authMW)
+		r.Get("/ws", func(w http.ResponseWriter, r *http.Request) {
+			userID := r.Context().Value(auth.UserContextKey).(string)
+			ws.ServeWs(ws.GlobalHub, w, r, userID)
+		})
+	})
 
 	port := os.Getenv("PORT")
 	if port == "" {
