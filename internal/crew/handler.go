@@ -75,6 +75,10 @@ type LeaderboardEntry struct {
 	HasPendingRequest   bool    `json:"has_pending_request"`
 	RequestDirection    *string `json:"request_direction"`
 	IsSelf              bool    `json:"is_self"`
+	// Live focus session fields
+	IsLive               bool    `json:"is_live"`
+	LiveSessionStartedAt *string `json:"live_session_started_at,omitempty"`
+	LiveSessionDuration  *int    `json:"live_session_duration,omitempty"`
 }
 
 type SearchUserResult struct {
@@ -678,6 +682,14 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 				GROUP BY r.user_id
 			) rc ON u.id = rc.user_id
 			WHERE (COALESCE(fs.total_minutes, 0) + (COALESCE(rc.completed_count, 0) * 10)) > 0
+		),
+		live_sessions AS (
+			SELECT
+				user_id,
+				started_at as live_started_at,
+				duration_minutes as live_duration
+			FROM focus_sessions
+			WHERE status = 'active'
 		)
 		SELECT
 			ROW_NUMBER() OVER (ORDER BY activity_score DESC, total_minutes_7d DESC)::bigint as rank,
@@ -710,9 +722,13 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 				WHERE cr.status = 'pending'
 				AND ((cr.from_user_id = $1 AND cr.to_user_id = us.id) OR (cr.from_user_id = us.id AND cr.to_user_id = $1))
 				LIMIT 1
-			) as request_direction
+			) as request_direction,
+			ls.live_started_at IS NOT NULL as is_live,
+			ls.live_started_at,
+			ls.live_duration
 		FROM user_stats us
-		ORDER BY activity_score DESC, total_minutes_7d DESC
+		LEFT JOIN live_sessions ls ON us.id = ls.user_id
+		ORDER BY is_live DESC, activity_score DESC, total_minutes_7d DESC
 		LIMIT $2
 	`
 
@@ -729,10 +745,13 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 		var e LeaderboardEntry
 		var rank int64
 		var lastActive *time.Time
+		var liveStartedAt *time.Time
+		var liveDuration *int
 		if err := rows.Scan(
 			&rank, &e.ID, &e.Pseudo, &e.FirstName, &e.LastName, &e.Email, &e.AvatarUrl,
 			&e.DayVisibility, &e.TotalSessions7d, &e.TotalMinutes7d, &e.CompletedRoutines7d,
 			&e.ActivityScore, &e.CurrentStreak, &lastActive, &e.IsCrewMember, &e.HasPendingRequest, &e.RequestDirection,
+			&e.IsLive, &liveStartedAt, &liveDuration,
 		); err != nil {
 			fmt.Println("Scan leaderboard entry error:", err)
 			continue
@@ -742,6 +761,14 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 		if lastActive != nil {
 			formatted := lastActive.Format(time.RFC3339)
 			e.LastActive = &formatted
+		}
+		// Set live session fields
+		if liveStartedAt != nil {
+			formatted := liveStartedAt.Format(time.RFC3339)
+			e.LiveSessionStartedAt = &formatted
+		}
+		if liveDuration != nil {
+			e.LiveSessionDuration = liveDuration
 		}
 		entries = append(entries, e)
 	}
