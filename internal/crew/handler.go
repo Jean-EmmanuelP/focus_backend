@@ -685,7 +685,10 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 		),
 		live_sessions AS (
 			-- Get only the most recent active session per user
-			-- Only consider sessions started in the last 4 hours as truly "live"
+			-- Only consider sessions that:
+			-- 1. Have status = 'active'
+			-- 2. Started within the last 4 hours
+			-- 3. Haven't exceeded their planned duration by more than 30 minutes (stale session protection)
 			SELECT DISTINCT ON (user_id)
 				user_id,
 				started_at as live_started_at,
@@ -693,6 +696,7 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 			FROM focus_sessions
 			WHERE status = 'active'
 			  AND started_at >= NOW() - INTERVAL '4 hours'
+			  AND started_at + (duration_minutes + 30) * INTERVAL '1 minute' > NOW()
 			ORDER BY user_id, started_at DESC
 		),
 		ranked_users AS (
