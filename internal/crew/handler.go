@@ -2452,6 +2452,8 @@ func (h *Handler) ListGroupRoutines(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// For each routine, fetch member completions
+	fmt.Printf("🔍 DEBUG: Fetching completions for date: %s\n", dateStr)
+
 	for i := range routines {
 		completionsQuery := `
 			SELECT
@@ -2474,6 +2476,7 @@ func (h *Handler) ListGroupRoutines(w http.ResponseWriter, r *http.Request) {
 			ORDER BY completed DESC, u.pseudo, u.first_name
 		`
 
+		fmt.Printf("🔍 DEBUG: Routine '%s' (ID: %s, RoutineID: %s)\n", routines[i].Title, routines[i].ID, routines[i].RoutineID)
 		compRows, err := h.db.Query(r.Context(), completionsQuery, groupID, routines[i].RoutineID, dateStr)
 		if err != nil {
 			fmt.Println("Fetch completions error:", err)
@@ -2488,6 +2491,13 @@ func (h *Handler) ListGroupRoutines(w http.ResponseWriter, r *http.Request) {
 				fmt.Println("Scan completion error:", err)
 				continue
 			}
+			displayName := "User"
+			if mc.Pseudo != nil && *mc.Pseudo != "" {
+				displayName = *mc.Pseudo
+			} else if mc.FirstName != nil && *mc.FirstName != "" {
+				displayName = *mc.FirstName
+			}
+			fmt.Printf("   - Member: %s (ID: %s), completed: %v\n", displayName, mc.UserID, mc.Completed)
 			routines[i].MemberCompletions = append(routines[i].MemberCompletions, mc)
 			totalMembers++
 			if mc.Completed {
