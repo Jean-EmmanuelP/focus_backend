@@ -684,50 +684,66 @@ func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 			WHERE (COALESCE(fs.total_minutes, 0) + (COALESCE(rc.completed_count, 0) * 10)) > 0
 		),
 		live_sessions AS (
-			SELECT
+			-- Get only the most recent active session per user
+			-- Only consider sessions started in the last 4 hours as truly "live"
+			SELECT DISTINCT ON (user_id)
 				user_id,
 				started_at as live_started_at,
 				duration_minutes as live_duration
 			FROM focus_sessions
 			WHERE status = 'active'
+			  AND started_at >= NOW() - INTERVAL '4 hours'
+			ORDER BY user_id, started_at DESC
+		),
+		ranked_users AS (
+			SELECT
+				us.*,
+				COALESCE((SELECT current_streak FROM user_streaks WHERE user_id = us.id), 0)::int as current_streak,
+				EXISTS(SELECT 1 FROM friendships cm WHERE cm.user_id = $1 AND cm.member_id = us.id) as is_crew_member,
+				EXISTS(
+					SELECT 1 FROM friend_requests cr
+					WHERE cr.status = 'pending'
+					AND ((cr.from_user_id = $1 AND cr.to_user_id = us.id) OR (cr.from_user_id = us.id AND cr.to_user_id = $1))
+				) as has_pending_request,
+				(
+					SELECT CASE
+						WHEN cr.from_user_id = $1 THEN 'outgoing'
+						WHEN cr.to_user_id = $1 THEN 'incoming'
+						ELSE NULL
+					END
+					FROM friend_requests cr
+					WHERE cr.status = 'pending'
+					AND ((cr.from_user_id = $1 AND cr.to_user_id = us.id) OR (cr.from_user_id = us.id AND cr.to_user_id = $1))
+					LIMIT 1
+				) as request_direction,
+				ls.live_started_at IS NOT NULL as is_live,
+				ls.live_started_at,
+				ls.live_duration
+			FROM user_stats us
+			LEFT JOIN live_sessions ls ON us.id = ls.user_id
 		)
 		SELECT
-			ROW_NUMBER() OVER (ORDER BY activity_score DESC, total_minutes_7d DESC)::bigint as rank,
-			us.id,
-			us.pseudo,
-			us.first_name,
-			us.last_name,
-			us.email,
-			us.avatar_url,
-			us.day_visibility,
-			us.total_sessions_7d,
-			us.total_minutes_7d,
-			us.completed_routines_7d,
-			us.activity_score,
-			COALESCE((SELECT current_streak FROM user_streaks WHERE user_id = us.id), 0)::int as current_streak,
-			us.last_active,
-			EXISTS(SELECT 1 FROM friendships cm WHERE cm.user_id = $1 AND cm.member_id = us.id) as is_crew_member,
-			EXISTS(
-				SELECT 1 FROM friend_requests cr
-				WHERE cr.status = 'pending'
-				AND ((cr.from_user_id = $1 AND cr.to_user_id = us.id) OR (cr.from_user_id = us.id AND cr.to_user_id = $1))
-			) as has_pending_request,
-			(
-				SELECT CASE
-					WHEN cr.from_user_id = $1 THEN 'outgoing'
-					WHEN cr.to_user_id = $1 THEN 'incoming'
-					ELSE NULL
-				END
-				FROM friend_requests cr
-				WHERE cr.status = 'pending'
-				AND ((cr.from_user_id = $1 AND cr.to_user_id = us.id) OR (cr.from_user_id = us.id AND cr.to_user_id = $1))
-				LIMIT 1
-			) as request_direction,
-			ls.live_started_at IS NOT NULL as is_live,
-			ls.live_started_at,
-			ls.live_duration
-		FROM user_stats us
-		LEFT JOIN live_sessions ls ON us.id = ls.user_id
+			ROW_NUMBER() OVER (ORDER BY is_live DESC, activity_score DESC, total_minutes_7d DESC)::bigint as rank,
+			id,
+			pseudo,
+			first_name,
+			last_name,
+			email,
+			avatar_url,
+			day_visibility,
+			total_sessions_7d,
+			total_minutes_7d,
+			completed_routines_7d,
+			activity_score,
+			current_streak,
+			last_active,
+			is_crew_member,
+			has_pending_request,
+			request_direction,
+			is_live,
+			live_started_at,
+			live_duration
+		FROM ranked_users
 		ORDER BY is_live DESC, activity_score DESC, total_minutes_7d DESC
 		LIMIT $2
 	`
