@@ -223,6 +223,7 @@ func main() {
 		r.Get("/calendar/tasks", calendarHandler.ListTasks)
 		r.Post("/calendar/tasks", calendarHandler.CreateTask)
 		r.Patch("/calendar/tasks/{id}", calendarHandler.UpdateTask)
+		r.Patch("/calendar/tasks/{id}/reschedule", calendarHandler.RescheduleTask)
 		r.Post("/calendar/tasks/{id}/complete", calendarHandler.CompleteTask)
 		r.Post("/calendar/tasks/{id}/uncomplete", calendarHandler.UncompleteTask)
 		r.Delete("/calendar/tasks/{id}", calendarHandler.DeleteTask)
