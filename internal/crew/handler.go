@@ -98,12 +98,26 @@ type SearchUserResult struct {
 	IsSelf            bool    `json:"is_self"`
 }
 
+type CrewTask struct {
+	ID             string  `json:"id"`
+	Title          string  `json:"title"`
+	Description    *string `json:"description,omitempty"`
+	ScheduledStart *string `json:"scheduled_start,omitempty"`
+	ScheduledEnd   *string `json:"scheduled_end,omitempty"`
+	TimeBlock      string  `json:"time_block"`
+	Priority       string  `json:"priority"`
+	Status         string  `json:"status"`
+	AreaName       *string `json:"area_name,omitempty"`
+	AreaIcon       *string `json:"area_icon,omitempty"`
+}
+
 type CrewMemberDay struct {
 	User              *CrewUserInfo          `json:"user"`
 	Intentions        []CrewIntention        `json:"intentions"`
 	FocusSessions     []CrewFocusSession     `json:"focus_sessions"`
 	CompletedRoutines []CrewCompletedRoutine `json:"completed_routines"`
 	Routines          []CrewRoutine          `json:"routines"`
+	Tasks             []CrewTask             `json:"tasks"`
 	Stats             *CrewMemberStats       `json:"stats"`
 }
 
@@ -1003,6 +1017,44 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Printf("Found %d routines for user %s on %s\n", len(allRoutines), memberID, dateStr)
 
+	// Get calendar tasks for this day
+	tasksQuery := `
+		SELECT
+			t.id,
+			t.title,
+			t.description,
+			t.scheduled_start,
+			t.scheduled_end,
+			COALESCE(t.time_block, 'morning') as time_block,
+			COALESCE(t.priority, 'medium') as priority,
+			COALESCE(t.status, 'pending') as status,
+			a.name as area_name,
+			a.icon as area_icon
+		FROM tasks t
+		LEFT JOIN areas a ON t.area_id = a.id
+		WHERE t.user_id = $1 AND t.date = $2
+		ORDER BY t.scheduled_start ASC NULLS LAST, t.position ASC
+	`
+	taskRows, err := h.db.Query(r.Context(), tasksQuery, memberID, dateStr)
+	if err != nil {
+		fmt.Println("Get tasks error:", err)
+		taskRows = nil
+	}
+
+	tasks := []CrewTask{}
+	if taskRows != nil {
+		defer taskRows.Close()
+		for taskRows.Next() {
+			var t CrewTask
+			if err := taskRows.Scan(&t.ID, &t.Title, &t.Description, &t.ScheduledStart, &t.ScheduledEnd, &t.TimeBlock, &t.Priority, &t.Status, &t.AreaName, &t.AreaIcon); err != nil {
+				fmt.Println("Scan task error:", err)
+				continue
+			}
+			tasks = append(tasks, t)
+		}
+	}
+	fmt.Printf("Found %d tasks for user %s on %s\n", len(tasks), memberID, dateStr)
+
 	// Get stats for the member
 	stats := h.getMemberStats(r.Context(), memberID)
 
@@ -1012,6 +1064,7 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 		FocusSessions:     sessions,
 		CompletedRoutines: completedRoutines,
 		Routines:          allRoutines,
+		Tasks:             tasks,
 		Stats:             stats,
 	}
 
