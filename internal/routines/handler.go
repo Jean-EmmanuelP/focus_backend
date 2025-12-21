@@ -36,6 +36,7 @@ type BatchCompleteRequest struct {
 }
 
 type UpdateRoutineRequest struct {
+	AreaID        *string `json:"area_id"`
 	Title         *string `json:"title"`
 	Frequency     *string `json:"frequency"`
 	Icon          *string `json:"icon"`
@@ -168,6 +169,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	args := []interface{}{}
 	argId := 1
 
+	if req.AreaID != nil {
+		setParts = append(setParts, fmt.Sprintf("area_id = $%d", argId))
+		args = append(args, *req.AreaID)
+		argId++
+	}
 	if req.Title != nil {
 		setParts = append(setParts, fmt.Sprintf("title = $%d", argId))
 		args = append(args, *req.Title)
