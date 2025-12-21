@@ -96,6 +96,7 @@ type Task struct {
 	CompletedAt      *time.Time `json:"completedAt,omitempty"`
 	IsAIGenerated    bool       `json:"isAiGenerated"`
 	AINotes          *string    `json:"aiNotes,omitempty"`
+	IsPrivate        bool       `json:"isPrivate"`
 	CreatedAt        time.Time  `json:"createdAt"`
 	UpdatedAt        time.Time  `json:"updatedAt"`
 	QuestTitle       *string    `json:"questTitle,omitempty"`
@@ -155,6 +156,7 @@ type CreateTaskRequest struct {
 	EstimatedMinutes *int       `json:"estimated_minutes,omitempty"`
 	Priority         *string    `json:"priority,omitempty"`
 	DueAt            *time.Time `json:"due_at,omitempty"`
+	IsPrivate        *bool      `json:"is_private,omitempty"`
 }
 
 type UpdateTaskRequest struct {
@@ -172,6 +174,7 @@ type UpdateTaskRequest struct {
 	DueAt            *time.Time `json:"due_at,omitempty"`
 	QuestID          *string    `json:"quest_id,omitempty"`
 	AreaID           *string    `json:"area_id,omitempty"`
+	IsPrivate        *bool      `json:"is_private,omitempty"`
 }
 
 type CalendarDayResponse struct {
@@ -487,21 +490,26 @@ func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		timeBlock = *req.TimeBlock
 	}
 
+	isPrivate := false
+	if req.IsPrivate != nil {
+		isPrivate = *req.IsPrivate
+	}
+
 	var task Task
 	var scheduledStartStr, scheduledEndStr *string
 	err := h.db.QueryRow(r.Context(), `
-		INSERT INTO tasks (user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, priority, due_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::time, $8::time, $9, $10, $11, $12, $13)
+		INSERT INTO tasks (user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, priority, due_at, is_private)
+		VALUES ($1, $2, $3, $4, $5, $6, $7::time, $8::time, $9, $10, $11, $12, $13, $14)
 		RETURNING id, user_id, quest_id, area_id, title, description, date,
 			TO_CHAR(scheduled_start, 'HH24:MI') as scheduled_start,
 			TO_CHAR(scheduled_end, 'HH24:MI') as scheduled_end,
-			time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
-	`, userID, req.QuestID, req.AreaID, req.Title, req.Description, req.Date, req.ScheduledStart, req.ScheduledEnd, timeBlock, position, req.EstimatedMinutes, priority, req.DueAt).Scan(
+			time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, is_private, created_at, updated_at
+	`, userID, req.QuestID, req.AreaID, req.Title, req.Description, req.Date, req.ScheduledStart, req.ScheduledEnd, timeBlock, position, req.EstimatedMinutes, priority, req.DueAt, isPrivate).Scan(
 		&task.ID, &task.UserID, &task.QuestID, &task.AreaID,
 		&task.Title, &task.Description, &task.Date, &scheduledStartStr, &scheduledEndStr,
 		&task.TimeBlock, &task.Position, &task.EstimatedMinutes, &task.ActualMinutes,
 		&task.Priority, &task.Status, &task.DueAt, &task.CompletedAt,
-		&task.IsAIGenerated, &task.AINotes, &task.CreatedAt, &task.UpdatedAt,
+		&task.IsAIGenerated, &task.AINotes, &task.IsPrivate, &task.CreatedAt, &task.UpdatedAt,
 	)
 
 	if err != nil {
@@ -574,18 +582,19 @@ func (h *Handler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 			completed_at = COALESCE($15, completed_at),
 			quest_id = COALESCE($16, quest_id),
 			area_id = COALESCE($17, area_id),
+			is_private = COALESCE($18, is_private),
 			updated_at = now()
 		WHERE id = $1 AND user_id = $2
 		RETURNING id, user_id, quest_id, area_id, title, description, date,
 			TO_CHAR(scheduled_start, 'HH24:MI') as scheduled_start,
 			TO_CHAR(scheduled_end, 'HH24:MI') as scheduled_end,
-			time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, created_at, updated_at
-	`, taskID, userID, req.Title, req.Description, req.Date, req.ScheduledStart, req.ScheduledEnd, req.TimeBlock, req.Position, req.EstimatedMinutes, req.ActualMinutes, req.Priority, req.Status, req.DueAt, completedAt, req.QuestID, req.AreaID).Scan(
+			time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, is_private, created_at, updated_at
+	`, taskID, userID, req.Title, req.Description, req.Date, req.ScheduledStart, req.ScheduledEnd, req.TimeBlock, req.Position, req.EstimatedMinutes, req.ActualMinutes, req.Priority, req.Status, req.DueAt, completedAt, req.QuestID, req.AreaID, req.IsPrivate).Scan(
 		&task.ID, &task.UserID, &task.QuestID, &task.AreaID,
 		&task.Title, &task.Description, &task.Date, &scheduledStartStr, &scheduledEndStr,
 		&task.TimeBlock, &task.Position, &task.EstimatedMinutes, &task.ActualMinutes,
 		&task.Priority, &task.Status, &task.DueAt, &task.CompletedAt,
-		&task.IsAIGenerated, &task.AINotes, &task.CreatedAt, &task.UpdatedAt,
+		&task.IsAIGenerated, &task.AINotes, &task.IsPrivate, &task.CreatedAt, &task.UpdatedAt,
 	)
 
 	if err != nil {
@@ -786,7 +795,7 @@ func (h *Handler) getTasksForDay(ctx context.Context, userID, date string, dayPl
 			TO_CHAR(t.scheduled_end, 'HH24:MI') as scheduled_end,
 			t.time_block, t.position, t.estimated_minutes, t.actual_minutes,
 			t.priority, t.status, t.due_at, t.completed_at, t.is_ai_generated,
-			t.ai_notes, t.created_at, t.updated_at,
+			t.ai_notes, COALESCE(t.is_private, false) as is_private, t.created_at, t.updated_at,
 			q.title as quest_title, a.name as area_name, a.icon as area_icon,
 			(SELECT COUNT(*) FROM community_posts cp WHERE cp.task_id = t.id AND cp.is_hidden = false) as photos_count
 		FROM tasks t
@@ -812,7 +821,7 @@ func (h *Handler) getTasksForDay(ctx context.Context, userID, date string, dayPl
 			&t.Title, &t.Description, &t.Date, &scheduledStart, &scheduledEnd,
 			&timeBlock, &t.Position, &t.EstimatedMinutes, &t.ActualMinutes,
 			&t.Priority, &t.Status, &t.DueAt, &t.CompletedAt, &t.IsAIGenerated,
-			&t.AINotes, &t.CreatedAt, &t.UpdatedAt,
+			&t.AINotes, &t.IsPrivate, &t.CreatedAt, &t.UpdatedAt,
 			&t.QuestTitle, &t.AreaName, &t.AreaIcon, &photosCount,
 		)
 		if err != nil {
@@ -1018,7 +1027,7 @@ func (h *Handler) getTasksForWeek(ctx context.Context, userID, startDate, endDat
 			COALESCE(t.status, 'pending') as status,
 			t.due_at, t.completed_at,
 			COALESCE(t.is_ai_generated, false) as is_ai_generated,
-			t.ai_notes, t.created_at, t.updated_at,
+			t.ai_notes, COALESCE(t.is_private, false) as is_private, t.created_at, t.updated_at,
 			q.title as quest_title, a.name as area_name, a.icon as area_icon
 		FROM tasks t
 		LEFT JOIN quests q ON t.quest_id = q.id
@@ -1043,7 +1052,7 @@ func (h *Handler) getTasksForWeek(ctx context.Context, userID, startDate, endDat
 			&t.Title, &t.Description, &t.Date, &scheduledStart, &scheduledEnd,
 			&timeBlock, &t.Position, &t.EstimatedMinutes, &t.ActualMinutes,
 			&t.Priority, &t.Status, &t.DueAt, &t.CompletedAt, &t.IsAIGenerated,
-			&t.AINotes, &t.CreatedAt, &t.UpdatedAt,
+			&t.AINotes, &t.IsPrivate, &t.CreatedAt, &t.UpdatedAt,
 			&t.QuestTitle, &t.AreaName, &t.AreaIcon,
 		)
 		if err != nil {

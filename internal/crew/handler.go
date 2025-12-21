@@ -109,6 +109,7 @@ type CrewTask struct {
 	Status         string  `json:"status"`
 	AreaName       *string `json:"area_name,omitempty"`
 	AreaIcon       *string `json:"area_icon,omitempty"`
+	IsPrivate      bool    `json:"is_private"`
 }
 
 type CrewMemberDay struct {
@@ -1029,7 +1030,8 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 			COALESCE(t.priority, 'medium') as priority,
 			COALESCE(t.status, 'pending') as status,
 			a.name as area_name,
-			a.icon as area_icon
+			a.icon as area_icon,
+			COALESCE(t.is_private, false) as is_private
 		FROM tasks t
 		LEFT JOIN areas a ON t.area_id = a.id
 		WHERE t.user_id = $1 AND t.date = $2
@@ -1046,9 +1048,16 @@ func (h *Handler) GetMemberDay(w http.ResponseWriter, r *http.Request) {
 		defer taskRows.Close()
 		for taskRows.Next() {
 			var t CrewTask
-			if err := taskRows.Scan(&t.ID, &t.Title, &t.Description, &t.ScheduledStart, &t.ScheduledEnd, &t.TimeBlock, &t.Priority, &t.Status, &t.AreaName, &t.AreaIcon); err != nil {
+			if err := taskRows.Scan(&t.ID, &t.Title, &t.Description, &t.ScheduledStart, &t.ScheduledEnd, &t.TimeBlock, &t.Priority, &t.Status, &t.AreaName, &t.AreaIcon, &t.IsPrivate); err != nil {
 				fmt.Println("Scan task error:", err)
 				continue
+			}
+			// Mask private task content - only show that something is scheduled
+			if t.IsPrivate {
+				t.Title = "🔒 Tâche privée"
+				t.Description = nil
+				t.AreaName = nil
+				t.AreaIcon = nil
 			}
 			tasks = append(tasks, t)
 		}
