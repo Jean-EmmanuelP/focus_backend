@@ -20,6 +20,7 @@ import (
 	"firelevel-backend/internal/googlecalendar"
 	"firelevel-backend/internal/intentions"
 	"firelevel-backend/internal/journal"
+	"firelevel-backend/internal/motivation"
 	"firelevel-backend/internal/onboarding"
 	"firelevel-backend/internal/quests"
 	"firelevel-backend/internal/reflections"
@@ -71,10 +72,10 @@ func main() {
 	voiceHandler := voice.NewHandler(pool)
 	googleCalendarHandler := googlecalendar.NewHandler(pool)
 	journalHandler := journal.NewHandler(pool)
+	motivationHandler := motivation.NewHandler(pool)
 
-	// Connect Google Calendar sync to handlers
+	// Connect Google Calendar sync to calendar handler (tasks only, routines stay local)
 	calendarHandler.SetGoogleCalendarSyncer(googleCalendarHandler)
-	routinesHandler.SetGoogleCalendarSyncer(googleCalendarHandler)
 
 	// Initialize WebSocket hub for real-time updates
 	ws.InitGlobalHub()
@@ -281,6 +282,11 @@ func main() {
 		r.Post("/journal/bilans/weekly", journalHandler.GenerateWeeklyBilan)
 		r.Post("/journal/bilans/monthly", journalHandler.GenerateMonthlyBilan)
 		r.Get("/journal/bilans", journalHandler.ListBilans)
+
+		// Motivation - Phrases for notifications
+		r.Get("/motivation/morning", motivationHandler.GetMorningPhrase)
+		r.Get("/motivation/task", motivationHandler.GetTaskReminderPhrase)
+		r.Get("/motivation/all", motivationHandler.GetAllPhrases)
 	})
 
 	// Cron/Job endpoints (protected by X-Cron-Secret header)
