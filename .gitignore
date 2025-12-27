@@ -11,3 +11,8 @@ server
 
 # OS specific
 .DS_Store
+
+# Firebase Service Account (NEVER commit this!)
+*-firebase-adminsdk-*.json
+firebase-service-account.json
+firebase-credentials.json

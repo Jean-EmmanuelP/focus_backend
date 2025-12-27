@@ -21,6 +21,7 @@ import (
 	"firelevel-backend/internal/intentions"
 	"firelevel-backend/internal/journal"
 	"firelevel-backend/internal/motivation"
+	"firelevel-backend/internal/notifications"
 	"firelevel-backend/internal/onboarding"
 	"firelevel-backend/internal/quests"
 	"firelevel-backend/internal/reflections"
@@ -73,6 +74,8 @@ func main() {
 	googleCalendarHandler := googlecalendar.NewHandler(pool)
 	journalHandler := journal.NewHandler(pool)
 	motivationHandler := motivation.NewHandler(pool)
+	notificationsRepo := notifications.NewRepository(pool)
+	notificationsHandler := notifications.NewHandler(notificationsRepo)
 
 	// Connect Google Calendar sync to calendar handler (tasks only, routines stay local)
 	calendarHandler.SetGoogleCalendarSyncer(googleCalendarHandler)
@@ -89,6 +92,7 @@ func main() {
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("OK"))
 	})
+	r.Get("/notifications/status", notificationsHandler.GetStatus)
 
 	// Protected Routes
 	r.Group(func(r chi.Router) {
@@ -287,6 +291,14 @@ func main() {
 		r.Get("/motivation/morning", motivationHandler.GetMorningPhrase)
 		r.Get("/motivation/task", motivationHandler.GetTaskReminderPhrase)
 		r.Get("/motivation/all", motivationHandler.GetAllPhrases)
+
+		// Push Notifications
+		r.Post("/notifications/token", notificationsHandler.RegisterToken)
+		r.Post("/notifications/token/unregister", notificationsHandler.UnregisterToken)
+		r.Post("/notifications/track", notificationsHandler.TrackNotification)
+		r.Get("/notifications/preferences", notificationsHandler.GetPreferences)
+		r.Put("/notifications/preferences", notificationsHandler.UpdatePreferences)
+		r.Get("/notifications/stats", notificationsHandler.GetStats)
 	})
 
 	// Cron/Job endpoints (protected by X-Cron-Secret header)
