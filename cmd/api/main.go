@@ -31,6 +31,7 @@ import (
 	"firelevel-backend/internal/users"
 	"firelevel-backend/internal/voice"
 	ws "firelevel-backend/internal/websocket"
+	"firelevel-backend/internal/referral"
 )
 
 func main() {
@@ -76,6 +77,8 @@ func main() {
 	motivationHandler := motivation.NewHandler(pool)
 	notificationsRepo := notifications.NewRepository(pool)
 	notificationsHandler := notifications.NewHandler(notificationsRepo)
+	referralRepo := referral.NewRepository(pool)
+	referralHandler := referral.NewHandler(referralRepo)
 
 	// Connect Google Calendar sync to calendar handler (tasks only, routines stay local)
 	calendarHandler.SetGoogleCalendarSyncer(googleCalendarHandler)
@@ -299,7 +302,17 @@ func main() {
 		r.Get("/notifications/preferences", notificationsHandler.GetPreferences)
 		r.Put("/notifications/preferences", notificationsHandler.UpdatePreferences)
 		r.Get("/notifications/stats", notificationsHandler.GetStats)
+
+		// Referral / Parrainage
+		r.Get("/referral/stats", referralHandler.GetStats)
+		r.Get("/referral/list", referralHandler.GetReferrals)
+		r.Get("/referral/earnings", referralHandler.GetEarnings)
+		r.Post("/referral/apply", referralHandler.ApplyCode)
+		r.Post("/referral/activate", referralHandler.ActivateUserReferral)
 	})
+
+	// Public referral validation (no auth required)
+	r.Get("/referral/validate", referralHandler.ValidateCode)
 
 	// Cron/Job endpoints (protected by X-Cron-Secret header)
 	r.Post("/jobs/journal/monthly-analysis", journalHandler.RunMonthlyAnalysis)
