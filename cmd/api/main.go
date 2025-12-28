@@ -304,6 +304,69 @@ func main() {
 	// Cron/Job endpoints (protected by X-Cron-Secret header)
 	r.Post("/jobs/journal/monthly-analysis", journalHandler.RunMonthlyAnalysis)
 
+	// Notification cron jobs
+	notificationScheduler := notifications.NewScheduler(notificationsRepo)
+	r.Post("/jobs/notifications/morning", func(w http.ResponseWriter, r *http.Request) {
+		// Verify cron secret
+		cronSecret := os.Getenv("CRON_SECRET")
+		if cronSecret != "" && r.Header.Get("X-Cron-Secret") != cronSecret {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		if err := notificationScheduler.SendMorningNotifications(r.Context()); err != nil {
+			log.Printf("❌ Morning notifications failed: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte("OK"))
+	})
+
+	r.Post("/jobs/notifications/evening", func(w http.ResponseWriter, r *http.Request) {
+		cronSecret := os.Getenv("CRON_SECRET")
+		if cronSecret != "" && r.Header.Get("X-Cron-Secret") != cronSecret {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		if err := notificationScheduler.SendEveningNotifications(r.Context()); err != nil {
+			log.Printf("❌ Evening notifications failed: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte("OK"))
+	})
+
+	r.Post("/jobs/notifications/streak-danger", func(w http.ResponseWriter, r *http.Request) {
+		cronSecret := os.Getenv("CRON_SECRET")
+		if cronSecret != "" && r.Header.Get("X-Cron-Secret") != cronSecret {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		if err := notificationScheduler.SendStreakDangerNotifications(r.Context()); err != nil {
+			log.Printf("❌ Streak danger notifications failed: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte("OK"))
+	})
+
+	r.Post("/jobs/notifications/task-reminders", func(w http.ResponseWriter, r *http.Request) {
+		cronSecret := os.Getenv("CRON_SECRET")
+		if cronSecret != "" && r.Header.Get("X-Cron-Secret") != cronSecret {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		if err := notificationScheduler.SendTaskReminders(r.Context()); err != nil {
+			log.Printf("❌ Task reminders failed: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte("OK"))
+	})
+
 	// WebSocket endpoint for real-time updates (requires auth)
 	r.Group(func(r chi.Router) {
 		r.Use(authMW)

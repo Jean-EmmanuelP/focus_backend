@@ -439,3 +439,219 @@ type UserNotificationInfo struct {
 	Timezone  string `json:"timezone"`
 	FirstName string `json:"first_name"`
 }
+
+// ===== Additional Repository Methods for Scheduler =====
+
+// GetUsersForMorningNotificationByTimezone returns users for a specific timezone and time
+func (r *Repository) GetUsersForMorningNotificationByTimezone(ctx context.Context, hour, minute int, timezone string) ([]UserNotificationInfo, error) {
+	query := `
+		SELECT DISTINCT
+			dt.user_id,
+			dt.fcm_token,
+			np.language,
+			np.timezone,
+			u.first_name
+		FROM device_tokens dt
+		JOIN notification_preferences np ON dt.user_id = np.user_id
+		JOIN users u ON dt.user_id = u.id
+		WHERE dt.is_active = true
+		  AND np.morning_reminder_enabled = true
+		  AND np.morning_reminder_time = $1
+		  AND np.timezone = $2
+	`
+
+	timeStr := fmt.Sprintf("%02d:%02d", hour, minute)
+	rows, err := r.pool.Query(ctx, query, timeStr, timezone)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get users for morning notification: %w", err)
+	}
+	defer rows.Close()
+
+	var users []UserNotificationInfo
+	for rows.Next() {
+		var u UserNotificationInfo
+		var firstName *string
+		if err := rows.Scan(&u.UserID, &u.FCMToken, &u.Language, &u.Timezone, &firstName); err != nil {
+			return nil, fmt.Errorf("failed to scan user: %w", err)
+		}
+		if firstName != nil {
+			u.FirstName = *firstName
+		}
+		users = append(users, u)
+	}
+
+	return users, nil
+}
+
+// GetUsersForEveningNotificationByTimezone returns users for evening notifications
+func (r *Repository) GetUsersForEveningNotificationByTimezone(ctx context.Context, hour, minute int, timezone string) ([]UserNotificationInfo, error) {
+	query := `
+		SELECT DISTINCT
+			dt.user_id,
+			dt.fcm_token,
+			np.language,
+			np.timezone,
+			u.first_name
+		FROM device_tokens dt
+		JOIN notification_preferences np ON dt.user_id = np.user_id
+		JOIN users u ON dt.user_id = u.id
+		WHERE dt.is_active = true
+		  AND np.evening_reminder_enabled = true
+		  AND np.evening_reminder_time = $1
+		  AND np.timezone = $2
+	`
+
+	timeStr := fmt.Sprintf("%02d:%02d", hour, minute)
+	rows, err := r.pool.Query(ctx, query, timeStr, timezone)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get users for evening notification: %w", err)
+	}
+	defer rows.Close()
+
+	var users []UserNotificationInfo
+	for rows.Next() {
+		var u UserNotificationInfo
+		var firstName *string
+		if err := rows.Scan(&u.UserID, &u.FCMToken, &u.Language, &u.Timezone, &firstName); err != nil {
+			return nil, fmt.Errorf("failed to scan user: %w", err)
+		}
+		if firstName != nil {
+			u.FirstName = *firstName
+		}
+		users = append(users, u)
+	}
+
+	return users, nil
+}
+
+// GetRandomPhrase returns a random motivational phrase
+func (r *Repository) GetRandomPhrase(ctx context.Context, phraseType, language string) (string, error) {
+	query := `
+		SELECT phrase FROM motivational_phrases
+		WHERE type = $1 AND language = $2 AND is_active = true
+		ORDER BY RANDOM()
+		LIMIT 1
+	`
+
+	var phrase string
+	err := r.pool.QueryRow(ctx, query, phraseType, language).Scan(&phrase)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to get random phrase: %w", err)
+	}
+
+	// Update usage count (fire and forget)
+	go func() {
+		updateQuery := `
+			UPDATE motivational_phrases
+			SET usage_count = usage_count + 1
+			WHERE phrase = $1 AND type = $2 AND language = $3
+		`
+		r.pool.Exec(context.Background(), updateQuery, phrase, phraseType, language)
+	}()
+
+	return phrase, nil
+}
+
+// GetUsersWithStreakInDanger returns users who have a streak but haven't completed routines today
+func (r *Repository) GetUsersWithStreakInDanger(ctx context.Context) ([]UserStreakInfo, error) {
+	query := `
+		SELECT DISTINCT
+			dt.user_id,
+			dt.fcm_token,
+			np.language,
+			u.current_streak
+		FROM device_tokens dt
+		JOIN notification_preferences np ON dt.user_id = np.user_id
+		JOIN users u ON dt.user_id = u.id
+		WHERE dt.is_active = true
+		  AND np.streak_alert_enabled = true
+		  AND u.current_streak > 0
+		  AND NOT EXISTS (
+			SELECT 1 FROM routine_completions rc
+			WHERE rc.user_id = dt.user_id
+			  AND DATE(rc.completed_at) = CURRENT_DATE
+		  )
+	`
+
+	rows, err := r.pool.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get users with streak in danger: %w", err)
+	}
+	defer rows.Close()
+
+	var users []UserStreakInfo
+	for rows.Next() {
+		var u UserStreakInfo
+		if err := rows.Scan(&u.UserID, &u.FCMToken, &u.Language, &u.CurrentStreak); err != nil {
+			return nil, fmt.Errorf("failed to scan user streak info: %w", err)
+		}
+		users = append(users, u)
+	}
+
+	return users, nil
+}
+
+// GetUpcomingTasksForReminder returns tasks starting in the next N minutes
+func (r *Repository) GetUpcomingTasksForReminder(ctx context.Context, minutesAhead int) ([]TaskReminderInfo, error) {
+	query := `
+		SELECT DISTINCT
+			t.id as task_id,
+			t.title as task_title,
+			t.user_id,
+			dt.fcm_token,
+			np.language
+		FROM calendar_tasks t
+		JOIN device_tokens dt ON t.user_id = dt.user_id
+		JOIN notification_preferences np ON t.user_id = np.user_id
+		WHERE dt.is_active = true
+		  AND np.task_reminders_enabled = true
+		  AND t.status = 'pending'
+		  AND t.scheduled_start IS NOT NULL
+		  AND t.date = CURRENT_DATE
+		  AND (t.date + t.scheduled_start::time) BETWEEN NOW() AND NOW() + ($1 || ' minutes')::interval
+		  AND NOT EXISTS (
+			SELECT 1 FROM notification_events ne
+			WHERE ne.user_id = t.user_id
+			  AND ne.type = 'task_reminder'
+			  AND ne.metadata::jsonb->>'task_id' = t.id::text
+			  AND ne.created_at > NOW() - INTERVAL '1 hour'
+		  )
+	`
+
+	rows, err := r.pool.Query(ctx, query, minutesAhead)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get upcoming tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var tasks []TaskReminderInfo
+	for rows.Next() {
+		var t TaskReminderInfo
+		if err := rows.Scan(&t.TaskID, &t.TaskTitle, &t.UserID, &t.FCMToken, &t.Language); err != nil {
+			return nil, fmt.Errorf("failed to scan task: %w", err)
+		}
+		tasks = append(tasks, t)
+	}
+
+	return tasks, nil
+}
+
+// UserStreakInfo holds user info for streak notifications
+type UserStreakInfo struct {
+	UserID        string
+	FCMToken      string
+	Language      string
+	CurrentStreak int
+}
+
+// TaskReminderInfo holds task info for reminders
+type TaskReminderInfo struct {
+	TaskID    string
+	TaskTitle string
+	UserID    string
+	FCMToken  string
+	Language  string
+}
