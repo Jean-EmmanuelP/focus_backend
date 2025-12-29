@@ -56,10 +56,27 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 
 // GetStatus returns the current onboarding status for a user
 // GET /onboarding/status
+// TEMPORARY: Always return isCompleted=true to skip onboarding for all users
 func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 	fmt.Printf("📋 GetStatus called - userID: %s\n", userID)
 
+	// TEMPORARY: Skip onboarding for all users (onboarding has bugs)
+	// Remove this block and uncomment the code below when onboarding is fixed
+	now := time.Now()
+	status := OnboardingStatus{
+		IsCompleted: true,
+		CurrentStep: 13,
+		TotalSteps:  13,
+		CompletedAt: &now,
+		Goals:       []string{},
+	}
+	fmt.Printf("📋 GetStatus - ONBOARDING DISABLED - returning isCompleted=true for user %s\n", userID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
+	return
+
+	/* ORIGINAL CODE - Uncomment when onboarding is fixed:
 	query := `
 		SELECT
 			project_status,
@@ -105,6 +122,7 @@ func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
+	*/
 }
 
 // SaveProgress saves or updates onboarding progress
