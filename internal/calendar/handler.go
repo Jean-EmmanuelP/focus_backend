@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"firelevel-backend/internal/auth"
+	"firelevel-backend/internal/telegram"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -539,6 +540,40 @@ func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	}
+
+	// Check if this is the user's first task and send notification
+	go func() {
+		var taskCount int
+		h.db.QueryRow(r.Context(), `SELECT COUNT(*) FROM public.tasks WHERE user_id = $1`, userID).Scan(&taskCount)
+		if taskCount == 1 {
+			// Get user info
+			var pseudo, firstName, email *string
+			h.db.QueryRow(r.Context(),
+				`SELECT pseudo, first_name, email FROM public.users WHERE id = $1`, userID,
+			).Scan(&pseudo, &firstName, &email)
+
+			userName := "User"
+			if pseudo != nil && *pseudo != "" {
+				userName = *pseudo
+			} else if firstName != nil && *firstName != "" {
+				userName = *firstName
+			}
+			userEmail := ""
+			if email != nil {
+				userEmail = *email
+			}
+
+			telegram.Get().Send(telegram.Event{
+				Type:      telegram.EventFirstTaskCreated,
+				UserID:    userID,
+				UserName:  userName,
+				UserEmail: userEmail,
+				Data: map[string]interface{}{
+					"task_title": task.Title,
+				},
+			})
+		}
+	}()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

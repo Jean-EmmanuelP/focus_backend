@@ -11,24 +11,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// WeeklyGoal represents a user's weekly goals container
+// WeeklyGoal represents a user's weekly goals container (like daily_intentions)
 type WeeklyGoal struct {
 	ID            string           `json:"id"`
 	WeekStartDate time.Time        `json:"-"`
 	WeekStartStr  string           `json:"week_start_date"`
-	WeekEndDate   time.Time        `json:"-"`
-	WeekEndStr    string           `json:"week_end_date"`
 	Items         []WeeklyGoalItem `json:"items"`
 	CreatedAt     time.Time        `json:"created_at"`
 	UpdatedAt     time.Time        `json:"updated_at"`
 }
 
-// WeeklyGoalItem represents a single goal within a week
+// WeeklyGoalItem represents a single goal within a week (like intention_items)
 type WeeklyGoalItem struct {
 	ID          string     `json:"id"`
 	AreaID      *string    `json:"area_id"`
 	Content     string     `json:"content"`
-	Emoji       string     `json:"emoji"`
 	Position    int        `json:"position"`
 	IsCompleted bool       `json:"is_completed"`
 	CompletedAt *time.Time `json:"completed_at"`
@@ -38,7 +35,6 @@ type WeeklyGoalItem struct {
 type WeeklyGoalItemInput struct {
 	AreaID  *string `json:"area_id"`
 	Content string  `json:"content"`
-	Emoji   string  `json:"emoji"`
 }
 
 // UpsertWeeklyGoalRequest for creating/updating weekly goals
@@ -61,11 +57,11 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 	return &Handler{db: db}
 }
 
-// getWeekBounds returns the Monday and Sunday of the week containing the given date
-func getWeekBounds(dateStr string) (time.Time, time.Time, error) {
+// getWeekStart returns the Monday of the week containing the given date
+func getWeekStart(dateStr string) (time.Time, error) {
 	date, err := time.Parse("2006-01-02", dateStr)
 	if err != nil {
-		return time.Time{}, time.Time{}, err
+		return time.Time{}, err
 	}
 
 	// Find Monday of this week
@@ -75,9 +71,8 @@ func getWeekBounds(dateStr string) (time.Time, time.Time, error) {
 	}
 	daysToMonday := int(weekday) - 1
 	monday := date.AddDate(0, 0, -daysToMonday)
-	sunday := monday.AddDate(0, 0, 6)
 
-	return monday, sunday, nil
+	return monday, nil
 }
 
 // GetCurrent - GET /weekly-goals/current
@@ -86,15 +81,25 @@ func (h *Handler) GetCurrent(w http.ResponseWriter, r *http.Request) {
 
 	// Use today's date to find current week
 	today := time.Now().Format("2006-01-02")
-	monday, sunday, err := getWeekBounds(today)
+	monday, err := getWeekStart(today)
 	if err != nil {
 		http.Error(w, "Invalid date", http.StatusBadRequest)
 		return
 	}
 
-	weeklyGoal, err := h.getWeeklyGoalByDate(r.Context(), userID, monday, sunday)
+	weeklyGoal, err := h.getWeeklyGoalByDate(r.Context(), userID, monday)
 	if err != nil {
-		http.Error(w, "Not found", http.StatusNotFound)
+		// Return empty response instead of 404 - no goals set yet is a valid state
+		emptyGoal := WeeklyGoal{
+			ID:            "",
+			WeekStartDate: monday,
+			WeekStartStr:  monday.Format("2006-01-02"),
+			Items:         []WeeklyGoalItem{},
+			CreatedAt:     time.Time{},
+			UpdatedAt:     time.Time{},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(emptyGoal)
 		return
 	}
 
@@ -107,13 +112,13 @@ func (h *Handler) GetByWeekStart(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 	weekStartDate := chi.URLParam(r, "weekStartDate")
 
-	monday, sunday, err := getWeekBounds(weekStartDate)
+	monday, err := getWeekStart(weekStartDate)
 	if err != nil {
 		http.Error(w, "Invalid date format. Use YYYY-MM-DD", http.StatusBadRequest)
 		return
 	}
 
-	weeklyGoal, err := h.getWeeklyGoalByDate(r.Context(), userID, monday, sunday)
+	weeklyGoal, err := h.getWeeklyGoalByDate(r.Context(), userID, monday)
 	if err != nil {
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
@@ -126,7 +131,7 @@ func (h *Handler) GetByWeekStart(w http.ResponseWriter, r *http.Request) {
 // helper to get weekly goal
 func (h *Handler) getWeeklyGoalByDate(ctx interface {
 	Value(any) any
-}, userID string, monday, sunday time.Time) (*WeeklyGoal, error) {
+}, userID string, monday time.Time) (*WeeklyGoal, error) {
 	httpCtx := ctx.(interface {
 		Value(any) any
 		Done() <-chan struct{}
@@ -135,25 +140,24 @@ func (h *Handler) getWeeklyGoalByDate(ctx interface {
 	})
 
 	query := `
-		SELECT id, week_start_date, week_end_date, created_at, updated_at
+		SELECT id, week_start_date, created_at, updated_at
 		FROM public.weekly_goals
 		WHERE user_id = $1 AND week_start_date = $2
 	`
 
 	var wg WeeklyGoal
 	err := h.db.QueryRow(httpCtx, query, userID, monday.Format("2006-01-02")).Scan(
-		&wg.ID, &wg.WeekStartDate, &wg.WeekEndDate, &wg.CreatedAt, &wg.UpdatedAt,
+		&wg.ID, &wg.WeekStartDate, &wg.CreatedAt, &wg.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	wg.WeekStartStr = wg.WeekStartDate.Format("2006-01-02")
-	wg.WeekEndStr = wg.WeekEndDate.Format("2006-01-02")
 
 	// Get items
 	itemsQuery := `
-		SELECT id, area_id, content, emoji, position, is_completed, completed_at
+		SELECT id, area_id, content, position, is_completed, completed_at
 		FROM public.weekly_goal_items
 		WHERE weekly_goal_id = $1
 		ORDER BY position ASC
@@ -168,7 +172,7 @@ func (h *Handler) getWeeklyGoalByDate(ctx interface {
 	wg.Items = []WeeklyGoalItem{}
 	for rows.Next() {
 		var item WeeklyGoalItem
-		if err := rows.Scan(&item.ID, &item.AreaID, &item.Content, &item.Emoji, &item.Position, &item.IsCompleted, &item.CompletedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.AreaID, &item.Content, &item.Position, &item.IsCompleted, &item.CompletedAt); err != nil {
 			continue
 		}
 		wg.Items = append(wg.Items, item)
@@ -182,7 +186,7 @@ func (h *Handler) Upsert(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 	weekStartDate := chi.URLParam(r, "weekStartDate")
 
-	monday, sunday, err := getWeekBounds(weekStartDate)
+	monday, err := getWeekStart(weekStartDate)
 	if err != nil {
 		http.Error(w, "Invalid date format. Use YYYY-MM-DD", http.StatusBadRequest)
 		return
@@ -214,16 +218,16 @@ func (h *Handler) Upsert(w http.ResponseWriter, r *http.Request) {
 
 	// Upsert weekly_goals
 	upsertQuery := `
-		INSERT INTO public.weekly_goals (user_id, week_start_date, week_end_date)
-		VALUES ($1, $2, $3)
+		INSERT INTO public.weekly_goals (user_id, week_start_date)
+		VALUES ($1, $2)
 		ON CONFLICT (user_id, week_start_date) DO UPDATE SET
 			updated_at = NOW()
-		RETURNING id, week_start_date, week_end_date, created_at, updated_at
+		RETURNING id, week_start_date, created_at, updated_at
 	`
 
 	var wg WeeklyGoal
-	err = tx.QueryRow(r.Context(), upsertQuery, userID, monday.Format("2006-01-02"), sunday.Format("2006-01-02")).Scan(
-		&wg.ID, &wg.WeekStartDate, &wg.WeekEndDate, &wg.CreatedAt, &wg.UpdatedAt,
+	err = tx.QueryRow(r.Context(), upsertQuery, userID, monday.Format("2006-01-02")).Scan(
+		&wg.ID, &wg.WeekStartDate, &wg.CreatedAt, &wg.UpdatedAt,
 	)
 	if err != nil {
 		fmt.Println("Upsert weekly_goals error:", err)
@@ -232,7 +236,6 @@ func (h *Handler) Upsert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	wg.WeekStartStr = wg.WeekStartDate.Format("2006-01-02")
-	wg.WeekEndStr = wg.WeekEndDate.Format("2006-01-02")
 
 	// Delete existing items (we'll recreate them)
 	_, err = tx.Exec(r.Context(), "DELETE FROM public.weekly_goal_items WHERE weekly_goal_id = $1", wg.ID)
@@ -248,20 +251,15 @@ func (h *Handler) Upsert(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		emoji := item.Emoji
-		if emoji == "" {
-			emoji = "🎯"
-		}
-
 		insertQuery := `
-			INSERT INTO public.weekly_goal_items (weekly_goal_id, area_id, content, emoji, position)
-			VALUES ($1, $2, $3, $4, $5)
-			RETURNING id, area_id, content, emoji, position, is_completed, completed_at
+			INSERT INTO public.weekly_goal_items (weekly_goal_id, area_id, content, position)
+			VALUES ($1, $2, $3, $4)
+			RETURNING id, area_id, content, position, is_completed, completed_at
 		`
 
 		var i WeeklyGoalItem
-		err = tx.QueryRow(r.Context(), insertQuery, wg.ID, item.AreaID, item.Content, emoji, pos+1).Scan(
-			&i.ID, &i.AreaID, &i.Content, &i.Emoji, &i.Position, &i.IsCompleted, &i.CompletedAt,
+		err = tx.QueryRow(r.Context(), insertQuery, wg.ID, item.AreaID, item.Content, pos+1).Scan(
+			&i.ID, &i.AreaID, &i.Content, &i.Position, &i.IsCompleted, &i.CompletedAt,
 		)
 		if err != nil {
 			fmt.Println("Insert weekly_goal_item error:", err)
@@ -307,12 +305,12 @@ func (h *Handler) ToggleItem(w http.ResponseWriter, r *http.Request) {
 		WHERE wgi.id = $3
 		  AND wgi.weekly_goal_id = wg.id
 		  AND wg.user_id = $4
-		RETURNING wgi.id, wgi.area_id, wgi.content, wgi.emoji, wgi.position, wgi.is_completed, wgi.completed_at
+		RETURNING wgi.id, wgi.area_id, wgi.content, wgi.position, wgi.is_completed, wgi.completed_at
 	`
 
 	var item WeeklyGoalItem
 	err := h.db.QueryRow(r.Context(), query, req.IsCompleted, completedAt, itemID, userID).Scan(
-		&item.ID, &item.AreaID, &item.Content, &item.Emoji, &item.Position, &item.IsCompleted, &item.CompletedAt,
+		&item.ID, &item.AreaID, &item.Content, &item.Position, &item.IsCompleted, &item.CompletedAt,
 	)
 	if err != nil {
 		http.Error(w, "Goal not found or not owned by user", http.StatusNotFound)
@@ -328,7 +326,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 
 	query := `
-		SELECT id, week_start_date, week_end_date, created_at, updated_at
+		SELECT id, week_start_date, created_at, updated_at
 		FROM public.weekly_goals
 		WHERE user_id = $1
 		ORDER BY week_start_date DESC
@@ -345,15 +343,14 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	goals := []WeeklyGoal{}
 	for rows.Next() {
 		var wg WeeklyGoal
-		if err := rows.Scan(&wg.ID, &wg.WeekStartDate, &wg.WeekEndDate, &wg.CreatedAt, &wg.UpdatedAt); err != nil {
+		if err := rows.Scan(&wg.ID, &wg.WeekStartDate, &wg.CreatedAt, &wg.UpdatedAt); err != nil {
 			continue
 		}
 		wg.WeekStartStr = wg.WeekStartDate.Format("2006-01-02")
-		wg.WeekEndStr = wg.WeekEndDate.Format("2006-01-02")
 
 		// Get items for each goal
 		itemsQuery := `
-			SELECT id, area_id, content, emoji, position, is_completed, completed_at
+			SELECT id, area_id, content, position, is_completed, completed_at
 			FROM public.weekly_goal_items
 			WHERE weekly_goal_id = $1
 			ORDER BY position ASC
@@ -365,7 +362,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 			wg.Items = []WeeklyGoalItem{}
 			for itemRows.Next() {
 				var item WeeklyGoalItem
-				if err := itemRows.Scan(&item.ID, &item.AreaID, &item.Content, &item.Emoji, &item.Position, &item.IsCompleted, &item.CompletedAt); err != nil {
+				if err := itemRows.Scan(&item.ID, &item.AreaID, &item.Content, &item.Position, &item.IsCompleted, &item.CompletedAt); err != nil {
 					continue
 				}
 				wg.Items = append(wg.Items, item)
@@ -385,7 +382,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 	weekStartDate := chi.URLParam(r, "weekStartDate")
 
-	monday, _, err := getWeekBounds(weekStartDate)
+	monday, err := getWeekStart(weekStartDate)
 	if err != nil {
 		http.Error(w, "Invalid date format. Use YYYY-MM-DD", http.StatusBadRequest)
 		return
@@ -432,7 +429,7 @@ func (h *Handler) CheckNeedsSetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if goals exist for current week
-	monday, _, _ := getWeekBounds(today.Format("2006-01-02"))
+	monday, _ := getWeekStart(today.Format("2006-01-02"))
 
 	var count int
 	err := h.db.QueryRow(r.Context(),

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"firelevel-backend/internal/auth"
+	"firelevel-backend/internal/telegram"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -291,6 +292,32 @@ func (h *Handler) Complete(w http.ResponseWriter, r *http.Request) {
 		Goals:         data.Goals,
 		CompletedAt:   data.CompletedAt,
 	}
+
+	// Send Telegram notification for onboarding completion
+	go func() {
+		var pseudo, firstName, email *string
+		h.db.QueryRow(r.Context(),
+			`SELECT pseudo, first_name, email FROM public.users WHERE id = $1`, userID,
+		).Scan(&pseudo, &firstName, &email)
+
+		userName := "User"
+		if pseudo != nil && *pseudo != "" {
+			userName = *pseudo
+		} else if firstName != nil && *firstName != "" {
+			userName = *firstName
+		}
+		userEmail := ""
+		if email != nil {
+			userEmail = *email
+		}
+
+		telegram.Get().Send(telegram.Event{
+			Type:      telegram.EventOnboardingCompleted,
+			UserID:    userID,
+			UserName:  userName,
+			UserEmail: userEmail,
+		})
+	}()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)

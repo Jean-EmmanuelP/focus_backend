@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"firelevel-backend/internal/auth"
+	"firelevel-backend/internal/telegram"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -348,8 +349,73 @@ func (h *Handler) calculateStreak(ctx context.Context, userID string, currentDat
 		}
 	}
 
-	// Update streaks in DB
-	h.updateStreaks(ctx, userID, streak.CurrentStreak, streak.LongestStreak)
+	// Update streaks in DB and check for notifications
+	previousStreak, previousFlameLevel := h.updateStreaksAndGetPrevious(ctx, userID, streak.CurrentStreak, streak.LongestStreak)
+
+	// Send Telegram notifications for streak events
+	go func() {
+		// Get user info
+		var pseudo, firstName, email *string
+		h.db.QueryRow(ctx,
+			`SELECT pseudo, first_name, email FROM public.users WHERE id = $1`, userID,
+		).Scan(&pseudo, &firstName, &email)
+
+		userName := "User"
+		if pseudo != nil && *pseudo != "" {
+			userName = *pseudo
+		} else if firstName != nil && *firstName != "" {
+			userName = *firstName
+		}
+		userEmail := ""
+		if email != nil {
+			userEmail = *email
+		}
+
+		// Check if streak was broken (went from > 0 to 0)
+		if previousStreak > 0 && streak.CurrentStreak == 0 {
+			telegram.Get().Send(telegram.Event{
+				Type:      telegram.EventStreakBroken,
+				UserID:    userID,
+				UserName:  userName,
+				UserEmail: userEmail,
+				Data: map[string]interface{}{
+					"was_streak": previousStreak,
+				},
+			})
+		}
+
+		// Check for flame level up
+		if currentFlameLevel > previousFlameLevel {
+			levelName := ""
+			for _, fl := range GetFlameLevels() {
+				if fl.Level == currentFlameLevel {
+					levelName = fl.Name
+					break
+				}
+			}
+
+			telegram.Get().Send(telegram.Event{
+				Type:      telegram.EventFlameLevelUnlocked,
+				UserID:    userID,
+				UserName:  userName,
+				UserEmail: userEmail,
+				Data: map[string]interface{}{
+					"level":      currentFlameLevel,
+					"level_name": levelName,
+				},
+			})
+
+			// Special notification for 100-day streak
+			if streak.CurrentStreak >= 100 && previousStreak < 100 {
+				telegram.Get().Send(telegram.Event{
+					Type:      telegram.EventStreak100Days,
+					UserID:    userID,
+					UserName:  userName,
+					UserEmail: userEmail,
+				})
+			}
+		}
+	}()
 
 	fmt.Printf("✅ Streak calculated for user %s: current=%d, longest=%d, flameLevel=%d, todayValid=%v\n",
 		userID, streak.CurrentStreak, streak.LongestStreak, currentFlameLevel, todayValidation.IsValid)
@@ -357,9 +423,27 @@ func (h *Handler) calculateStreak(ctx context.Context, userID string, currentDat
 	return streak
 }
 
-// updateStreaks updates the user's current and longest streak in the database
-func (h *Handler) updateStreaks(ctx context.Context, userID string, currentStreak int, longestStreak int) {
-	_, err := h.db.Exec(ctx, `
+// updateStreaksAndGetPrevious updates the user's streak and returns previous values for comparison
+func (h *Handler) updateStreaksAndGetPrevious(ctx context.Context, userID string, currentStreak int, longestStreak int) (previousStreak int, previousFlameLevel int) {
+	// Get previous streak values first
+	err := h.db.QueryRow(ctx,
+		`SELECT COALESCE(current_streak, 0) FROM public.user_streaks WHERE user_id = $1`,
+		userID,
+	).Scan(&previousStreak)
+	if err != nil {
+		previousStreak = 0
+	}
+
+	// Calculate previous flame level
+	previousFlameLevel = 1
+	for _, fl := range GetFlameLevels() {
+		if previousStreak >= fl.DaysRequired {
+			previousFlameLevel = fl.Level
+		}
+	}
+
+	// Update the streak
+	_, err = h.db.Exec(ctx, `
 		INSERT INTO public.user_streaks (user_id, current_streak, longest_streak, updated_at)
 		VALUES ($1, $2, $3, NOW())
 		ON CONFLICT (user_id)
@@ -368,6 +452,8 @@ func (h *Handler) updateStreaks(ctx context.Context, userID string, currentStrea
 	if err != nil {
 		fmt.Printf("❌ Streak: Error updating streaks: %v\n", err)
 	}
+
+	return previousStreak, previousFlameLevel
 }
 
 // RecalculateStreak - POST /streak/recalculate

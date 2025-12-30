@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"firelevel-backend/internal/auth"
+	"firelevel-backend/internal/telegram"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -191,6 +192,42 @@ func (h *Handler) CreateEntry(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to create entry", http.StatusInternalServerError)
 		return
 	}
+
+	// Send Telegram notification for new journal entry
+	go func() {
+		// Get user info and entry count
+		var pseudo, firstName, email *string
+		var entryCount int
+		h.db.QueryRow(r.Context(),
+			`SELECT pseudo, first_name, email FROM public.users WHERE id = $1`, userID,
+		).Scan(&pseudo, &firstName, &email)
+		h.db.QueryRow(r.Context(),
+			`SELECT COUNT(*) FROM public.journal_entries WHERE user_id = $1`, userID,
+		).Scan(&entryCount)
+
+		userName := "User"
+		if pseudo != nil && *pseudo != "" {
+			userName = *pseudo
+		} else if firstName != nil && *firstName != "" {
+			userName = *firstName
+		}
+		userEmail := ""
+		if email != nil {
+			userEmail = *email
+		}
+
+		telegram.Get().Send(telegram.Event{
+			Type:      telegram.EventJournalEntryCreated,
+			UserID:    userID,
+			UserName:  userName,
+			UserEmail: userEmail,
+			Data: map[string]interface{}{
+				"entry_number":     entryCount,
+				"duration_seconds": req.DurationSeconds,
+				"media_type":       req.MediaType,
+			},
+		})
+	}()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

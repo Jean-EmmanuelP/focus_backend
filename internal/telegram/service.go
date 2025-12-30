@@ -73,8 +73,11 @@ const (
 	// Quests
 	EventQuestCompleted EventType = "quest_completed"
 
+	// Journal
+	EventJournalEntryCreated EventType = "journal_entry_created"
+
 	// Community
-	EventCommunityPostCreated EventType = "community_post_created"
+	EventCommunityPostCreated  EventType = "community_post_created"
 	EventFriendRequestAccepted EventType = "friend_request_accepted"
 
 	// Referrals
@@ -256,6 +259,25 @@ func (s *Service) formatMessage(event Event) string {
 
 🎊 _Objectif accompli !_`,
 			event.UserName, event.UserEmail, questName, targetValue)
+
+	// ===== JOURNAL =====
+	case EventJournalEntryCreated:
+		entryNumber := getInt(event.Data, "entry_number")
+		durationSecs := getInt(event.Data, "duration_seconds")
+		mediaType := getString(event.Data, "media_type")
+		mediaEmoji := "🎙️"
+		if mediaType == "video" {
+			mediaEmoji = "📹"
+		}
+		return fmt.Sprintf(`%s *NOUVELLE ENTRÉE JOURNAL*
+
+👤 *%s*
+📧 %s
+📊 Entrée #%d
+⏱️ Durée: %ds
+
+📖 _Réflexion quotidienne !_`,
+			mediaEmoji, event.UserName, event.UserEmail, entryNumber, durationSecs)
 
 	// ===== COMMUNITY =====
 	case EventCommunityPostCreated:

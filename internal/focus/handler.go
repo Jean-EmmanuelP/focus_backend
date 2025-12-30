@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"firelevel-backend/internal/auth"
+	"firelevel-backend/internal/telegram"
 	ws "firelevel-backend/internal/websocket"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -164,6 +165,38 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	// Broadcast focus stopped if session was completed or cancelled
 	if req.Status != nil && (*req.Status == "completed" || *req.Status == "cancelled") {
 		go h.broadcastFocusUpdate(r.Context(), userID, false, nil, nil)
+	}
+
+	// Send Telegram notification when focus session is completed
+	if req.Status != nil && *req.Status == "completed" {
+		go func() {
+			// Get user info
+			var pseudo, firstName, email *string
+			h.db.QueryRow(r.Context(),
+				`SELECT pseudo, first_name, email FROM public.users WHERE id = $1`, userID,
+			).Scan(&pseudo, &firstName, &email)
+
+			userName := "User"
+			if pseudo != nil && *pseudo != "" {
+				userName = *pseudo
+			} else if firstName != nil && *firstName != "" {
+				userName = *firstName
+			}
+			userEmail := ""
+			if email != nil {
+				userEmail = *email
+			}
+
+			telegram.Get().Send(telegram.Event{
+				Type:      telegram.EventFocusSessionCompleted,
+				UserID:    userID,
+				UserName:  userName,
+				UserEmail: userEmail,
+				Data: map[string]interface{}{
+					"duration_minutes": s.DurationMinutes,
+				},
+			})
+		}()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
