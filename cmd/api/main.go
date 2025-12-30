@@ -33,6 +33,7 @@ import (
 	ws "firelevel-backend/internal/websocket"
 	"firelevel-backend/internal/referral"
 	"firelevel-backend/internal/telegram"
+	"firelevel-backend/internal/weeklygoals"
 )
 
 func main() {
@@ -80,6 +81,7 @@ func main() {
 	notificationsHandler := notifications.NewHandler(notificationsRepo)
 	referralRepo := referral.NewRepository(pool)
 	referralHandler := referral.NewHandler(referralRepo)
+	weeklyGoalsHandler := weeklygoals.NewHandler(pool)
 
 	// Connect Google Calendar sync to calendar handler (tasks only, routines stay local)
 	calendarHandler.SetGoogleCalendarSyncer(googleCalendarHandler)
@@ -326,6 +328,15 @@ func main() {
 		r.Get("/referral/earnings", referralHandler.GetEarnings)
 		r.Post("/referral/apply", referralHandler.ApplyCode)
 		r.Post("/referral/activate", referralHandler.ActivateUserReferral)
+
+		// Weekly Goals
+		r.Get("/weekly-goals", weeklyGoalsHandler.List)
+		r.Get("/weekly-goals/current", weeklyGoalsHandler.GetCurrent)
+		r.Get("/weekly-goals/needs-setup", weeklyGoalsHandler.CheckNeedsSetup)
+		r.Get("/weekly-goals/{weekStartDate}", weeklyGoalsHandler.GetByWeekStart)
+		r.Put("/weekly-goals/{weekStartDate}", weeklyGoalsHandler.Upsert)
+		r.Delete("/weekly-goals/{weekStartDate}", weeklyGoalsHandler.Delete)
+		r.Post("/weekly-goals/items/{id}/toggle", weeklyGoalsHandler.ToggleItem)
 	})
 
 	// Public referral validation (no auth required)
@@ -433,6 +444,38 @@ func main() {
 
 		if err := notificationScheduler.SendTaskReminders(r.Context()); err != nil {
 			log.Printf("❌ Task reminders failed: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte("OK"))
+	})
+
+	// Weekly Goals reminder (Sunday evening / Monday morning)
+	r.Post("/jobs/notifications/weekly-goals-reminder", func(w http.ResponseWriter, r *http.Request) {
+		cronSecret := os.Getenv("CRON_SECRET")
+		if cronSecret != "" && r.Header.Get("X-Cron-Secret") != cronSecret {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		if err := notificationScheduler.SendWeeklyGoalsReminder(r.Context()); err != nil {
+			log.Printf("❌ Weekly goals reminder failed: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte("OK"))
+	})
+
+	// Weekly Goals midweek update (Wednesday)
+	r.Post("/jobs/notifications/weekly-goals-midweek", func(w http.ResponseWriter, r *http.Request) {
+		cronSecret := os.Getenv("CRON_SECRET")
+		if cronSecret != "" && r.Header.Get("X-Cron-Secret") != cronSecret {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		if err := notificationScheduler.SendWeeklyGoalsMidweekUpdate(r.Context()); err != nil {
+			log.Printf("❌ Weekly goals midweek update failed: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

@@ -600,3 +600,65 @@ create index idx_routine_google_events_routine on public.routine_google_events(r
 -- Values: 'morning', 'afternoon', 'evening'
 -- ==========================================
 alter table public.users add column if not exists productivity_peak text;
+
+
+-- ==========================================
+-- 19. WEEKLY GOALS
+-- User's weekly intentions/objectives
+-- Similar to daily intentions but for the week
+-- ==========================================
+create table public.weekly_goals (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid not null references auth.users on delete cascade,
+
+  week_start_date date not null,      -- Monday of the week
+  week_end_date date not null,        -- Sunday of the week
+
+  created_at timestamp with time zone default now(),
+  updated_at timestamp with time zone default now(),
+
+  -- One weekly goal set per user per week
+  unique (user_id, week_start_date)
+);
+
+-- RLS
+alter table public.weekly_goals enable row level security;
+create policy "Users can manage own weekly_goals" on public.weekly_goals
+  using (auth.uid() = user_id);
+
+-- Indexes
+create index idx_weekly_goals_user on public.weekly_goals(user_id);
+create index idx_weekly_goals_week on public.weekly_goals(user_id, week_start_date desc);
+
+
+-- ==========================================
+-- 20. WEEKLY GOAL ITEMS
+-- Individual goals within a week
+-- ==========================================
+create table public.weekly_goal_items (
+  id uuid default gen_random_uuid() primary key,
+  weekly_goal_id uuid not null references public.weekly_goals on delete cascade,
+
+  area_id uuid references public.areas on delete set null,  -- Optional link to life area
+  content text not null,                                      -- Goal text
+  emoji text default '🎯',                                    -- Custom emoji
+  position integer default 0,                                 -- Order
+
+  is_completed boolean default false,
+  completed_at timestamp with time zone,
+
+  created_at timestamp with time zone default now()
+);
+
+-- RLS
+alter table public.weekly_goal_items enable row level security;
+create policy "Users can manage own weekly_goal_items" on public.weekly_goal_items
+  using (
+    weekly_goal_id in (
+      select id from public.weekly_goals where user_id = auth.uid()
+    )
+  );
+
+-- Indexes
+create index idx_weekly_goal_items_goal on public.weekly_goal_items(weekly_goal_id);
+create index idx_weekly_goal_items_position on public.weekly_goal_items(weekly_goal_id, position);

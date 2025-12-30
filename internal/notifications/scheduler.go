@@ -437,3 +437,201 @@ func containsHelper(s, substr string) bool {
 }
 
 // Note: UserStreakInfo and TaskReminderInfo are defined in repository.go
+
+// ===== Weekly Goals Notifications =====
+
+// SendWeeklyGoalsReminder sends reminders to set weekly goals (Sunday evening / Monday morning)
+func (s *Scheduler) SendWeeklyGoalsReminder(ctx context.Context) error {
+	if !s.firebase.IsAvailable() {
+		return fmt.Errorf("firebase not available")
+	}
+
+	now := time.Now().UTC()
+	timezones := []string{"Europe/Paris", "Europe/London", "America/New_York", "America/Los_Angeles"}
+
+	totalSent := 0
+	totalFailed := 0
+
+	for _, tz := range timezones {
+		loc, err := time.LoadLocation(tz)
+		if err != nil {
+			continue
+		}
+
+		localTime := now.In(loc)
+		weekday := localTime.Weekday()
+		hour := localTime.Hour()
+
+		// Only send on Sunday 19:00-20:00 or Monday 08:00-09:00
+		isSundayEvening := weekday == time.Sunday && hour >= 19 && hour < 20
+		isMondayMorning := weekday == time.Monday && hour >= 8 && hour < 9
+
+		if !isSundayEvening && !isMondayMorning {
+			continue
+		}
+
+		users, err := s.repo.GetUsersWithoutWeeklyGoals(ctx, tz)
+		if err != nil {
+			log.Printf("⚠️ Failed to get users without weekly goals: %v", err)
+			continue
+		}
+
+		for _, user := range users {
+			sent, failed := s.sendWeeklyGoalsReminderToUser(ctx, user, isSundayEvening)
+			totalSent += sent
+			totalFailed += failed
+		}
+	}
+
+	log.Printf("✅ Weekly goals reminders complete: %d sent, %d failed", totalSent, totalFailed)
+	return nil
+}
+
+func (s *Scheduler) sendWeeklyGoalsReminderToUser(ctx context.Context, user UserNotificationInfo, isSundayEvening bool) (sent int, failed int) {
+	var title, body string
+
+	if user.Language == "fr" {
+		if isSundayEvening {
+			title = "📅 Prépare ta semaine !"
+			body = "Définis tes objectifs pour les 7 prochains jours et reste focus."
+		} else {
+			title = "🎯 C'est lundi !"
+			body = "Nouvelle semaine, nouveaux objectifs. Qu'est-ce que tu veux accomplir ?"
+		}
+	} else {
+		if isSundayEvening {
+			title = "📅 Plan your week!"
+			body = "Set your goals for the next 7 days and stay focused."
+		} else {
+			title = "🎯 It's Monday!"
+			body = "New week, new goals. What do you want to accomplish?"
+		}
+	}
+
+	notificationID := uuid.New().String()
+
+	event := &NotificationEvent{
+		UserID:         user.UserID,
+		NotificationID: notificationID,
+		Type:           "weekly_goals_reminder",
+		Status:         "sent",
+		Title:          title,
+		Body:           body,
+		DeepLink:       "focus://set-weekly-goals",
+	}
+	nowTime := time.Now()
+	event.SentAt = &nowTime
+
+	payload := NotificationPayload{
+		Title:          title,
+		Body:           body,
+		DeepLink:       "focus://set-weekly-goals",
+		NotificationID: notificationID,
+		Type:           "weekly_goals_reminder",
+	}
+
+	_, err := s.firebase.SendToDevice(ctx, user.FCMToken, payload)
+	if err != nil {
+		log.Printf("❌ Failed to send weekly goals reminder to user %s: %v", user.UserID, err)
+		event.Status = "failed"
+		event.ErrorMessage = err.Error()
+		s.repo.CreateNotificationEvent(ctx, event)
+		if isInvalidTokenError(err) {
+			s.repo.DeactivateInvalidToken(ctx, user.FCMToken)
+		}
+		return 0, 1
+	}
+
+	s.repo.CreateNotificationEvent(ctx, event)
+	log.Printf("✅ Weekly goals reminder sent to %s", user.UserID)
+	return 1, 0
+}
+
+// SendWeeklyGoalsMidweekUpdate sends mid-week progress update (Wednesday)
+func (s *Scheduler) SendWeeklyGoalsMidweekUpdate(ctx context.Context) error {
+	if !s.firebase.IsAvailable() {
+		return fmt.Errorf("firebase not available")
+	}
+
+	now := time.Now().UTC()
+	timezones := []string{"Europe/Paris", "Europe/London", "America/New_York", "America/Los_Angeles"}
+
+	totalSent := 0
+	totalFailed := 0
+
+	for _, tz := range timezones {
+		loc, err := time.LoadLocation(tz)
+		if err != nil {
+			continue
+		}
+
+		localTime := now.In(loc)
+		weekday := localTime.Weekday()
+		hour := localTime.Hour()
+
+		// Only send on Wednesday 12:00-13:00
+		if weekday != time.Wednesday || hour < 12 || hour >= 13 {
+			continue
+		}
+
+		users, err := s.repo.GetUsersWithWeeklyGoalsProgress(ctx, tz)
+		if err != nil {
+			log.Printf("⚠️ Failed to get users with weekly goals progress: %v", err)
+			continue
+		}
+
+		for _, user := range users {
+			sent, failed := s.sendMidweekUpdateToUser(ctx, user)
+			totalSent += sent
+			totalFailed += failed
+		}
+	}
+
+	log.Printf("✅ Midweek updates complete: %d sent, %d failed", totalSent, totalFailed)
+	return nil
+}
+
+func (s *Scheduler) sendMidweekUpdateToUser(ctx context.Context, user UserWeeklyGoalProgress) (sent int, failed int) {
+	var title, body string
+
+	if user.Language == "fr" {
+		title = "📊 Mi-semaine !"
+		body = fmt.Sprintf("Tu as complété %d/%d de tes objectifs hebdo. Continue comme ça !", user.CompletedCount, user.TotalCount)
+	} else {
+		title = "📊 Midweek check-in!"
+		body = fmt.Sprintf("You've completed %d/%d weekly goals. Keep it up!", user.CompletedCount, user.TotalCount)
+	}
+
+	notificationID := uuid.New().String()
+
+	payload := NotificationPayload{
+		Title:          title,
+		Body:           body,
+		DeepLink:       "focus://weekly-goals",
+		NotificationID: notificationID,
+		Type:           "weekly_goals_midweek",
+	}
+
+	_, err := s.firebase.SendToDevice(ctx, user.FCMToken, payload)
+	if err != nil {
+		log.Printf("❌ Failed to send midweek update: %v", err)
+		if isInvalidTokenError(err) {
+			s.repo.DeactivateInvalidToken(ctx, user.FCMToken)
+		}
+		return 0, 1
+	}
+
+	nowTime := time.Now()
+	event := &NotificationEvent{
+		UserID:         user.UserID,
+		NotificationID: notificationID,
+		Type:           "weekly_goals_midweek",
+		Status:         "sent",
+		Title:          title,
+		Body:           body,
+		DeepLink:       "focus://weekly-goals",
+		SentAt:         &nowTime,
+	}
+	s.repo.CreateNotificationEvent(ctx, event)
+	return 1, 0
+}

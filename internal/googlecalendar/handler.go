@@ -170,12 +170,11 @@ func (h *Handler) SaveTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Retroactive sync: sync all existing tasks and routines to Google Calendar
+	// Retroactive sync: sync all existing tasks to Google Calendar (routines stay local only)
 	go func() {
 		ctx := context.Background()
 		tasksSynced, _ := h.SyncAllTasksToGoogleCalendar(ctx, userID)
-		routinesSynced, _ := h.SyncAllRoutinesToGoogleCalendar(ctx, userID)
-		log.Printf("[SaveTokens] Retroactive sync completed for user %s: %d tasks, %d routines", userID, tasksSynced, routinesSynced)
+		log.Printf("[SaveTokens] Retroactive sync completed for user %s: %d tasks", userID, tasksSynced)
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -246,14 +245,6 @@ func (h *Handler) Disconnect(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[Disconnect] Error clearing task google IDs: %v", err)
 	}
 
-	// Delete all routine Google events from the new table
-	_, err = h.db.Exec(r.Context(), `
-		DELETE FROM routine_google_events WHERE user_id = $1
-	`, userID)
-	if err != nil {
-		log.Printf("[Disconnect] Error deleting routine_google_events: %v", err)
-	}
-
 	// Delete the config
 	result, err := h.db.Exec(r.Context(), `
 		DELETE FROM google_calendar_config WHERE user_id = $1
@@ -309,12 +300,6 @@ func (h *Handler) SyncNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check and sync routines if a week has passed
-	routinesSynced, wasTriggered, _ := h.CheckAndSyncRoutinesWeekly(r.Context(), userID)
-	if wasTriggered {
-		log.Printf("[SyncNow] Weekly routine sync triggered: %d routines synced", routinesSynced)
-	}
-
 	// Update last sync time
 	h.db.Exec(r.Context(), `
 		UPDATE google_calendar_config SET last_sync_at = now(), updated_at = now() WHERE user_id = $1
@@ -324,23 +309,13 @@ func (h *Handler) SyncNow(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-// CheckWeeklySync checks if routines need weekly re-sync and performs it
+// CheckWeeklySync - deprecated, routines are no longer synced to Google Calendar
 // GET /google-calendar/check-weekly
 func (h *Handler) CheckWeeklySync(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(auth.UserContextKey).(string)
-
-	synced, wasTriggered, err := h.CheckAndSyncRoutinesWeekly(r.Context(), userID)
-	if err != nil {
-		log.Printf("[CheckWeeklySync] ERROR: %v", err)
-		http.Error(w, "Failed to check weekly sync", http.StatusInternalServerError)
-		return
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"syncTriggered":   wasTriggered,
-		"routinesSynced":  synced,
-		"message":         fmt.Sprintf("Weekly sync %s", map[bool]string{true: "triggered", false: "not needed"}[wasTriggered]),
+		"syncTriggered": false,
+		"message":       "Routines are no longer synced to Google Calendar",
 	})
 }
 
@@ -628,89 +603,6 @@ func (h *Handler) importEventsFromGoogle(ctx context.Context, userID string, con
 			continue
 		}
 
-		// First check if this is a routine event (stored in routine_google_events)
-		var routineID string
-		var routineEventDate string
-		errRoutine := h.db.QueryRow(ctx, `
-			SELECT routine_id, event_date FROM routine_google_events
-			WHERE user_id = $1 AND google_event_id = $2
-		`, userID, event.ID).Scan(&routineID, &routineEventDate)
-
-		if errRoutine == nil {
-			// This IS a routine event - always skip creating a task for it
-			log.Printf("[ImportFromGoogle] Event %s is a routine event (routine_id=%s), checking for title change", event.ID, routineID)
-
-			// Remove the 🔄 prefix if present to get clean title
-			cleanTitle := event.Summary
-			if strings.HasPrefix(cleanTitle, "🔄 ") {
-				cleanTitle = strings.TrimPrefix(cleanTitle, "🔄 ")
-			} else if strings.HasPrefix(cleanTitle, "🔄") {
-				cleanTitle = strings.TrimPrefix(cleanTitle, "🔄")
-				cleanTitle = strings.TrimSpace(cleanTitle)
-			}
-
-			// Update routine title in our DB only if it changed
-			result, err := h.db.Exec(ctx, `
-				UPDATE routines SET title = $1
-				WHERE id = $2 AND user_id = $3 AND title != $1
-			`, cleanTitle, routineID, userID)
-			if err != nil {
-				errors = append(errors, fmt.Sprintf("Failed to update routine %s: %v", cleanTitle, err))
-			} else if result.RowsAffected() > 0 {
-				imported++
-				log.Printf("[ImportFromGoogle] Updated routine title from Google: %s", cleanTitle)
-
-				// Also update ALL other Google Calendar events for this routine
-				go func(rID, uID, title string, cfg GoogleCalendarConfig) {
-					ctx := context.Background()
-					newTitle := "🔄 " + title
-
-					rows, err := h.db.Query(ctx, `
-						SELECT google_event_id, google_calendar_id FROM routine_google_events
-						WHERE routine_id = $1 AND user_id = $2
-					`, rID, uID)
-					if err != nil {
-						log.Printf("[ImportFromGoogle] Failed to get routine events: %v", err)
-						return
-					}
-					defer rows.Close()
-
-					for rows.Next() {
-						var eventID, calendarID string
-						if err := rows.Scan(&eventID, &calendarID); err != nil {
-							continue
-						}
-
-						payload := map[string]interface{}{"summary": newTitle}
-						payloadBytes, _ := json.Marshal(payload)
-
-						url := fmt.Sprintf("https://www.googleapis.com/calendar/v3/calendars/%s/events/%s", calendarID, eventID)
-						req, err := http.NewRequestWithContext(ctx, "PATCH", url, bytes.NewReader(payloadBytes))
-						if err != nil {
-							continue
-						}
-						req.Header.Set("Authorization", "Bearer "+cfg.AccessToken)
-						req.Header.Set("Content-Type", "application/json")
-
-						client := &http.Client{Timeout: 10 * time.Second}
-						resp, err := client.Do(req)
-						if err != nil {
-							continue
-						}
-						resp.Body.Close()
-
-						if resp.StatusCode == 200 {
-							log.Printf("[ImportFromGoogle] Updated Google event %s with new title: %s", eventID, newTitle)
-						}
-					}
-				}(routineID, userID, cleanTitle, config)
-			} else {
-				log.Printf("[ImportFromGoogle] Routine %s title unchanged, skipping", routineID)
-			}
-			// ALWAYS continue here - never create a task for a routine event
-			continue
-		}
-
 		// Check if this event already exists in our tasks table (by google_event_id)
 		var existingTaskID string
 		var existingUpdatedAt time.Time
@@ -896,257 +788,6 @@ func (h *Handler) createOrUpdateGoogleEvent(ctx context.Context, config GoogleCa
 	return eventResponse.ID, nil
 }
 
-// createOrUpdateWeeklyRoutineEvents creates or updates events for a routine (one per day for the next 7 days)
-// If an event already exists for a date, it updates it. Otherwise, it creates a new one.
-func (h *Handler) createOrUpdateWeeklyRoutineEvents(ctx context.Context, config GoogleCalendarConfig, userID, routineID, title string, startTime, endTime *string) (int, int, error) {
-	eventsCreated := 0
-	eventsUpdated := 0
-
-	// Create/update events for the next 7 days
-	for i := 0; i < 7; i++ {
-		eventDate := time.Now().AddDate(0, 0, i)
-		date := eventDate.Format("2006-01-02")
-
-		// Build event times - ensure proper HH:MM:SS format
-		startDateTime := date + "T09:00:00"
-		endDateTime := date + "T09:30:00"
-
-		if startTime != nil && *startTime != "" {
-			t := *startTime
-			// Remove microseconds if present
-			if len(t) > 8 {
-				t = t[:8]
-			}
-			// Ensure HH:MM:SS format
-			if len(t) == 5 {
-				t = t + ":00"
-			}
-			startDateTime = date + "T" + t
-		}
-		if endTime != nil && *endTime != "" {
-			t := *endTime
-			if len(t) > 8 {
-				t = t[:8]
-			}
-			if len(t) == 5 {
-				t = t + ":00"
-			}
-			endDateTime = date + "T" + t
-		}
-
-		// Build event payload - use timezone from config
-		tz := config.Timezone
-		if tz == "" {
-			tz = "Europe/Paris"
-		}
-		eventPayload := map[string]interface{}{
-			"summary": title,
-			"start": map[string]string{
-				"dateTime": startDateTime,
-				"timeZone": tz,
-			},
-			"end": map[string]string{
-				"dateTime": endDateTime,
-				"timeZone": tz,
-			},
-		}
-
-		// Marshal payload to JSON
-		payloadBytes, err := json.Marshal(eventPayload)
-		if err != nil {
-			log.Printf("[GoogleCalendar] Failed to marshal event payload for day %d: %v", i, err)
-			continue
-		}
-
-		// Check if event already exists for this date
-		var existingEventID, existingCalendarID string
-		err = h.db.QueryRow(ctx, `
-			SELECT google_event_id, google_calendar_id FROM routine_google_events
-			WHERE routine_id = $1 AND event_date = $2
-		`, routineID, date).Scan(&existingEventID, &existingCalendarID)
-
-		var url, method string
-		if err == nil && existingEventID != "" {
-			// Event exists - UPDATE it
-			url = fmt.Sprintf("https://www.googleapis.com/calendar/v3/calendars/%s/events/%s", existingCalendarID, existingEventID)
-			method = "PATCH"
-			log.Printf("[GoogleCalendar] PATCH %s - updating event for %s", url, date)
-		} else {
-			// Event doesn't exist - CREATE it
-			url = fmt.Sprintf("https://www.googleapis.com/calendar/v3/calendars/%s/events", config.CalendarID)
-			method = "POST"
-			log.Printf("[GoogleCalendar] POST %s - creating event for %s (day %d/7)", url, date, i+1)
-		}
-
-		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(payloadBytes))
-		if err != nil {
-			log.Printf("[GoogleCalendar] Failed to create request for day %d: %v", i, err)
-			continue
-		}
-
-		req.Header.Set("Authorization", "Bearer "+config.AccessToken)
-		req.Header.Set("Content-Type", "application/json")
-
-		client := &http.Client{Timeout: 30 * time.Second}
-		resp, err := client.Do(req)
-		if err != nil {
-			log.Printf("[GoogleCalendar] Failed to call API for day %d: %v", i, err)
-			continue
-		}
-
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode == 401 {
-			return eventsCreated, eventsUpdated, fmt.Errorf("token expired, please reconnect to Google Calendar")
-		}
-
-		if resp.StatusCode != 200 {
-			log.Printf("[GoogleCalendar] Error response for day %d: %s", i, string(body))
-			continue
-		}
-
-		// Parse response to get event ID
-		var eventResponse struct {
-			ID string `json:"id"`
-		}
-		if err := json.Unmarshal(body, &eventResponse); err != nil {
-			log.Printf("[GoogleCalendar] Failed to parse response for day %d: %v", i, err)
-			continue
-		}
-
-		// Save to routine_google_events table (insert or update)
-		_, err = h.db.Exec(ctx, `
-			INSERT INTO routine_google_events (routine_id, user_id, google_event_id, google_calendar_id, event_date)
-			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (routine_id, event_date) DO UPDATE SET
-				google_event_id = EXCLUDED.google_event_id,
-				google_calendar_id = EXCLUDED.google_calendar_id
-		`, routineID, userID, eventResponse.ID, config.CalendarID, date)
-
-		if err != nil {
-			log.Printf("[GoogleCalendar] Failed to save event to DB for day %d: %v", i, err)
-		}
-
-		if method == "POST" {
-			eventsCreated++
-			log.Printf("[GoogleCalendar] Created event for %s: %s", date, eventResponse.ID)
-		} else {
-			eventsUpdated++
-			log.Printf("[GoogleCalendar] Updated event for %s: %s", date, eventResponse.ID)
-		}
-	}
-
-	log.Printf("[GoogleCalendar] Routine %s: %d created, %d updated", routineID, eventsCreated, eventsUpdated)
-	return eventsCreated, eventsUpdated, nil
-}
-
-// deleteRoutineGoogleEvents deletes all Google Calendar events for a routine
-func (h *Handler) deleteRoutineGoogleEvents(ctx context.Context, config GoogleCalendarConfig, userID, routineID string) (int, error) {
-	// Get all events for this routine
-	rows, err := h.db.Query(ctx, `
-		SELECT google_event_id, google_calendar_id FROM routine_google_events
-		WHERE routine_id = $1 AND user_id = $2
-	`, routineID, userID)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-
-	deleted := 0
-	for rows.Next() {
-		var googleEventID, googleCalendarID string
-		if err := rows.Scan(&googleEventID, &googleCalendarID); err != nil {
-			continue
-		}
-
-		// Delete from Google Calendar
-		url := fmt.Sprintf("https://www.googleapis.com/calendar/v3/calendars/%s/events/%s", googleCalendarID, googleEventID)
-		req, err := http.NewRequestWithContext(ctx, "DELETE", url, nil)
-		if err != nil {
-			log.Printf("[GoogleCalendar] Failed to create delete request: %v", err)
-			continue
-		}
-
-		req.Header.Set("Authorization", "Bearer "+config.AccessToken)
-
-		client := &http.Client{Timeout: 30 * time.Second}
-		resp, err := client.Do(req)
-		if err != nil {
-			log.Printf("[GoogleCalendar] Failed to delete event %s: %v", googleEventID, err)
-			continue
-		}
-		resp.Body.Close()
-
-		if resp.StatusCode == 204 || resp.StatusCode == 200 || resp.StatusCode == 404 {
-			deleted++
-			log.Printf("[GoogleCalendar] Deleted event %s", googleEventID)
-		}
-	}
-
-	// Delete from database
-	_, err = h.db.Exec(ctx, `DELETE FROM routine_google_events WHERE routine_id = $1 AND user_id = $2`, routineID, userID)
-	if err != nil {
-		log.Printf("[GoogleCalendar] Failed to delete events from DB: %v", err)
-	}
-
-	return deleted, nil
-}
-
-// deleteOldRoutineEvents deletes Google Calendar events for past dates
-func (h *Handler) deleteOldRoutineEvents(ctx context.Context, config GoogleCalendarConfig, userID string) (int, error) {
-	// Get all events for dates before today
-	rows, err := h.db.Query(ctx, `
-		SELECT id, google_event_id, google_calendar_id FROM routine_google_events
-		WHERE user_id = $1 AND event_date < CURRENT_DATE
-	`, userID)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-
-	deleted := 0
-	var idsToDelete []string
-	for rows.Next() {
-		var id, googleEventID, googleCalendarID string
-		if err := rows.Scan(&id, &googleEventID, &googleCalendarID); err != nil {
-			continue
-		}
-
-		// Delete from Google Calendar
-		url := fmt.Sprintf("https://www.googleapis.com/calendar/v3/calendars/%s/events/%s", googleCalendarID, googleEventID)
-		req, err := http.NewRequestWithContext(ctx, "DELETE", url, nil)
-		if err != nil {
-			continue
-		}
-
-		req.Header.Set("Authorization", "Bearer "+config.AccessToken)
-
-		client := &http.Client{Timeout: 30 * time.Second}
-		resp, err := client.Do(req)
-		if err != nil {
-			continue
-		}
-		resp.Body.Close()
-
-		if resp.StatusCode == 204 || resp.StatusCode == 200 || resp.StatusCode == 404 {
-			idsToDelete = append(idsToDelete, id)
-			deleted++
-		}
-	}
-
-	// Delete from database
-	if len(idsToDelete) > 0 {
-		_, err = h.db.Exec(ctx, `DELETE FROM routine_google_events WHERE user_id = $1 AND event_date < CURRENT_DATE`, userID)
-		if err != nil {
-			log.Printf("[GoogleCalendar] Failed to delete old events from DB: %v", err)
-		}
-	}
-
-	log.Printf("[GoogleCalendar] Deleted %d old routine events for user %s", deleted, userID)
-	return deleted, nil
-}
-
 // SyncTaskToGoogleCalendar syncs a task to Google Calendar (called from calendar handler)
 // This is an exported function that can be called when a task is created/updated
 func (h *Handler) SyncTaskToGoogleCalendar(ctx context.Context, userID, taskID, title string, description *string, date string, startTime, endTime *string) error {
@@ -1232,156 +873,6 @@ func (h *Handler) DeleteGoogleCalendarEvent(ctx context.Context, userID, googleE
 
 	log.Printf("[GoogleCalendar] Deleted event %s", googleEventID)
 	return nil
-}
-
-// DeleteRoutineGoogleEvents deletes all Google Calendar events for a routine (exported version)
-func (h *Handler) DeleteRoutineGoogleEvents(ctx context.Context, userID, routineID string) error {
-	config, err := h.getConfig(ctx, userID)
-	if err != nil || !config.IsEnabled {
-		return nil
-	}
-
-	deleted, err := h.deleteRoutineGoogleEvents(ctx, *config, userID, routineID)
-	if err != nil {
-		log.Printf("[DeleteRoutineGoogleEvents] Error deleting events for routine %s: %v", routineID, err)
-		return err
-	}
-
-	log.Printf("[DeleteRoutineGoogleEvents] Deleted %d events for routine %s", deleted, routineID)
-	return nil
-}
-
-// SyncRoutineToGoogleCalendar syncs a routine to Google Calendar for the next 7 days
-// Creates new events or updates existing ones - does NOT delete old events
-func (h *Handler) SyncRoutineToGoogleCalendar(ctx context.Context, userID, routineID, title string, scheduledTime *string, durationMinutes *int) error {
-	config, err := h.getConfig(ctx, userID)
-	if err != nil {
-		log.Printf("[SyncRoutineToGoogleCalendar] No Google config for user %s: %v", userID, err)
-		return nil
-	}
-
-	if !config.IsEnabled {
-		log.Printf("[SyncRoutineToGoogleCalendar] Google Calendar sync is disabled for user %s", userID)
-		return nil
-	}
-
-	if config.SyncDirection != "bidirectional" && config.SyncDirection != "to_google" {
-		log.Printf("[SyncRoutineToGoogleCalendar] Sync direction is %s, not syncing to Google", config.SyncDirection)
-		return nil
-	}
-
-	if time.Now().After(config.TokenExpiry) {
-		log.Printf("[SyncRoutineToGoogleCalendar] Token expired for user %s", userID)
-		return nil
-	}
-
-	// Build event times - default to 09:00 if no scheduled time
-	startTime := "09:00"
-	if scheduledTime != nil && *scheduledTime != "" {
-		startTime = *scheduledTime
-	}
-
-	// Parse start time to calculate end time (use duration or default 30 minutes)
-	duration := 30
-	if durationMinutes != nil && *durationMinutes > 0 {
-		duration = *durationMinutes
-	}
-	startParsed, _ := time.Parse("15:04", startTime)
-	endParsed := startParsed.Add(time.Duration(duration) * time.Minute)
-	endTime := endParsed.Format("15:04")
-
-	// Create event with routine prefix
-	eventTitle := "🔄 " + title
-
-	// Create or update events for the next 7 days
-	eventsCreated, eventsUpdated, err := h.createOrUpdateWeeklyRoutineEvents(ctx, *config, userID, routineID, eventTitle, &startTime, &endTime)
-	if err != nil {
-		log.Printf("[SyncRoutineToGoogleCalendar] Failed to sync routine %s: %v", routineID, err)
-		return err
-	}
-
-	log.Printf("[SyncRoutineToGoogleCalendar] Routine %s synced: %d created, %d updated (start: %s, duration: %d min)", routineID, eventsCreated, eventsUpdated, startTime, duration)
-	return nil
-}
-
-// SyncAllRoutinesToGoogleCalendar syncs all routines for a user (called when enabling sync)
-// First cleans up old events (past dates), then creates new events for the next 7 days
-func (h *Handler) SyncAllRoutinesToGoogleCalendar(ctx context.Context, userID string) (int, error) {
-	config, err := h.getConfig(ctx, userID)
-	if err != nil || !config.IsEnabled {
-		return 0, nil
-	}
-
-	if config.SyncDirection != "bidirectional" && config.SyncDirection != "to_google" {
-		return 0, nil
-	}
-
-	// First, clean up old events (past dates)
-	deletedOld, _ := h.deleteOldRoutineEvents(ctx, *config, userID)
-	if deletedOld > 0 {
-		log.Printf("[SyncAllRoutines] Cleaned up %d old events for user %s", deletedOld, userID)
-	}
-
-	// Get all routines for user
-	rows, err := h.db.Query(ctx, `
-		SELECT id, title, scheduled_time, duration_minutes
-		FROM routines
-		WHERE user_id = $1
-		ORDER BY created_at
-	`, userID)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-
-	synced := 0
-	for rows.Next() {
-		var id, title string
-		var scheduledTime *string
-		var durationMinutes *int
-		if err := rows.Scan(&id, &title, &scheduledTime, &durationMinutes); err != nil {
-			log.Printf("[SyncAllRoutines] Failed to scan routine: %v", err)
-			continue
-		}
-
-		// Sync routine
-		if err := h.SyncRoutineToGoogleCalendar(ctx, userID, id, title, scheduledTime, durationMinutes); err != nil {
-			log.Printf("[SyncAllRoutines] Failed to sync routine %s: %v", id, err)
-			continue
-		}
-		synced++
-	}
-
-	// Update last routine sync timestamp
-	h.db.Exec(ctx, `UPDATE google_calendar_config SET last_routine_sync_at = now(), last_sync_at = now() WHERE user_id = $1`, userID)
-
-	log.Printf("[SyncAllRoutines] Synced %d routines for user %s", synced, userID)
-	return synced, nil
-}
-
-// CheckAndSyncRoutinesWeekly checks if a week has passed since last sync and re-syncs routines
-// This should be called periodically (e.g., when app launches or daily)
-func (h *Handler) CheckAndSyncRoutinesWeekly(ctx context.Context, userID string) (int, bool, error) {
-	config, err := h.getConfig(ctx, userID)
-	if err != nil || !config.IsEnabled {
-		return 0, false, nil
-	}
-
-	// Check if last routine sync was more than 6 days ago
-	var lastRoutineSyncAt *time.Time
-	h.db.QueryRow(ctx, `SELECT last_routine_sync_at FROM google_calendar_config WHERE user_id = $1`, userID).Scan(&lastRoutineSyncAt)
-
-	// If never synced or last sync was more than 6 days ago, sync again
-	needsSync := lastRoutineSyncAt == nil || time.Since(*lastRoutineSyncAt) > (6*24*time.Hour)
-
-	if !needsSync {
-		log.Printf("[CheckAndSyncRoutinesWeekly] No sync needed for user %s (last routine sync: %v)", userID, lastRoutineSyncAt)
-		return 0, false, nil
-	}
-
-	log.Printf("[CheckAndSyncRoutinesWeekly] Weekly sync triggered for user %s (last routine sync: %v)", userID, lastRoutineSyncAt)
-	synced, err := h.SyncAllRoutinesToGoogleCalendar(ctx, userID)
-	return synced, true, err
 }
 
 // SyncAllTasksToGoogleCalendar syncs all future tasks for a user (called when enabling sync)

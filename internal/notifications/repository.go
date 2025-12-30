@@ -655,3 +655,127 @@ type TaskReminderInfo struct {
 	FCMToken  string
 	Language  string
 }
+
+// UserWeeklyGoalProgress holds user weekly goal progress for notifications
+type UserWeeklyGoalProgress struct {
+	UserID         string
+	FCMToken       string
+	Language       string
+	TotalCount     int
+	CompletedCount int
+}
+
+// GetUsersWithoutWeeklyGoals returns users who haven't set weekly goals for current week
+func (r *Repository) GetUsersWithoutWeeklyGoals(ctx context.Context, timezone string) ([]UserNotificationInfo, error) {
+	// Calculate current week's Monday
+	now := time.Now()
+	weekday := now.Weekday()
+	if weekday == time.Sunday {
+		weekday = 7
+	}
+	daysToMonday := int(weekday) - 1
+	monday := now.AddDate(0, 0, -daysToMonday).Format("2006-01-02")
+
+	query := `
+		SELECT DISTINCT
+			dt.user_id,
+			dt.fcm_token,
+			np.language,
+			np.timezone,
+			u.first_name
+		FROM device_tokens dt
+		JOIN notification_preferences np ON dt.user_id = np.user_id
+		JOIN users u ON dt.user_id = u.id
+		WHERE dt.is_active = true
+		  AND np.timezone = $1
+		  AND NOT EXISTS (
+			SELECT 1 FROM weekly_goals wg
+			WHERE wg.user_id = dt.user_id
+			  AND wg.week_start_date = $2::date
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM notification_events ne
+			WHERE ne.user_id = dt.user_id
+			  AND ne.type = 'weekly_goals_reminder'
+			  AND ne.created_at > NOW() - INTERVAL '12 hours'
+		  )
+	`
+
+	rows, err := r.pool.Query(ctx, query, timezone, monday)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get users without weekly goals: %w", err)
+	}
+	defer rows.Close()
+
+	var users []UserNotificationInfo
+	for rows.Next() {
+		var u UserNotificationInfo
+		var firstName *string
+		if err := rows.Scan(&u.UserID, &u.FCMToken, &u.Language, &u.Timezone, &firstName); err != nil {
+			return nil, fmt.Errorf("failed to scan user: %w", err)
+		}
+		if firstName != nil {
+			u.FirstName = *firstName
+		}
+		users = append(users, u)
+	}
+
+	return users, nil
+}
+
+// GetUsersWithWeeklyGoalsProgress returns users with their weekly goal progress for midweek update
+func (r *Repository) GetUsersWithWeeklyGoalsProgress(ctx context.Context, timezone string) ([]UserWeeklyGoalProgress, error) {
+	// Calculate current week's Monday
+	now := time.Now()
+	weekday := now.Weekday()
+	if weekday == time.Sunday {
+		weekday = 7
+	}
+	daysToMonday := int(weekday) - 1
+	monday := now.AddDate(0, 0, -daysToMonday).Format("2006-01-02")
+
+	query := `
+		SELECT DISTINCT
+			dt.user_id,
+			dt.fcm_token,
+			np.language,
+			(SELECT COUNT(*) FROM weekly_goal_items wgi
+			 JOIN weekly_goals wg ON wgi.weekly_goal_id = wg.id
+			 WHERE wg.user_id = dt.user_id AND wg.week_start_date = $2::date) as total_count,
+			(SELECT COUNT(*) FROM weekly_goal_items wgi
+			 JOIN weekly_goals wg ON wgi.weekly_goal_id = wg.id
+			 WHERE wg.user_id = dt.user_id AND wg.week_start_date = $2::date AND wgi.is_completed = true) as completed_count
+		FROM device_tokens dt
+		JOIN notification_preferences np ON dt.user_id = np.user_id
+		WHERE dt.is_active = true
+		  AND np.timezone = $1
+		  AND EXISTS (
+			SELECT 1 FROM weekly_goals wg
+			WHERE wg.user_id = dt.user_id
+			  AND wg.week_start_date = $2::date
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM notification_events ne
+			WHERE ne.user_id = dt.user_id
+			  AND ne.type = 'weekly_goals_midweek'
+			  AND ne.created_at > NOW() - INTERVAL '12 hours'
+		  )
+	`
+
+	rows, err := r.pool.Query(ctx, query, timezone, monday)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get users with weekly goals progress: %w", err)
+	}
+	defer rows.Close()
+
+	var users []UserWeeklyGoalProgress
+	for rows.Next() {
+		var u UserWeeklyGoalProgress
+		if err := rows.Scan(&u.UserID, &u.FCMToken, &u.Language, &u.TotalCount, &u.CompletedCount); err != nil {
+			return nil, fmt.Errorf("failed to scan user: %w", err)
+		}
+		users = append(users, u)
+	}
+
+	return users, nil
+}
