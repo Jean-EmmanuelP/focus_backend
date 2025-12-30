@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"firelevel-backend/internal/auth"
+	"firelevel-backend/internal/telegram"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -138,6 +139,13 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Post created but failed to fetch", http.StatusInternalServerError)
 		return
 	}
+
+	// Send Telegram notification
+	go telegram.Get().Send(telegram.Event{
+		Type:     telegram.EventCommunityPostCreated,
+		UserID:   userID,
+		UserName: "User",
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

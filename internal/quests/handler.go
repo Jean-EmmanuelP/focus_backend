@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"firelevel-backend/internal/auth"
+	"firelevel-backend/internal/telegram"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -112,6 +113,22 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if this is the user's first quest
+	go func() {
+		var questCount int
+		h.db.QueryRow(r.Context(), `SELECT COUNT(*) FROM public.quests WHERE user_id = $1`, userID).Scan(&questCount)
+		if questCount == 1 {
+			telegram.Get().Send(telegram.Event{
+				Type:     telegram.EventFirstQuestCreated,
+				UserID:   userID,
+				UserName: "User",
+				Data: map[string]interface{}{
+					"quest_name": q.Title,
+				},
+			})
+		}
+	}()
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(q)
 }
@@ -186,6 +203,18 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Failed to update quest", http.StatusInternalServerError)
 		return
+	}
+
+	// Send notification if quest just got completed
+	if q.Status == "completed" || (q.TargetValue > 0 && q.CurrentValue >= q.TargetValue) {
+		go telegram.Get().Send(telegram.Event{
+			Type:     telegram.EventQuestCompleted,
+			UserID:   userID,
+			UserName: "User",
+			Data: map[string]interface{}{
+				"quest_name": q.Title,
+			},
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")

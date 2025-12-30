@@ -443,3 +443,72 @@ func (r *Repository) GetReferrerForUser(ctx context.Context, userID string) (str
 
 	return referrerID, nil
 }
+
+// ===== Admin Functions =====
+
+// UserBalance represents a user's referral balance for admin view
+type UserBalance struct {
+	UserID         string  `json:"user_id"`
+	Email          string  `json:"email"`
+	FirstName      string  `json:"first_name"`
+	Code           string  `json:"code"`
+	ActiveReferrals int    `json:"active_referrals"`
+	TotalEarned    float64 `json:"total_earned"`
+	CurrentBalance float64 `json:"current_balance"`
+}
+
+// DeductBalance reduces a user's balance after payment
+func (r *Repository) DeductBalance(ctx context.Context, userID string, amount float64) error {
+	result, err := r.pool.Exec(ctx, `
+		UPDATE referral_credits
+		SET current_balance = current_balance - $2,
+		    updated_at = NOW()
+		WHERE user_id = $1 AND current_balance >= $2
+	`, userID, amount)
+
+	if err != nil {
+		return fmt.Errorf("failed to deduct balance: %w", err)
+	}
+
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("insufficient balance or user not found")
+	}
+
+	return nil
+}
+
+// GetAllPositiveBalances returns all users with balance > 0
+func (r *Repository) GetAllPositiveBalances(ctx context.Context) ([]UserBalance, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT
+			c.user_id,
+			COALESCE(u.email, '') as email,
+			COALESCE(u.first_name, u.pseudo, 'User') as first_name,
+			COALESCE(rc.code, '') as code,
+			(SELECT COUNT(*) FROM referrals ref WHERE ref.referrer_id = c.user_id AND ref.status = 'active') as active_referrals,
+			c.total_earned,
+			c.current_balance
+		FROM referral_credits c
+		JOIN users u ON u.id = c.user_id
+		LEFT JOIN referral_codes rc ON rc.user_id = c.user_id
+		WHERE c.current_balance > 0
+		ORDER BY c.current_balance DESC
+	`)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get balances: %w", err)
+	}
+	defer rows.Close()
+
+	var balances []UserBalance
+	for rows.Next() {
+		var b UserBalance
+		err := rows.Scan(&b.UserID, &b.Email, &b.FirstName, &b.Code, &b.ActiveReferrals, &b.TotalEarned, &b.CurrentBalance)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan balance: %w", err)
+		}
+		balances = append(balances, b)
+	}
+
+	return balances, nil
+}

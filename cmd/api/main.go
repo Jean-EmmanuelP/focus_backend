@@ -32,6 +32,7 @@ import (
 	"firelevel-backend/internal/voice"
 	ws "firelevel-backend/internal/websocket"
 	"firelevel-backend/internal/referral"
+	"firelevel-backend/internal/telegram"
 )
 
 func main() {
@@ -86,6 +87,11 @@ func main() {
 	// Initialize WebSocket hub for real-time updates
 	ws.InitGlobalHub()
 
+	// Initialize Telegram notifications
+	telegram.Init()
+	telegramHandler := telegram.NewHandler(pool)
+	telegramWebhook := telegram.NewWebhookHandler()
+
 	// 4. Setup Router
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -96,6 +102,17 @@ func main() {
 		w.Write([]byte("OK"))
 	})
 	r.Get("/notifications/status", notificationsHandler.GetStatus)
+
+	// Webhooks (called by Supabase triggers)
+	r.Post("/webhooks/user-created", func(w http.ResponseWriter, r *http.Request) {
+		// Verify webhook secret
+		webhookSecret := os.Getenv("WEBHOOK_SECRET")
+		if webhookSecret != "" && r.Header.Get("X-Webhook-Secret") != webhookSecret {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		telegramWebhook.HandleUserCreated(w, r)
+	})
 
 	// Protected Routes
 	r.Group(func(r chi.Router) {
@@ -314,8 +331,50 @@ func main() {
 	// Public referral validation (no auth required)
 	r.Get("/referral/validate", referralHandler.ValidateCode)
 
+	// Admin endpoints (protected by X-Admin-Secret header)
+	r.Route("/admin", func(r chi.Router) {
+		r.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				adminSecret := os.Getenv("ADMIN_SECRET")
+				if adminSecret == "" {
+					adminSecret = "focus-admin-2024" // Default for dev
+				}
+				if req.Header.Get("X-Admin-Secret") != adminSecret {
+					http.Error(w, "Unauthorized", http.StatusUnauthorized)
+					return
+				}
+				next.ServeHTTP(w, req)
+			})
+		})
+
+		// Referral admin
+		r.Get("/referral/balances", referralHandler.GetAllBalances)
+		r.Post("/referral/mark-paid", referralHandler.MarkUserPaid)
+
+		// Telegram admin
+		r.Post("/telegram/test", telegramHandler.TestNotification)
+	})
+
 	// Cron/Job endpoints (protected by X-Cron-Secret header)
 	r.Post("/jobs/journal/monthly-analysis", journalHandler.RunMonthlyAnalysis)
+
+	// Telegram cron jobs
+	r.Post("/jobs/telegram/daily-summary", func(w http.ResponseWriter, r *http.Request) {
+		cronSecret := os.Getenv("CRON_SECRET")
+		if cronSecret != "" && r.Header.Get("X-Cron-Secret") != cronSecret {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		telegramHandler.SendDailySummary(w, r)
+	})
+	r.Post("/jobs/telegram/check-inactive", func(w http.ResponseWriter, r *http.Request) {
+		cronSecret := os.Getenv("CRON_SECRET")
+		if cronSecret != "" && r.Header.Get("X-Cron-Secret") != cronSecret {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		telegramHandler.CheckInactiveUsers(w, r)
+	})
 
 	// Notification cron jobs
 	notificationScheduler := notifications.NewScheduler(notificationsRepo)

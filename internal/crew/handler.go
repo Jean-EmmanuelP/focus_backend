@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"firelevel-backend/internal/auth"
+	"firelevel-backend/internal/telegram"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -520,6 +521,16 @@ func (h *Handler) AcceptRequest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
 		return
 	}
+
+	// Send Telegram notification for new friendship
+	go telegram.Get().Send(telegram.Event{
+		Type:     telegram.EventFriendRequestAccepted,
+		UserID:   userID,
+		UserName: "User",
+		Data: map[string]interface{}{
+			"friend_name": "New friend",
+		},
+	})
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})

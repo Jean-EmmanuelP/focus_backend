@@ -2,10 +2,12 @@ package referral
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 
 	"firelevel-backend/internal/auth"
+	"firelevel-backend/internal/telegram"
 )
 
 // Handler handles referral-related HTTP requests
@@ -232,6 +234,16 @@ func (h *Handler) ApplyCode(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("✅ Referral created: %s referred by %s", userID, referralCode.UserID)
 
+	// Send Telegram notification
+	telegram.Get().Send(telegram.Event{
+		Type:     telegram.EventReferralApplied,
+		UserID:   userID,
+		UserName: "Nouveau user",
+		Data: map[string]interface{}{
+			"referrer_name": referralCode.Code,
+		},
+	})
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ApplyCodeResponse{
 		Success: true,
@@ -290,6 +302,15 @@ func (h *Handler) ActivateUserReferral(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("✅ Referral activated for user %s", userID)
+
+	// Send Telegram notification for referral activation (subscription!)
+	telegram.Get().Send(telegram.Event{
+		Type:     telegram.EventReferralActivated,
+		UserID:   userID,
+		UserName: "User",
+		Data:     map[string]interface{}{},
+	})
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
@@ -306,4 +327,52 @@ func (h *Handler) ProcessMonthlyCommissions(w http.ResponseWriter, r *http.Reque
 
 	log.Println("✅ Monthly commissions processed")
 	w.Write([]byte("OK"))
+}
+
+// MarkUserPaid marks a user's balance as paid (admin endpoint)
+// POST /admin/referral/mark-paid
+// Body: { "user_id": "uuid", "amount": 18.00 }
+func (h *Handler) MarkUserPaid(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UserID string  `json:"user_id"`
+		Amount float64 `json:"amount"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.UserID == "" || req.Amount <= 0 {
+		http.Error(w, "user_id and amount are required", http.StatusBadRequest)
+		return
+	}
+
+	err := h.repo.DeductBalance(r.Context(), req.UserID, req.Amount)
+	if err != nil {
+		log.Printf("❌ Failed to mark paid: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("✅ Marked %.2f€ as paid for user %s", req.Amount, req.UserID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": fmt.Sprintf("%.2f€ deducted from balance", req.Amount),
+	})
+}
+
+// GetAllBalances returns all users with positive balances (admin endpoint)
+// GET /admin/referral/balances
+func (h *Handler) GetAllBalances(w http.ResponseWriter, r *http.Request) {
+	balances, err := h.repo.GetAllPositiveBalances(r.Context())
+	if err != nil {
+		log.Printf("❌ Failed to get balances: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(balances)
 }
