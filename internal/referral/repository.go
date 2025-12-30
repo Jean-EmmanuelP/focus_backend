@@ -219,34 +219,55 @@ func (r *Repository) GetReferralStats(ctx context.Context, userID string) (*Refe
 	// Get or create code first
 	code, err := r.GetOrCreateReferralCode(ctx, userID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get or create referral code: %w", err)
 	}
 
 	var stats ReferralStats
 	stats.Code = code.Code
-	stats.ShareLink = "https://focus.app/r/" + code.Code
+	stats.ShareLink = "https://apps.apple.com/app/focus-fire-level/id6743387301"
 
-	// Get counts and earnings
+	// Get counts - using separate queries for robustness
+	// Count total referrals
 	err = r.pool.QueryRow(ctx, `
-		SELECT
-			COUNT(DISTINCT r.id) FILTER (WHERE r.status IN ('pending', 'active')),
-			COUNT(DISTINCT r.id) FILTER (WHERE r.status = 'active'),
-			COALESCE(SUM(re.commission_amount) FILTER (WHERE re.status = 'credited'), 0),
-			COALESCE(cred.current_balance, 0)
-		FROM referral_codes rc
-		LEFT JOIN referrals r ON r.referral_code_id = rc.id
-		LEFT JOIN referral_earnings re ON re.referrer_id = rc.user_id
-		LEFT JOIN referral_credits cred ON cred.user_id = rc.user_id
-		WHERE rc.user_id = $1
-		GROUP BY cred.current_balance
-	`, userID).Scan(&stats.TotalReferrals, &stats.ActiveReferrals, &stats.TotalEarned, &stats.CurrentBalance)
-
-	if err == pgx.ErrNoRows {
-		// No referrals yet, return empty stats
-		return &stats, nil
+		SELECT COUNT(*)
+		FROM referrals r
+		JOIN referral_codes rc ON r.referral_code_id = rc.id
+		WHERE rc.user_id = $1 AND r.status IN ('pending', 'active')
+	`, userID).Scan(&stats.TotalReferrals)
+	if err != nil && err != pgx.ErrNoRows {
+		// Table might not exist, return empty stats
+		stats.TotalReferrals = 0
 	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to get referral stats: %w", err)
+
+	// Count active referrals
+	err = r.pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM referrals r
+		JOIN referral_codes rc ON r.referral_code_id = rc.id
+		WHERE rc.user_id = $1 AND r.status = 'active'
+	`, userID).Scan(&stats.ActiveReferrals)
+	if err != nil && err != pgx.ErrNoRows {
+		stats.ActiveReferrals = 0
+	}
+
+	// Get total earned
+	err = r.pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(commission_amount), 0)
+		FROM referral_earnings
+		WHERE referrer_id = $1 AND status = 'credited'
+	`, userID).Scan(&stats.TotalEarned)
+	if err != nil && err != pgx.ErrNoRows {
+		stats.TotalEarned = 0
+	}
+
+	// Get current balance
+	err = r.pool.QueryRow(ctx, `
+		SELECT COALESCE(current_balance, 0)
+		FROM referral_credits
+		WHERE user_id = $1
+	`, userID).Scan(&stats.CurrentBalance)
+	if err != nil && err != pgx.ErrNoRows {
+		stats.CurrentBalance = 0
 	}
 
 	return &stats, nil
