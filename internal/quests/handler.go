@@ -118,10 +118,28 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		var questCount int
 		h.db.QueryRow(r.Context(), `SELECT COUNT(*) FROM public.quests WHERE user_id = $1`, userID).Scan(&questCount)
 		if questCount == 1 {
+			// Get user info
+			var pseudo, firstName, email *string
+			h.db.QueryRow(r.Context(),
+				`SELECT pseudo, first_name, email FROM public.users WHERE id = $1`, userID,
+			).Scan(&pseudo, &firstName, &email)
+
+			userName := "User"
+			if pseudo != nil && *pseudo != "" {
+				userName = *pseudo
+			} else if firstName != nil && *firstName != "" {
+				userName = *firstName
+			}
+			userEmail := ""
+			if email != nil {
+				userEmail = *email
+			}
+
 			telegram.Get().Send(telegram.Event{
-				Type:     telegram.EventFirstQuestCreated,
-				UserID:   userID,
-				UserName: "User",
+				Type:      telegram.EventFirstQuestCreated,
+				UserID:    userID,
+				UserName:  userName,
+				UserEmail: userEmail,
 				Data: map[string]interface{}{
 					"quest_name": q.Title,
 				},
@@ -207,14 +225,35 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 
 	// Send notification if quest just got completed
 	if q.Status == "completed" || (q.TargetValue > 0 && q.CurrentValue >= q.TargetValue) {
-		go telegram.Get().Send(telegram.Event{
-			Type:     telegram.EventQuestCompleted,
-			UserID:   userID,
-			UserName: "User",
-			Data: map[string]interface{}{
-				"quest_name": q.Title,
-			},
-		})
+		go func() {
+			var pseudo, firstName, email *string
+			h.db.QueryRow(r.Context(),
+				`SELECT pseudo, first_name, email FROM public.users WHERE id = $1`, userID,
+			).Scan(&pseudo, &firstName, &email)
+
+			userName := "User"
+			if pseudo != nil && *pseudo != "" {
+				userName = *pseudo
+			} else if firstName != nil && *firstName != "" {
+				userName = *firstName
+			}
+			userEmail := ""
+			if email != nil {
+				userEmail = *email
+			}
+
+			telegram.Get().Send(telegram.Event{
+				Type:      telegram.EventQuestCompleted,
+				UserID:    userID,
+				UserName:  userName,
+				UserEmail: userEmail,
+				Data: map[string]interface{}{
+					"quest_name":    q.Title,
+					"target_value":  q.TargetValue,
+					"current_value": q.CurrentValue,
+				},
+			})
+		}()
 	}
 
 	w.Header().Set("Content-Type", "application/json")

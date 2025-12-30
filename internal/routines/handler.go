@@ -130,10 +130,29 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		var routineCount int
 		h.db.QueryRow(r.Context(), `SELECT COUNT(*) FROM public.routines WHERE user_id = $1`, userID).Scan(&routineCount)
 		if routineCount == 1 {
+			// Get user info for detailed notification
+			var pseudo, firstName, email *string
+			h.db.QueryRow(r.Context(),
+				`SELECT pseudo, first_name, email FROM public.users WHERE id = $1`, userID,
+			).Scan(&pseudo, &firstName, &email)
+
+			userName := "User"
+			if pseudo != nil && *pseudo != "" {
+				userName = *pseudo
+			} else if firstName != nil && *firstName != "" {
+				userName = *firstName
+			}
+
+			userEmail := ""
+			if email != nil {
+				userEmail = *email
+			}
+
 			telegram.Get().Send(telegram.Event{
-				Type:     telegram.EventFirstRoutineCreated,
-				UserID:   userID,
-				UserName: "User",
+				Type:      telegram.EventFirstRoutineCreated,
+				UserID:    userID,
+				UserName:  userName,
+				UserEmail: userEmail,
 				Data: map[string]interface{}{
 					"routine_name": rt.Title,
 				},

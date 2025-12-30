@@ -523,14 +523,46 @@ func (h *Handler) AcceptRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send Telegram notification for new friendship
-	go telegram.Get().Send(telegram.Event{
-		Type:     telegram.EventFriendRequestAccepted,
-		UserID:   userID,
-		UserName: "User",
-		Data: map[string]interface{}{
-			"friend_name": "New friend",
-		},
-	})
+	go func() {
+		// Get both users' info
+		var myPseudo, myFirstName, myEmail *string
+		var friendPseudo, friendFirstName *string
+		h.db.QueryRow(r.Context(),
+			`SELECT pseudo, first_name, email FROM public.users WHERE id = $1`, userID,
+		).Scan(&myPseudo, &myFirstName, &myEmail)
+		h.db.QueryRow(r.Context(),
+			`SELECT pseudo, first_name FROM public.users WHERE id = $1`, fromUserID,
+		).Scan(&friendPseudo, &friendFirstName)
+
+		myName := "User"
+		if myPseudo != nil && *myPseudo != "" {
+			myName = *myPseudo
+		} else if myFirstName != nil && *myFirstName != "" {
+			myName = *myFirstName
+		}
+
+		friendName := "User"
+		if friendPseudo != nil && *friendPseudo != "" {
+			friendName = *friendPseudo
+		} else if friendFirstName != nil && *friendFirstName != "" {
+			friendName = *friendFirstName
+		}
+
+		emailStr := ""
+		if myEmail != nil {
+			emailStr = *myEmail
+		}
+
+		telegram.Get().Send(telegram.Event{
+			Type:      telegram.EventFriendRequestAccepted,
+			UserID:    userID,
+			UserName:  myName,
+			UserEmail: emailStr,
+			Data: map[string]interface{}{
+				"friend_name": friendName,
+			},
+		})
+	}()
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})

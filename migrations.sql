@@ -605,14 +605,13 @@ alter table public.users add column if not exists productivity_peak text;
 -- ==========================================
 -- 19. WEEKLY GOALS
 -- User's weekly intentions/objectives
--- Similar to daily intentions but for the week
+-- Exactly like daily intentions but for the week
 -- ==========================================
 create table public.weekly_goals (
   id uuid default gen_random_uuid() primary key,
   user_id uuid not null references auth.users on delete cascade,
 
   week_start_date date not null,      -- Monday of the week
-  week_end_date date not null,        -- Sunday of the week
 
   created_at timestamp with time zone default now(),
   updated_at timestamp with time zone default now(),
@@ -633,15 +632,14 @@ create index idx_weekly_goals_week on public.weekly_goals(user_id, week_start_da
 
 -- ==========================================
 -- 20. WEEKLY GOAL ITEMS
--- Individual goals within a week
+-- Individual goals within a week (like intention_items)
 -- ==========================================
 create table public.weekly_goal_items (
   id uuid default gen_random_uuid() primary key,
   weekly_goal_id uuid not null references public.weekly_goals on delete cascade,
 
-  area_id uuid references public.areas on delete set null,  -- Optional link to life area
+  area_id uuid references public.areas on delete set null,  -- Optional link to life area (for emoji)
   content text not null,                                      -- Goal text
-  emoji text default '🎯',                                    -- Custom emoji
   position integer default 0,                                 -- Order
 
   is_completed boolean default false,

@@ -127,100 +127,212 @@ func (s *Service) formatMessage(event Event) string {
 	switch event.Type {
 	// ===== ACQUISITION =====
 	case EventUserSignup:
-		return fmt.Sprintf("🎉 *Nouveau User !*\n\n👤 %s\n📧 %s\n🕐 %s",
-			event.UserName, event.UserEmail, event.Timestamp.Format("15:04"))
+		return fmt.Sprintf(`🎉 *NOUVEAU USER !*
+
+👤 *%s*
+📧 %s
+🆔 %s
+🕐 %s
+
+✨ _Bienvenue dans la famille !_`,
+			event.UserName, event.UserEmail, event.UserID[:8]+"...", event.Timestamp.Format("02/01 15:04"))
 
 	case EventOnboardingCompleted:
-		return fmt.Sprintf("✅ *Onboarding terminé*\n\n👤 %s\n🎯 Prêt à commencer !",
-			event.UserName)
+		return fmt.Sprintf(`✅ *ONBOARDING TERMINÉ*
+
+👤 *%s*
+📧 %s
+
+🎯 _Prêt à commencer son aventure !_`,
+			event.UserName, event.UserEmail)
 
 	// ===== ENGAGEMENT =====
 	case EventFirstRoutineCreated:
 		routineName := getString(event.Data, "routine_name")
-		return fmt.Sprintf("🔄 *Première routine créée !*\n\n👤 %s\n📋 %s",
-			event.UserName, routineName)
+		return fmt.Sprintf(`🔄 *PREMIÈRE ROUTINE !*
+
+👤 *%s*
+📧 %s
+📋 Routine: *%s*
+
+🚀 _Signal d'adoption fort !_`,
+			event.UserName, event.UserEmail, routineName)
 
 	case EventFirstQuestCreated:
 		questName := getString(event.Data, "quest_name")
-		return fmt.Sprintf("🎯 *Première quête créée !*\n\n👤 %s\n🏆 %s",
-			event.UserName, questName)
+		return fmt.Sprintf(`🎯 *PREMIÈRE QUÊTE !*
+
+👤 *%s*
+📧 %s
+🏆 Quête: *%s*
+
+💪 _User engagé !_`,
+			event.UserName, event.UserEmail, questName)
 
 	case EventFirstTaskCreated:
-		return fmt.Sprintf("📝 *Première tâche créée !*\n\n👤 %s",
-			event.UserName)
+		return fmt.Sprintf(`📝 *PREMIÈRE TÂCHE !*
+
+👤 *%s*
+📧 %s
+
+📅 _Commence à planifier !_`,
+			event.UserName, event.UserEmail)
 
 	// ===== STREAKS & MILESTONES =====
 	case EventStreakDayValidated:
 		streak := getInt(event.Data, "current_streak")
-		return fmt.Sprintf("🔥 *Jour validé !*\n\n👤 %s\n📊 Streak: %d jours",
+		return fmt.Sprintf(`🔥 *JOUR VALIDÉ*
+
+👤 *%s*
+📊 Streak actuel: *%d jours*
+
+✅ _Continue comme ça !_`,
 			event.UserName, streak)
 
 	case EventStreakBroken:
 		wasStreak := getInt(event.Data, "was_streak")
-		return fmt.Sprintf("💔 *Streak cassé !*\n\n👤 %s\n📉 Était à %d jours",
-			event.UserName, wasStreak)
+		return fmt.Sprintf(`💔 *STREAK CASSÉ*
+
+👤 *%s*
+📧 %s
+📉 Était à: *%d jours*
+
+⚠️ _À surveiller - risque de churn_`,
+			event.UserName, event.UserEmail, wasStreak)
 
 	case EventFlameLevelUnlocked:
 		level := getInt(event.Data, "level")
 		levelName := getString(event.Data, "level_name")
-		return fmt.Sprintf("🏆 *Nouveau niveau Flame !*\n\n👤 %s\n🔥 Niveau %d: %s",
+		return fmt.Sprintf(`🏆 *NIVEAU FLAME DÉBLOQUÉ !*
+
+👤 *%s*
+🔥 Niveau %d: *%s*
+
+🎊 _Félicitations !_`,
 			event.UserName, level, levelName)
 
 	case EventStreak100Days:
-		return fmt.Sprintf("🌟 *LEGEND STATUS !*\n\n👤 %s\n🔥 100 jours de streak !\n\n🎉🎉🎉",
-			event.UserName)
+		return fmt.Sprintf(`🌟🌟🌟 *LEGEND STATUS !* 🌟🌟🌟
+
+👤 *%s*
+📧 %s
+🔥 *100 JOURS DE STREAK !*
+
+👑 _Un vrai champion !_
+🎉🎉🎉`,
+			event.UserName, event.UserEmail)
 
 	// ===== FOCUS =====
 	case EventFocusSessionCompleted:
 		duration := getInt(event.Data, "duration_minutes")
-		return fmt.Sprintf("⏱️ *Session focus terminée*\n\n👤 %s\n⏰ %d minutes",
+		return fmt.Sprintf(`⏱️ *SESSION FOCUS*
+
+👤 *%s*
+⏰ Durée: *%d minutes*
+
+💪 _Deep work accompli !_`,
 			event.UserName, duration)
 
 	case EventFocusMinuteMilestone:
 		totalMinutes := getInt(event.Data, "total_minutes")
-		return fmt.Sprintf("🎯 *Milestone Focus !*\n\n👤 %s\n⏱️ %d minutes total cette semaine",
+		return fmt.Sprintf(`🎯 *MILESTONE FOCUS !*
+
+👤 *%s*
+⏱️ Total semaine: *%d minutes*
+
+🚀 _Machine de productivité !_`,
 			event.UserName, totalMinutes)
 
 	// ===== QUESTS =====
 	case EventQuestCompleted:
 		questName := getString(event.Data, "quest_name")
-		return fmt.Sprintf("🏆 *Quête complétée !*\n\n👤 %s\n🎯 %s",
-			event.UserName, questName)
+		targetValue := getInt(event.Data, "target_value")
+		return fmt.Sprintf(`🏆 *QUÊTE COMPLÉTÉE !*
+
+👤 *%s*
+📧 %s
+🎯 Quest: *%s*
+✅ Objectif: %d atteint
+
+🎊 _Objectif accompli !_`,
+			event.UserName, event.UserEmail, questName, targetValue)
 
 	// ===== COMMUNITY =====
 	case EventCommunityPostCreated:
-		return fmt.Sprintf("📸 *Nouveau post communauté*\n\n👤 %s",
-			event.UserName)
+		return fmt.Sprintf(`📸 *NOUVEAU POST COMMUNAUTÉ*
+
+👤 *%s*
+📧 %s
+🕐 %s
+
+📢 _Partage avec la communauté !_`,
+			event.UserName, event.UserEmail, event.Timestamp.Format("02/01 15:04"))
 
 	case EventFriendRequestAccepted:
 		friendName := getString(event.Data, "friend_name")
-		return fmt.Sprintf("🤝 *Nouvelle connexion*\n\n👤 %s ↔️ %s",
+		return fmt.Sprintf(`🤝 *NOUVELLE CONNEXION*
+
+👤 *%s*
+↔️ *%s*
+
+👥 _Réseau qui grandit !_`,
 			event.UserName, friendName)
 
 	// ===== REFERRALS =====
 	case EventReferralApplied:
-		referrerName := getString(event.Data, "referrer_name")
-		return fmt.Sprintf("🔗 *Code parrain utilisé !*\n\n👤 Nouveau: %s\n👑 Parrain: %s",
-			event.UserName, referrerName)
+		referrerCode := getString(event.Data, "referrer_name")
+		return fmt.Sprintf(`🔗 *CODE PARRAIN UTILISÉ !*
+
+👤 Nouveau: *%s*
+📧 %s
+👑 Code: *%s*
+
+💰 _Parrainage en attente d'activation_`,
+			event.UserName, event.UserEmail, referrerCode)
 
 	case EventReferralActivated:
 		referrerName := getString(event.Data, "referrer_name")
-		return fmt.Sprintf("💰 *Parrainage activé !*\n\n👤 %s a souscrit\n👑 Parrain: %s\n💵 Commission: 20%%",
-			event.UserName, referrerName)
+		return fmt.Sprintf(`💰💰 *PARRAINAGE ACTIVÉ !* 💰💰
+
+👤 Filleul: *%s*
+📧 %s
+👑 Parrain: *%s*
+💵 Commission: *20%%*
+
+🎉 _Cha-ching ! Le parrain gagne de l'argent !_`,
+			event.UserName, event.UserEmail, referrerName)
 
 	case EventCommissionEarned:
 		amount := getFloat(event.Data, "amount")
 		referredName := getString(event.Data, "referred_name")
-		return fmt.Sprintf("💵 *Commission gagnée !*\n\n👑 %s\n💰 +%.2f€\n👤 Grâce à: %s",
+		return fmt.Sprintf(`💵 *COMMISSION GAGNÉE*
+
+👑 Parrain: *%s*
+💰 Montant: *+%.2f€*
+👤 Grâce à: *%s*
+
+🏦 _À payer ce mois !_`,
 			event.UserName, amount, referredName)
 
 	// ===== AT-RISK =====
 	case EventUserInactive3Days:
-		return fmt.Sprintf("⚠️ *User inactif 3 jours*\n\n👤 %s\n📧 %s",
+		return fmt.Sprintf(`⚠️ *USER INACTIF 3 JOURS*
+
+👤 *%s*
+📧 %s
+
+📊 _Surveiller - début de churn potentiel_`,
 			event.UserName, event.UserEmail)
 
 	case EventUserInactive7Days:
-		return fmt.Sprintf("🚨 *User inactif 7 jours !*\n\n👤 %s\n📧 %s\n\n⚠️ Risque de churn",
+		return fmt.Sprintf(`🚨🚨 *ALERTE CHURN !* 🚨🚨
+
+👤 *%s*
+📧 %s
+⏰ Inactif depuis: *7 jours*
+
+❌ _Action urgente requise !_
+📧 _Envoyer email de réactivation ?_`,
 			event.UserName, event.UserEmail)
 
 	// ===== ADMIN =====
@@ -337,4 +449,31 @@ func getFloat(data map[string]interface{}, key string) float64 {
 		}
 	}
 	return 0
+}
+
+// UserInfo contains user details for notifications
+type UserInfo struct {
+	ID        string
+	Email     string
+	Pseudo    string
+	FirstName string
+}
+
+// GetDisplayName returns the best display name
+func (u UserInfo) GetDisplayName() string {
+	if u.Pseudo != "" {
+		return u.Pseudo
+	}
+	if u.FirstName != "" {
+		return u.FirstName
+	}
+	return "User"
+}
+
+// GetEmailDisplay returns email or placeholder
+func (u UserInfo) GetEmailDisplay() string {
+	if u.Email != "" {
+		return u.Email
+	}
+	return "N/A"
 }
