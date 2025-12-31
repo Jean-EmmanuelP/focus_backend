@@ -107,8 +107,8 @@ func (h *Handler) GetReferrals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert to response format
-	var response []ReferralResponse
+	// Convert to response format - initialize to empty array (not nil)
+	response := []ReferralResponse{}
 	for _, ref := range referrals {
 		item := ReferralResponse{
 			ID:            ref.ID,
@@ -144,8 +144,8 @@ func (h *Handler) GetEarnings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert to response format
-	var response []EarningResponse
+	// Convert to response format - initialize to empty array (not nil)
+	response := []EarningResponse{}
 	for _, e := range earnings {
 		response = append(response, EarningResponse{
 			Month:              e.Month,
