@@ -660,3 +660,76 @@ create policy "Users can manage own weekly_goal_items" on public.weekly_goal_ite
 -- Indexes
 create index idx_weekly_goal_items_goal on public.weekly_goal_items(weekly_goal_id);
 create index idx_weekly_goal_items_position on public.weekly_goal_items(weekly_goal_id, position);
+
+
+-- ==========================================
+-- 21. CHAT MESSAGES (AI Coach Conversations)
+-- Persistent conversation history with Kai coach
+-- ==========================================
+create table public.chat_messages (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid not null references auth.users on delete cascade,
+
+  -- Message content
+  content text not null,
+  is_from_user boolean default true,
+  message_type text default 'text',  -- 'text', 'voice', 'toolCard', 'dailyStats'
+
+  -- Voice message data (optional)
+  voice_url text,                    -- URL to audio file in storage
+  voice_transcript text,             -- Transcription of voice message
+
+  -- Tool action (optional)
+  tool_action text,                  -- 'planDay', 'weeklyGoals', 'dailyReflection', 'startFocus', 'viewStats', 'logMood'
+
+  -- Timestamps
+  created_at timestamp with time zone default now()
+);
+
+-- RLS
+alter table public.chat_messages enable row level security;
+create policy "Users can manage own chat_messages" on public.chat_messages
+  using (auth.uid() = user_id);
+
+-- Indexes
+create index idx_chat_messages_user on public.chat_messages(user_id);
+create index idx_chat_messages_created on public.chat_messages(user_id, created_at desc);
+
+
+-- ==========================================
+-- 22. CHAT CONTEXT (AI Context Snapshots)
+-- Optional: Store context snapshots for AI memory
+-- ==========================================
+create table public.chat_contexts (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid not null references auth.users on delete cascade,
+
+  -- Context snapshot
+  context_date date not null default current_date,
+  user_name text,
+  current_streak integer default 0,
+  today_tasks_count integer default 0,
+  today_tasks_completed integer default 0,
+  today_rituals_count integer default 0,
+  today_rituals_completed integer default 0,
+  weekly_goals_count integer default 0,
+  weekly_goals_completed integer default 0,
+  focus_minutes_today integer default 0,
+  focus_minutes_week integer default 0,
+  current_mood integer,             -- 1-5
+
+  -- Timestamps
+  created_at timestamp with time zone default now(),
+
+  -- One context per user per day
+  unique (user_id, context_date)
+);
+
+-- RLS
+alter table public.chat_contexts enable row level security;
+create policy "Users can manage own chat_contexts" on public.chat_contexts
+  using (auth.uid() = user_id);
+
+-- Indexes
+create index idx_chat_contexts_user on public.chat_contexts(user_id);
+create index idx_chat_contexts_date on public.chat_contexts(user_id, context_date desc);

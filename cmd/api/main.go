@@ -13,6 +13,7 @@ import (
 	"firelevel-backend/internal/areas"
 	"firelevel-backend/internal/auth"
 	"firelevel-backend/internal/calendar"
+	"firelevel-backend/internal/chat"
 	"firelevel-backend/internal/community"
 	"firelevel-backend/internal/crew"
 	"firelevel-backend/internal/database"
@@ -82,6 +83,7 @@ func main() {
 	referralRepo := referral.NewRepository(pool)
 	referralHandler := referral.NewHandler(referralRepo)
 	weeklyGoalsHandler := weeklygoals.NewHandler(pool)
+	chatHandler := chat.NewHandler(pool)
 
 	// Connect Google Calendar sync to calendar handler (tasks only, routines stay local)
 	calendarHandler.SetGoogleCalendarSyncer(googleCalendarHandler)
@@ -337,6 +339,11 @@ func main() {
 		r.Put("/weekly-goals/{weekStartDate}", weeklyGoalsHandler.Upsert)
 		r.Delete("/weekly-goals/{weekStartDate}", weeklyGoalsHandler.Delete)
 		r.Post("/weekly-goals/items/{id}/toggle", weeklyGoalsHandler.ToggleItem)
+
+		// Chat Coach (Kai)
+		r.Post("/chat/message", chatHandler.SendMessage)
+		r.Get("/chat/history", chatHandler.GetHistory)
+		r.Delete("/chat/history", chatHandler.ClearHistory)
 	})
 
 	// Public referral validation (no auth required)
