@@ -220,6 +220,9 @@ func main() {
 		r.Post("/friend-groups/{id}/routines", crewHandler.ShareRoutineWithGroup)
 		r.Delete("/friend-groups/{id}/routines/{groupRoutineId}", crewHandler.RemoveGroupRoutine)
 
+		// Group Statistics
+		r.Get("/friend-groups/{id}/stats", crewHandler.GetGroupStats)
+
 		// Group Invitations
 		r.Get("/group-invitations/received", crewHandler.ListReceivedGroupInvitations)
 		r.Get("/group-invitations/sent", crewHandler.ListSentGroupInvitations)

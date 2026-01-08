@@ -2660,3 +2660,198 @@ func (h *Handler) RemoveGroupRoutine(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// ============================================================================
+// GET /friend-groups/{id}/stats - Get group statistics
+// ============================================================================
+
+type GroupStatsResponse struct {
+	GroupID                 string            `json:"group_id"`
+	Period                  string            `json:"period"` // "weekly" or "monthly"
+	MemberStats             []GroupMemberStat `json:"member_stats"`
+	DailyTrend              []DailyStat       `json:"daily_trend"`
+	TotalRoutinesCompleted  int               `json:"total_routines_completed"`
+	AverageCompletionRate   int               `json:"average_completion_rate"`
+}
+
+type GroupMemberStat struct {
+	UserID          string      `json:"user_id"`
+	Pseudo          *string     `json:"pseudo"`
+	FirstName       *string     `json:"first_name"`
+	AvatarUrl       *string     `json:"avatar_url"`
+	CompletedCount  int         `json:"completed_count"`
+	TotalPossible   int         `json:"total_possible"`
+	CompletionRate  int         `json:"completion_rate"`
+	Streak          *int        `json:"streak"`
+	DailyCompletions []DailyStat `json:"daily_completions,omitempty"`
+}
+
+func (h *Handler) GetGroupStats(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	groupID := chi.URLParam(r, "id")
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "weekly"
+	}
+
+	ctx := r.Context()
+
+	// Verify user has access to this group (owner or member)
+	var hasAccess bool
+	err := h.db.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM friend_groups WHERE id = $1 AND user_id = $2
+			UNION
+			SELECT 1 FROM friend_group_members WHERE group_id = $1 AND member_id = $2
+		)
+	`, groupID, userID).Scan(&hasAccess)
+	if err != nil || !hasAccess {
+		http.Error(w, "Access denied", http.StatusForbidden)
+		return
+	}
+
+	// Determine date range based on period
+	var daysBack int
+	if period == "monthly" {
+		daysBack = 30
+	} else {
+		daysBack = 7
+	}
+
+	// Get all members of the group (including owner)
+	rows, err := h.db.Query(ctx, `
+		SELECT DISTINCT u.id, u.pseudo, u.first_name, u.avatar_url
+		FROM users u
+		WHERE u.id IN (
+			SELECT user_id FROM friend_groups WHERE id = $1
+			UNION
+			SELECT member_id FROM friend_group_members WHERE group_id = $1
+		)
+	`, groupID)
+	if err != nil {
+		http.Error(w, "Failed to get group members", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var memberStats []GroupMemberStat
+	totalCompleted := 0
+	totalPossible := 0
+
+	for rows.Next() {
+		var stat GroupMemberStat
+		if err := rows.Scan(&stat.UserID, &stat.Pseudo, &stat.FirstName, &stat.AvatarUrl); err != nil {
+			continue
+		}
+
+		// Get routine completions for this member in the period
+		err := h.db.QueryRow(ctx, `
+			SELECT COUNT(DISTINCT rc.id)
+			FROM routine_completions rc
+			JOIN group_routines gr ON rc.routine_id = gr.routine_id
+			WHERE gr.group_id = $1
+			  AND rc.user_id = $2
+			  AND rc.completed_at >= NOW() - INTERVAL '1 day' * $3
+		`, groupID, stat.UserID, daysBack).Scan(&stat.CompletedCount)
+		if err != nil {
+			stat.CompletedCount = 0
+		}
+
+		// Calculate total possible (routines in group * days)
+		var routineCount int
+		h.db.QueryRow(ctx, `SELECT COUNT(*) FROM group_routines WHERE group_id = $1`, groupID).Scan(&routineCount)
+		stat.TotalPossible = routineCount * daysBack
+
+		// Calculate completion rate
+		if stat.TotalPossible > 0 {
+			stat.CompletionRate = (stat.CompletedCount * 100) / stat.TotalPossible
+		}
+
+		// Get current streak for this user
+		var streak int
+		h.db.QueryRow(ctx, `SELECT current_streak FROM user_streaks WHERE user_id = $1`, stat.UserID).Scan(&streak)
+		stat.Streak = &streak
+
+		totalCompleted += stat.CompletedCount
+		totalPossible += stat.TotalPossible
+
+		memberStats = append(memberStats, stat)
+	}
+
+	// Get daily trend for the group
+	dailyTrend := make([]DailyStat, 0)
+	trendRows, err := h.db.Query(ctx, `
+		SELECT DATE(rc.completed_at) as day, COUNT(DISTINCT rc.id)
+		FROM routine_completions rc
+		JOIN group_routines gr ON rc.routine_id = gr.routine_id
+		JOIN friend_group_members fgm ON rc.user_id = fgm.member_id AND fgm.group_id = gr.group_id
+		WHERE gr.group_id = $1
+		  AND rc.completed_at >= NOW() - INTERVAL '1 day' * $2
+		GROUP BY DATE(rc.completed_at)
+		ORDER BY day ASC
+	`, groupID, daysBack)
+	if err == nil {
+		defer trendRows.Close()
+		for trendRows.Next() {
+			var day string
+			var count int
+			if err := trendRows.Scan(&day, &count); err == nil {
+				dailyTrend = append(dailyTrend, DailyStat{Date: day, Value: count})
+			}
+		}
+	}
+
+	// Also include owner's completions in daily trend
+	ownerTrendRows, err := h.db.Query(ctx, `
+		SELECT DATE(rc.completed_at) as day, COUNT(DISTINCT rc.id)
+		FROM routine_completions rc
+		JOIN group_routines gr ON rc.routine_id = gr.routine_id
+		JOIN friend_groups fg ON fg.id = gr.group_id
+		WHERE gr.group_id = $1
+		  AND rc.user_id = fg.user_id
+		  AND rc.completed_at >= NOW() - INTERVAL '1 day' * $2
+		GROUP BY DATE(rc.completed_at)
+		ORDER BY day ASC
+	`, groupID, daysBack)
+	if err == nil {
+		defer ownerTrendRows.Close()
+		// Merge owner stats into dailyTrend
+		ownerMap := make(map[string]int)
+		for ownerTrendRows.Next() {
+			var day string
+			var count int
+			if err := ownerTrendRows.Scan(&day, &count); err == nil {
+				ownerMap[day] = count
+			}
+		}
+		// Add owner counts to existing trend
+		for i := range dailyTrend {
+			if ownerCount, ok := ownerMap[dailyTrend[i].Date]; ok {
+				dailyTrend[i].Value += ownerCount
+				delete(ownerMap, dailyTrend[i].Date)
+			}
+		}
+		// Add any remaining owner-only days
+		for day, count := range ownerMap {
+			dailyTrend = append(dailyTrend, DailyStat{Date: day, Value: count})
+		}
+	}
+
+	// Calculate average completion rate
+	avgRate := 0
+	if totalPossible > 0 {
+		avgRate = (totalCompleted * 100) / totalPossible
+	}
+
+	response := GroupStatsResponse{
+		GroupID:                groupID,
+		Period:                 period,
+		MemberStats:            memberStats,
+		DailyTrend:             dailyTrend,
+		TotalRoutinesCompleted: totalCompleted,
+		AverageCompletionRate:  avgRate,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
