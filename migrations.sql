@@ -894,3 +894,11 @@ create index idx_whatsapp_otp_user on public.whatsapp_otp(user_id);
 -- ==========================================
 ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS block_apps boolean default false;
 ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS is_private boolean default false;
+-- ==========================================
+-- USER SETTINGS (V1 Minimal)
+-- Language, Timezone, Notifications
+-- ==========================================
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS language text default 'fr';
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS timezone text default 'Europe/Paris';
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS notifications_enabled boolean default true;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS morning_reminder_time text default '08:00';
