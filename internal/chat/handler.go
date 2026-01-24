@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -426,8 +428,8 @@ Si l'audio est inaudible ou vide, retourne une chaîne vide.`)
 }
 
 // ===========================================
-// MEMORY SYSTEM (Inspired by Mira)
-// With Vector Embeddings + Semantic Search
+// MEMORY SYSTEM - MIRA ARCHITECTURE
+// Multi-factor scoring: 40% vector + 40% entity + 15% recency + 5% confidence
 // ===========================================
 
 type UserInfo struct {
@@ -438,33 +440,42 @@ type UserInfo struct {
 	TasksCompleted int
 }
 
-// SemanticMemoryWithScore includes similarity score from vector search
-type SemanticMemoryWithScore struct {
+// ScoredMemory includes all scoring factors
+type ScoredMemory struct {
 	SemanticMemory
-	Similarity float64 `json:"similarity"`
+	VectorSimilarity float64  `json:"vector_similarity"`
+	EntityScore      float64  `json:"entity_score"`
+	RecencyScore     float64  `json:"recency_score"`
+	Confidence       float64  `json:"confidence"`
+	TotalScore       float64  `json:"total_score"`
+	Entities         []string `json:"entities"`
+}
+
+// ExtractedFact with confidence and entities (Mira-style)
+type ExtractedFact struct {
+	Fact       string   `json:"fact"`
+	Category   string   `json:"category"`
+	Confidence float64  `json:"confidence"`
+	Entities   []string `json:"entities"`
 }
 
 func (h *Handler) getUserInfo(ctx context.Context, userID string) *UserInfo {
 	info := &UserInfo{}
 
-	// Get user name
 	h.db.QueryRow(ctx, `
 		SELECT COALESCE(pseudo, first_name, 'ami') FROM users WHERE id = $1
 	`, userID).Scan(&info.Name)
 
-	// Get focus minutes today
 	h.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(duration_minutes), 0) FROM focus_sessions
 		WHERE user_id = $1 AND DATE(started_at) = CURRENT_DATE AND status = 'completed'
 	`, userID).Scan(&info.FocusToday)
 
-	// Get focus minutes this week
 	h.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(duration_minutes), 0) FROM focus_sessions
 		WHERE user_id = $1 AND started_at >= DATE_TRUNC('week', CURRENT_DATE) AND status = 'completed'
 	`, userID).Scan(&info.FocusWeek)
 
-	// Get tasks today
 	h.db.QueryRow(ctx, `
 		SELECT COUNT(*), COUNT(*) FILTER (WHERE status = 'completed')
 		FROM tasks WHERE user_id = $1 AND date = CURRENT_DATE
@@ -473,7 +484,10 @@ func (h *Handler) getUserInfo(ctx context.Context, userID string) *UserInfo {
 	return info
 }
 
-// generateEmbedding creates a 768-dim embedding using Gemini
+// ===========================================
+// EMBEDDING SERVICE
+// ===========================================
+
 func (h *Handler) generateEmbedding(ctx context.Context, text string) ([]float32, error) {
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
@@ -486,7 +500,6 @@ func (h *Handler) generateEmbedding(ctx context.Context, text string) ([]float32
 	}
 	defer client.Close()
 
-	// Use text-embedding-004 model (768 dimensions)
 	em := client.EmbeddingModel("text-embedding-004")
 	res, err := em.EmbedContent(ctx, genai.Text(text))
 	if err != nil {
@@ -496,7 +509,6 @@ func (h *Handler) generateEmbedding(ctx context.Context, text string) ([]float32
 	return res.Embedding.Values, nil
 }
 
-// vectorToString converts embedding to PostgreSQL vector format
 func vectorToString(embedding []float32) string {
 	parts := make([]string, len(embedding))
 	for i, v := range embedding {
@@ -505,48 +517,239 @@ func vectorToString(embedding []float32) string {
 	return "[" + strings.Join(parts, ",") + "]"
 }
 
-// getRelevantMemories uses vector similarity search to find relevant memories
+// ===========================================
+// ENTITY EXTRACTION (Mira-style)
+// ===========================================
+
+func (h *Handler) extractEntities(ctx context.Context, text string) []string {
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	if apiKey == "" {
+		return nil
+	}
+
+	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
+	if err != nil {
+		return nil
+	}
+	defer client.Close()
+
+	model := client.GenerativeModel("gemini-1.5-flash")
+	model.SetTemperature(0.1)
+
+	prompt := fmt.Sprintf(`Extrait les entités nommées de ce texte.
+Retourne un JSON array de strings. Types: personnes, lieux, organisations, produits, dates.
+Si aucune entité, retourne [].
+
+Texte: "%s"
+
+Exemple: ["Marie", "Paris", "Google", "lundi"]
+
+Réponds UNIQUEMENT avec le JSON array:`, text)
+
+	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
+	if err != nil || len(resp.Candidates) == 0 {
+		return nil
+	}
+
+	responseText := ""
+	for _, part := range resp.Candidates[0].Content.Parts {
+		if text, ok := part.(genai.Text); ok {
+			responseText += string(text)
+		}
+	}
+
+	responseText = strings.TrimSpace(responseText)
+	responseText = strings.TrimPrefix(responseText, "```json")
+	responseText = strings.TrimPrefix(responseText, "```")
+	responseText = strings.TrimSuffix(responseText, "```")
+	responseText = strings.TrimSpace(responseText)
+
+	var entities []string
+	json.Unmarshal([]byte(responseText), &entities)
+	return entities
+}
+
+// ===========================================
+// QUERY TYPE DETECTION (Mira-style)
+// ===========================================
+
+func isMemoryRecallQuery(message string) bool {
+	lowered := strings.ToLower(message)
+	recallPatterns := []string{
+		"tu te souviens",
+		"te souviens",
+		"tu sais",
+		"remember",
+		"do you remember",
+		"rappelle",
+		"c'était quoi",
+		"c'est quoi déjà",
+		"qu'est-ce que je t'avais dit",
+		"je t'avais parlé",
+	}
+	for _, pattern := range recallPatterns {
+		if strings.Contains(lowered, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// ===========================================
+// MULTI-FACTOR RELEVANCE SCORING (Mira-style)
+// Score = 0.4×vector + 0.4×entity + 0.15×recency + 0.05×confidence
+// ===========================================
+
+func calculateEntityScore(queryEntities, memoryEntities []string) float64 {
+	if len(queryEntities) == 0 || len(memoryEntities) == 0 {
+		return 0.0
+	}
+
+	matches := 0
+	for _, qe := range queryEntities {
+		qeLower := strings.ToLower(qe)
+		for _, me := range memoryEntities {
+			if strings.Contains(strings.ToLower(me), qeLower) || strings.Contains(qeLower, strings.ToLower(me)) {
+				matches++
+				break
+			}
+		}
+	}
+
+	return float64(matches) / float64(len(queryEntities))
+}
+
+func calculateRecencyScore(lastMentioned time.Time) float64 {
+	daysSince := time.Since(lastMentioned).Hours() / 24
+	// Exponential decay: e^(-days/30)
+	return math.Exp(-daysSince / 30.0)
+}
+
+func (h *Handler) scoreMemories(memories []ScoredMemory, queryEntities []string) []ScoredMemory {
+	for i := range memories {
+		// Multi-factor scoring (Mira weights)
+		vectorWeight := 0.40
+		entityWeight := 0.40
+		recencyWeight := 0.15
+		confidenceWeight := 0.05
+
+		memories[i].EntityScore = calculateEntityScore(queryEntities, memories[i].Entities)
+		memories[i].RecencyScore = calculateRecencyScore(memories[i].LastMention)
+
+		memories[i].TotalScore = (vectorWeight * memories[i].VectorSimilarity) +
+			(entityWeight * memories[i].EntityScore) +
+			(recencyWeight * memories[i].RecencyScore) +
+			(confidenceWeight * memories[i].Confidence)
+	}
+
+	// Sort by total score descending
+	sort.Slice(memories, func(i, j int) bool {
+		return memories[i].TotalScore > memories[j].TotalScore
+	})
+
+	return memories
+}
+
+// ===========================================
+// MEMORY RETRIEVAL (Mira-style)
+// ===========================================
+
 func (h *Handler) getRelevantMemories(ctx context.Context, userID, message string) []SemanticMemory {
-	// Generate embedding for the query
+	// Extract entities from query for entity matching
+	queryEntities := h.extractEntities(ctx, message)
+	fmt.Printf("🔍 Query entities: %v\n", queryEntities)
+
+	// Check if this is a memory recall query
+	isRecallQuery := isMemoryRecallQuery(message)
+	if isRecallQuery {
+		fmt.Printf("🧠 Memory recall query detected\n")
+	}
+
+	// Generate embedding for vector search
 	embedding, err := h.generateEmbedding(ctx, message)
 	if err != nil {
 		fmt.Printf("⚠️ Embedding error, falling back to recent memories: %v\n", err)
 		return h.getRecentMemories(ctx, userID)
 	}
 
-	// Use the match_memories function for vector similarity search
 	embeddingStr := vectorToString(embedding)
+
+	// Get candidates from vector search (fetch more for multi-factor scoring)
 	rows, err := h.db.Query(ctx, `
-		SELECT id, fact, category, mention_count, first_mentioned, last_mentioned, similarity
-		FROM match_memories($1::vector(768), $2::uuid, 0.3, 10)
+		SELECT c.id, c.fact, c.category, c.mention_count, c.first_mentioned, c.last_mentioned,
+		       c.confidence, c.entities, 1 - (c.embedding <=> $1::vector(768)) as similarity
+		FROM chat_contexts c
+		WHERE c.user_id = $2 AND c.embedding IS NOT NULL
+		ORDER BY c.embedding <=> $1::vector(768)
+		LIMIT 20
 	`, embeddingStr, userID)
 	if err != nil {
-		fmt.Printf("⚠️ Vector search error, falling back to recent memories: %v\n", err)
+		fmt.Printf("⚠️ Vector search error: %v\n", err)
 		return h.getRecentMemories(ctx, userID)
 	}
 	defer rows.Close()
 
-	var memories []SemanticMemory
+	var scoredMemories []ScoredMemory
 	for rows.Next() {
-		var m SemanticMemory
-		var similarity float64
-		if err := rows.Scan(&m.ID, &m.Fact, &m.Category, &m.MentionCount, &m.FirstMention, &m.LastMention, &similarity); err != nil {
+		var m ScoredMemory
+		var entities []string
+		var confidence *float64
+
+		err := rows.Scan(&m.ID, &m.Fact, &m.Category, &m.MentionCount, &m.FirstMention, &m.LastMention,
+			&confidence, &entities, &m.VectorSimilarity)
+		if err != nil {
 			fmt.Printf("⚠️ Scan error: %v\n", err)
 			continue
 		}
-		fmt.Printf("📝 Memory found (%.2f similarity): %s\n", similarity, m.Fact)
-		memories = append(memories, m)
+
+		if confidence != nil {
+			m.Confidence = *confidence
+		} else {
+			m.Confidence = 0.8 // Default confidence
+		}
+		m.Entities = entities
+
+		scoredMemories = append(scoredMemories, m)
 	}
 
-	// If no vector matches, fall back to recent memories
-	if len(memories) == 0 {
+	if len(scoredMemories) == 0 {
 		return h.getRecentMemories(ctx, userID)
 	}
 
-	return memories
+	// Apply multi-factor scoring
+	scoredMemories = h.scoreMemories(scoredMemories, queryEntities)
+
+	// For recall queries, boost recent memories
+	if isRecallQuery {
+		for i := range scoredMemories {
+			if i < 5 {
+				scoredMemories[i].TotalScore += 0.3 // Boost top 5 recent
+			}
+		}
+		// Re-sort after boost
+		sort.Slice(scoredMemories, func(i, j int) bool {
+			return scoredMemories[i].TotalScore > scoredMemories[j].TotalScore
+		})
+	}
+
+	// Filter by threshold and take top 10
+	var results []SemanticMemory
+	threshold := 0.45 // Mira threshold
+	for _, sm := range scoredMemories {
+		if sm.TotalScore >= threshold && len(results) < 10 {
+			fmt.Printf("📝 Memory (score=%.2f, vec=%.2f, ent=%.2f, rec=%.2f): %s\n",
+				sm.TotalScore, sm.VectorSimilarity, sm.EntityScore, sm.RecencyScore, sm.Fact)
+			results = append(results, sm.SemanticMemory)
+		}
+	}
+
+	if len(results) == 0 {
+		return h.getRecentMemories(ctx, userID)
+	}
+
+	return results
 }
 
-// getRecentMemories fallback when vector search fails or no embeddings exist
 func (h *Handler) getRecentMemories(ctx context.Context, userID string) []SemanticMemory {
 	rows, err := h.db.Query(ctx, `
 		SELECT id, user_id, fact, category, mention_count, first_mentioned, last_mentioned
@@ -569,7 +772,10 @@ func (h *Handler) getRecentMemories(ctx context.Context, userID string) []Semant
 	return memories
 }
 
-// extractAndSaveMemories extracts facts and stores with embeddings + semantic deduplication
+// ===========================================
+// MEMORY EXTRACTION (Mira-style with confidence + entities)
+// ===========================================
+
 func (h *Handler) extractAndSaveMemories(ctx context.Context, userID, message string) {
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
@@ -585,18 +791,24 @@ func (h *Handler) extractAndSaveMemories(ctx context.Context, userID, message st
 	model := client.GenerativeModel("gemini-1.5-flash")
 	model.SetTemperature(0.3)
 
-	prompt := fmt.Sprintf(`Extrait les faits importants de ce message utilisateur.
-Retourne un JSON array de faits. Catégories possibles: personal, work, goals, preferences, emotions.
-Si aucun fait intéressant, retourne [].
+	// Mira-style extraction prompt with confidence and entities
+	prompt := fmt.Sprintf(`Extrait les informations importantes de ce message.
+
+Pour CHAQUE fait, retourne:
+- fact: L'information complète et auto-suffisante
+- category: personal, work, goals, preferences, emotions, relationship
+- confidence: 0.0 à 1.0 (certitude de l'information)
+- entities: Liste des entités nommées (personnes, lieux, etc.)
 
 Message: "%s"
 
-Exemple de réponse:
+Exemple:
 [
-  {"fact": "travaille dans la tech", "category": "work"},
-  {"fact": "veut apprendre le piano", "category": "goals"}
+  {"fact": "travaille chez Google comme développeur", "category": "work", "confidence": 0.95, "entities": ["Google"]},
+  {"fact": "veut apprendre le piano cette année", "category": "goals", "confidence": 0.8, "entities": ["piano"]}
 ]
 
+Si aucun fait intéressant, retourne [].
 Réponds UNIQUEMENT avec le JSON array:`, message)
 
 	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
@@ -604,7 +816,6 @@ Réponds UNIQUEMENT avec le JSON array:`, message)
 		return
 	}
 
-	// Extract text
 	responseText := ""
 	for _, part := range resp.Candidates[0].Content.Parts {
 		if text, ok := part.(genai.Text); ok {
@@ -612,19 +823,15 @@ Réponds UNIQUEMENT avec le JSON array:`, message)
 		}
 	}
 
-	// Clean and parse
 	responseText = strings.TrimSpace(responseText)
 	responseText = strings.TrimPrefix(responseText, "```json")
 	responseText = strings.TrimPrefix(responseText, "```")
 	responseText = strings.TrimSuffix(responseText, "```")
 	responseText = strings.TrimSpace(responseText)
 
-	var facts []struct {
-		Fact     string `json:"fact"`
-		Category string `json:"category"`
-	}
-
+	var facts []ExtractedFact
 	if err := json.Unmarshal([]byte(responseText), &facts); err != nil {
+		fmt.Printf("⚠️ Failed to parse facts: %v\n", err)
 		return
 	}
 
@@ -634,18 +841,15 @@ Réponds UNIQUEMENT avec le JSON array:`, message)
 			continue
 		}
 
-		// Generate embedding for this fact
+		// Default confidence if not provided
+		if f.Confidence == 0 {
+			f.Confidence = 0.8
+		}
+
+		// Generate embedding
 		embedding, err := h.generateEmbedding(ctx, f.Fact)
 		if err != nil {
-			fmt.Printf("⚠️ Failed to generate embedding for fact: %v\n", err)
-			// Fallback: save without embedding
-			h.db.Exec(ctx, `
-				INSERT INTO chat_contexts (id, user_id, fact, category, mention_count, first_mentioned, last_mentioned)
-				VALUES (gen_random_uuid(), $1, $2, $3, 1, NOW(), NOW())
-				ON CONFLICT (user_id, fact) DO UPDATE SET
-					mention_count = chat_contexts.mention_count + 1,
-					last_mentioned = NOW()
-			`, userID, f.Fact, f.Category)
+			fmt.Printf("⚠️ Failed to generate embedding: %v\n", err)
 			continue
 		}
 
@@ -662,19 +866,19 @@ Réponds UNIQUEMENT avec le JSON array:`, message)
 
 		if err == nil && existingID != "" {
 			// Found similar memory - update mention count
-			fmt.Printf("🔄 Semantic duplicate found (%.2f): '%s' ≈ '%s'\n", similarity, f.Fact, existingFact)
+			fmt.Printf("🔄 Semantic duplicate (%.2f): '%s' ≈ '%s'\n", similarity, f.Fact, existingFact)
 			h.db.Exec(ctx, `
 				UPDATE chat_contexts
 				SET mention_count = mention_count + 1, last_mentioned = NOW()
 				WHERE id = $1
 			`, existingID)
 		} else {
-			// New unique memory - insert with embedding
-			fmt.Printf("✨ New memory: %s [%s]\n", f.Fact, f.Category)
+			// New unique memory - insert with embedding, confidence, entities
+			fmt.Printf("✨ New memory [%s] (conf=%.2f): %s\n", f.Category, f.Confidence, f.Fact)
 			h.db.Exec(ctx, `
-				INSERT INTO chat_contexts (id, user_id, fact, category, mention_count, first_mentioned, last_mentioned, embedding)
-				VALUES (gen_random_uuid(), $1, $2, $3, 1, NOW(), NOW(), $4::vector(768))
-			`, userID, f.Fact, f.Category, embeddingStr)
+				INSERT INTO chat_contexts (id, user_id, fact, category, confidence, entities, mention_count, first_mentioned, last_mentioned, embedding)
+				VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 1, NOW(), NOW(), $6::vector(768))
+			`, userID, f.Fact, f.Category, f.Confidence, f.Entities, embeddingStr)
 		}
 	}
 }

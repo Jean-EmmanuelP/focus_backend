@@ -711,10 +711,14 @@ create table public.chat_contexts (
 
   -- Semantic memory fields
   fact text not null,                -- The fact/memory extracted
-  category text not null default 'personal', -- personal, work, goals, preferences, emotions
+  category text not null default 'personal', -- personal, work, goals, preferences, emotions, relationship
   mention_count integer not null default 1,  -- How many times this was mentioned
   first_mentioned timestamp with time zone default now(),
   last_mentioned timestamp with time zone default now(),
+
+  -- Mira-style fields
+  confidence float default 0.8,      -- Confidence score 0-1
+  entities text[] default '{}',      -- Named entities (people, places, etc.)
 
   -- Vector embedding (768 dimensions for text-embedding-004)
   embedding vector(768),
