@@ -733,3 +733,89 @@ create policy "Users can manage own chat_contexts" on public.chat_contexts
 -- Indexes
 create index idx_chat_contexts_user on public.chat_contexts(user_id);
 create index idx_chat_contexts_date on public.chat_contexts(user_id, context_date desc);
+
+
+-- ==========================================
+-- 23. WHATSAPP USERS (Linked WhatsApp Accounts)
+-- ==========================================
+create table public.whatsapp_users (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid references auth.users on delete cascade unique,  -- Optional: linked app user
+  phone_number text not null unique,
+  display_name text,
+
+  -- Linking status
+  is_linked boolean default false,  -- True if linked to app account
+  linked_at timestamp with time zone,
+
+  -- WhatsApp-only onboarding
+  onboarding_step text default 'welcome',  -- welcome, ready
+
+  -- Preferences (stored as JSONB)
+  preferences jsonb default '{
+    "morning_check_in": true,
+    "morning_check_in_time": "08:00",
+    "evening_review": true,
+    "evening_review_time": "21:00",
+    "streak_alerts": true,
+    "quest_reminders": true,
+    "inactivity_reminders": true
+  }'::jsonb,
+
+  -- Timestamps
+  created_at timestamp with time zone default now(),
+  updated_at timestamp with time zone default now()
+);
+
+-- RLS: Users can only see their own WhatsApp link
+alter table public.whatsapp_users enable row level security;
+create policy "Users can manage own whatsapp_users" on public.whatsapp_users
+  using (auth.uid() = user_id);
+
+-- Indexes
+create index idx_whatsapp_users_phone on public.whatsapp_users(phone_number);
+create index idx_whatsapp_users_user on public.whatsapp_users(user_id);
+
+
+-- ==========================================
+-- 24. WHATSAPP VERIFICATION CODES
+-- ==========================================
+create table public.whatsapp_verification_codes (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid not null references auth.users on delete cascade unique,
+  phone_number text not null,
+  code text not null,
+  expires_at timestamp with time zone not null,
+  created_at timestamp with time zone default now()
+);
+
+-- RLS
+alter table public.whatsapp_verification_codes enable row level security;
+create policy "Users can manage own verification_codes" on public.whatsapp_verification_codes
+  using (auth.uid() = user_id);
+
+
+-- ==========================================
+-- 25. WHATSAPP OTP (Email Verification for Linking)
+-- Used when linking from WhatsApp to existing app account
+-- ==========================================
+create table public.whatsapp_otp (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid not null references auth.users on delete cascade,
+  phone_number text not null,
+  otp text not null,
+  expires_at timestamp with time zone not null,
+  verified boolean default false,
+  created_at timestamp with time zone default now()
+);
+
+-- Indexes
+create index idx_whatsapp_otp_phone on public.whatsapp_otp(phone_number);
+create index idx_whatsapp_otp_user on public.whatsapp_otp(user_id);
+
+-- ==========================================
+-- ADD BLOCK_APPS TO TASKS
+-- When true, iOS will block distracting apps during this task
+-- ==========================================
+ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS block_apps boolean default false;
+ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS is_private boolean default false;

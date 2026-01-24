@@ -1,7 +1,6 @@
 package focus
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,8 +8,6 @@ import (
 	"time"
 
 	"firelevel-backend/internal/auth"
-	"firelevel-backend/internal/telegram"
-	ws "firelevel-backend/internal/websocket"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -97,11 +94,6 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Broadcast focus started to WebSocket clients (only for active sessions)
-	if status == "active" {
-		go h.broadcastFocusUpdate(r.Context(), userID, true, &s.StartedAt, &req.DurationMinutes)
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(s)
 }
@@ -160,43 +152,6 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Failed to update session", http.StatusInternalServerError)
 		return
-	}
-
-	// Broadcast focus stopped if session was completed or cancelled
-	if req.Status != nil && (*req.Status == "completed" || *req.Status == "cancelled") {
-		go h.broadcastFocusUpdate(r.Context(), userID, false, nil, nil)
-	}
-
-	// Send Telegram notification when focus session is completed
-	if req.Status != nil && *req.Status == "completed" {
-		go func() {
-			// Get user info
-			var pseudo, firstName, email *string
-			h.db.QueryRow(r.Context(),
-				`SELECT pseudo, first_name, email FROM public.users WHERE id = $1`, userID,
-			).Scan(&pseudo, &firstName, &email)
-
-			userName := "User"
-			if pseudo != nil && *pseudo != "" {
-				userName = *pseudo
-			} else if firstName != nil && *firstName != "" {
-				userName = *firstName
-			}
-			userEmail := ""
-			if email != nil {
-				userEmail = *email
-			}
-
-			telegram.Get().Send(telegram.Event{
-				Type:      telegram.EventFocusSessionCompleted,
-				UserID:    userID,
-				UserName:  userName,
-				UserEmail: userEmail,
-				Data: map[string]interface{}{
-					"duration_minutes": s.DurationMinutes,
-				},
-			})
-		}()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -260,43 +215,5 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Broadcast focus stopped when session is deleted
-	go h.broadcastFocusUpdate(r.Context(), userID, false, nil, nil)
-
 	w.WriteHeader(http.StatusOK)
-}
-
-// broadcastFocusUpdate sends a WebSocket message to all clients about a focus status change
-func (h *Handler) broadcastFocusUpdate(ctx context.Context, userID string, isLive bool, startedAt *time.Time, durationMins *int) {
-	if ws.GlobalHub == nil {
-		return
-	}
-
-	// Fetch user info for the broadcast
-	var pseudo *string
-	var avatarURL *string
-	query := `SELECT pseudo, avatar_url FROM users WHERE id = $1`
-	_ = h.db.QueryRow(ctx, query, userID).Scan(&pseudo, &avatarURL)
-
-	pseudoStr := ""
-	if pseudo != nil {
-		pseudoStr = *pseudo
-	}
-
-	update := ws.FocusUpdate{
-		UserID:    userID,
-		Pseudo:    pseudoStr,
-		AvatarURL: avatarURL,
-		IsLive:    isLive,
-	}
-
-	if startedAt != nil {
-		startedStr := startedAt.Format(time.RFC3339)
-		update.StartedAt = &startedStr
-	}
-	if durationMins != nil {
-		update.DurationMins = durationMins
-	}
-
-	ws.GlobalHub.BroadcastFocusUpdate(update)
 }

@@ -72,44 +72,77 @@ type ChatMessage struct {
 }
 
 type SendMessageResponse struct {
-	Reply      string  `json:"reply"`
-	Tool       *string `json:"tool,omitempty"` // planDay, weeklyGoals, dailyReflection, startFocus, viewStats, logMood
-	MessageID  string  `json:"message_id"`
+	Reply      string       `json:"reply"`
+	Tool       *string      `json:"tool,omitempty"` // planDay, weeklyGoals, dailyReflection, startFocus, viewStats, logMood
+	MessageID  string       `json:"message_id"`
+	Action     *ActionData  `json:"action,omitempty"` // Action taken by AI (task created, etc.)
+}
+
+// ActionData represents an action taken by Kai
+type ActionData struct {
+	Type     string      `json:"type"`               // "task_created", "focus_scheduled"
+	TaskID   *string     `json:"task_id,omitempty"`
+	TaskData *TaskData   `json:"task,omitempty"`
+}
+
+type TaskData struct {
+	Title          string  `json:"title"`
+	Date           string  `json:"date"`
+	ScheduledStart string  `json:"scheduled_start"`
+	ScheduledEnd   string  `json:"scheduled_end"`
+	BlockApps      bool    `json:"block_apps"`
+}
+
+// FocusIntent represents a detected focus request
+type FocusIntent struct {
+	Detected       bool
+	Title          string
+	StartTime      string // HH:mm
+	EndTime        string // HH:mm
+	Date           string // YYYY-MM-DD
+	BlockApps      bool
+	DurationMins   int
 }
 
 // Coach persona
-const coachSystemPrompt = `Tu es Kai, un coach personnel exigeant mais bienveillant.
+const coachSystemPrompt = `Tu es Kai, un ami proche qui aide avec la productivité.
 
 PERSONNALITÉ:
 - Tu tutoies toujours l'utilisateur
-- Tu es direct et concis - pas de blabla
-- Tu pousses à l'action, pas aux excuses
-- Tu célèbres les victoires, même petites
-- Tu utilises un langage motivant mais jamais condescendant
-- Tu parles en français
+- Tu es empathique et authentique - comme un vrai ami
+- Tu écoutes avant de conseiller
+- Tu célèbres les victoires sincèrement
+- Tu parles en français naturellement
 
 STYLE DE RÉPONSE:
 - Maximum 2-3 phrases par réponse
-- Pas d'emojis excessifs (1-2 max si nécessaire)
-- Pose des questions orientées action
-- Propose des solutions concrètes
+- Ton naturel, pas de formules corporate
+- 1 emoji max si ça aide
 
-OUTILS DISPONIBLES:
-Tu peux suggérer ces outils quand c'est pertinent (retourne le nom dans le champ "tool"):
-- planDay: Planifier la journée (matin idéalement)
-- weeklyGoals: Définir les objectifs de la semaine
-- dailyReflection: Réflexion de fin de journée
-- startFocus: Lancer une session de focus
-- viewStats: Voir les statistiques
-- logMood: Logger son humeur
-
-CONTEXTE UTILISATEUR (fourni avec chaque message):
-- Nom, streak actuel, tâches du jour, rituels, objectifs hebdo, minutes focus
-
-Réponds UNIQUEMENT en JSON avec ce format:
+CAPACITÉ SPÉCIALE - DÉTECTION DE FOCUS:
+Si l'utilisateur mentionne vouloir travailler/se concentrer avec des horaires (ex: "je dois bosser de 14h à 16h", "je veux focus de 9h à 11h30"), tu DOIS retourner:
 {
-  "reply": "Ta réponse ici",
-  "tool": null ou "nomDuOutil"
+  "reply": "C'est noté! Je bloque tes apps de [heure] à [heure]. 🔒",
+  "focus_intent": {
+    "detected": true,
+    "title": "Focus - [description courte]",
+    "start_time": "HH:MM",
+    "end_time": "HH:MM",
+    "block_apps": true
+  }
+}
+
+Exemples de détection:
+- "je dois bosser de 14h à 16h" → start_time: "14:00", end_time: "16:00"
+- "focus de 9h30 à 11h" → start_time: "09:30", end_time: "11:00"
+- "je veux travailler pendant 2h" → start_time: maintenant, end_time: +2h
+- "coupe mes apps stp" sans horaires → demande les horaires
+
+Réponds UNIQUEMENT en JSON:
+{
+  "reply": "Ta réponse",
+  "tool": null,
+  "focus_intent": null ou { "detected": true, "title": "...", "start_time": "HH:MM", "end_time": "HH:MM", "block_apps": true }
 }`
 
 // ============================================
@@ -138,11 +171,11 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		req.MessageType = "text"
 	}
 
-	// Save user message
+	// Save user message (source = 'app' for iOS app)
 	userMsgID := uuid.New().String()
 	_, err := h.db.Exec(r.Context(), `
-		INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, voice_url, voice_transcript)
-		VALUES ($1, $2, $3, true, $4, $5, $6)
+		INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, voice_url, voice_transcript, source)
+		VALUES ($1, $2, $3, true, $4, $5, $6, 'app')
 	`, userMsgID, userID, req.Content, req.MessageType, nilIfEmpty(req.VoiceURL), nilIfEmpty(req.Content))
 
 	if err != nil {
@@ -164,11 +197,25 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Save AI response
+	// If focus intent detected, create the task automatically
+	if response.Action != nil && response.Action.Type == "focus_scheduled" && response.Action.TaskData != nil {
+		taskID, err := h.createFocusTask(r.Context(), userID, response.Action.TaskData)
+		if err != nil {
+			fmt.Printf("Failed to create focus task: %v\n", err)
+		} else {
+			response.Action.TaskID = &taskID
+			response.Action.Type = "task_created"
+			fmt.Printf("✅ Created focus task %s for user %s: %s (%s - %s)\n",
+				taskID, userID, response.Action.TaskData.Title,
+				response.Action.TaskData.ScheduledStart, response.Action.TaskData.ScheduledEnd)
+		}
+	}
+
+	// Save AI response (source = 'app' for iOS app)
 	aiMsgID := uuid.New().String()
 	_, err = h.db.Exec(r.Context(), `
-		INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, tool_action)
-		VALUES ($1, $2, $3, false, 'text', $4)
+		INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, tool_action, source)
+		VALUES ($1, $2, $3, false, 'text', $4, 'app')
 	`, aiMsgID, userID, response.Reply, response.Tool)
 
 	if err != nil {
@@ -222,6 +269,7 @@ func (h *Handler) ClearHistory(w http.ResponseWriter, r *http.Request) {
 // ============================================
 
 func (h *Handler) getRecentHistory(ctx context.Context, userID string, limit int) ([]ChatMessage, error) {
+	// Fetch messages from both app and WhatsApp sources (unified history)
 	query := `
 		SELECT id, user_id, content, is_from_user, message_type,
 		       voice_url, voice_transcript, tool_action, created_at
@@ -345,8 +393,15 @@ Réponds en JSON:`, coachSystemPrompt, contextStr, historyStr, userMessage)
 	responseText = strings.TrimSpace(responseText)
 
 	var aiResp struct {
-		Reply string  `json:"reply"`
-		Tool  *string `json:"tool"`
+		Reply       string  `json:"reply"`
+		Tool        *string `json:"tool"`
+		FocusIntent *struct {
+			Detected  bool   `json:"detected"`
+			Title     string `json:"title"`
+			StartTime string `json:"start_time"`
+			EndTime   string `json:"end_time"`
+			BlockApps bool   `json:"block_apps"`
+		} `json:"focus_intent"`
 	}
 
 	if err := json.Unmarshal([]byte(responseText), &aiResp); err != nil {
@@ -356,10 +411,26 @@ Réponds en JSON:`, coachSystemPrompt, contextStr, historyStr, userMessage)
 		}, nil
 	}
 
-	return &SendMessageResponse{
+	response := &SendMessageResponse{
 		Reply: aiResp.Reply,
 		Tool:  aiResp.Tool,
-	}, nil
+	}
+
+	// If focus intent detected, prepare action data for iOS
+	if aiResp.FocusIntent != nil && aiResp.FocusIntent.Detected {
+		response.Action = &ActionData{
+			Type: "focus_scheduled",
+			TaskData: &TaskData{
+				Title:          aiResp.FocusIntent.Title,
+				Date:           time.Now().Format("2006-01-02"),
+				ScheduledStart: aiResp.FocusIntent.StartTime,
+				ScheduledEnd:   aiResp.FocusIntent.EndTime,
+				BlockApps:      aiResp.FocusIntent.BlockApps,
+			},
+		}
+	}
+
+	return response, nil
 }
 
 func nilIfEmpty(s string) *string {
@@ -367,4 +438,37 @@ func nilIfEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// createFocusTask creates a task with blockApps enabled
+func (h *Handler) createFocusTask(ctx context.Context, userID string, taskData *TaskData) (string, error) {
+	// Determine time block based on start time
+	timeBlock := "morning"
+	if taskData.ScheduledStart != "" {
+		hour := 0
+		fmt.Sscanf(taskData.ScheduledStart, "%d:", &hour)
+		if hour >= 12 && hour < 18 {
+			timeBlock = "afternoon"
+		} else if hour >= 18 {
+			timeBlock = "evening"
+		}
+	}
+
+	var taskID string
+	err := h.db.QueryRow(ctx, `
+		INSERT INTO tasks (
+			user_id, title, date, scheduled_start, scheduled_end,
+			time_block, priority, is_ai_generated, ai_notes, block_apps
+		) VALUES (
+			$1, $2, $3, $4::time, $5::time,
+			$6, 'high', true, 'Créé automatiquement par Kai', true
+		)
+		RETURNING id
+	`, userID, taskData.Title, taskData.Date, taskData.ScheduledStart, taskData.ScheduledEnd, timeBlock).Scan(&taskID)
+
+	if err != nil {
+		return "", fmt.Errorf("failed to create focus task: %w", err)
+	}
+
+	return taskID, nil
 }

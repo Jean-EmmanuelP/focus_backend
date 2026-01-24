@@ -407,3 +407,208 @@ func (h *Handler) DeleteAvatar(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// ---------------------------------------------------------
+// GET /me/whatsapp - Get WhatsApp linking status
+// ---------------------------------------------------------
+type WhatsAppStatusResponse struct {
+	IsLinked    bool    `json:"is_linked"`
+	PhoneNumber *string `json:"phone_number,omitempty"`
+	LinkedAt    *string `json:"linked_at,omitempty"`
+}
+
+func (h *Handler) GetWhatsAppStatus(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+
+	var phoneNumber *string
+	var phoneVerified bool
+	var linkedAt *time.Time
+
+	err := h.db.QueryRow(r.Context(), `
+		SELECT phone_number, COALESCE(phone_verified, false), whatsapp_linked_at
+		FROM public.users WHERE id = $1
+	`, userID).Scan(&phoneNumber, &phoneVerified, &linkedAt)
+
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	resp := WhatsAppStatusResponse{
+		IsLinked: phoneNumber != nil && phoneVerified,
+	}
+
+	if resp.IsLinked {
+		resp.PhoneNumber = phoneNumber
+		if linkedAt != nil {
+			t := linkedAt.Format(time.RFC3339)
+			resp.LinkedAt = &t
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// ---------------------------------------------------------
+// POST /me/whatsapp/link - Initiate phone linking
+// ---------------------------------------------------------
+type LinkPhoneRequest struct {
+	PhoneNumber string `json:"phone_number"` // E.164 format: +33612345678
+}
+
+type LinkPhoneResponse struct {
+	Message string `json:"message"`
+	CodeSent bool   `json:"code_sent"`
+}
+
+func (h *Handler) InitiatePhoneLink(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+
+	var req LinkPhoneRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.PhoneNumber == "" {
+		http.Error(w, "Phone number is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if phone is already used by another user
+	var existingUserID *string
+	_ = h.db.QueryRow(r.Context(), `
+		SELECT id FROM public.users WHERE phone_number = $1 AND phone_verified = true AND id != $2
+	`, req.PhoneNumber, userID).Scan(&existingUserID)
+
+	if existingUserID != nil {
+		http.Error(w, "Phone number already linked to another account", http.StatusConflict)
+		return
+	}
+
+	// Generate OTP
+	otp := generateOTP()
+	expiresAt := time.Now().Add(10 * time.Minute)
+
+	// Delete existing OTPs for this user
+	_, _ = h.db.Exec(r.Context(), `DELETE FROM public.phone_linking_otps WHERE user_id = $1`, userID)
+
+	// Save new OTP
+	_, err := h.db.Exec(r.Context(), `
+		INSERT INTO public.phone_linking_otps (user_id, phone_number, otp_code, expires_at)
+		VALUES ($1, $2, $3, $4)
+	`, userID, req.PhoneNumber, otp, expiresAt)
+
+	if err != nil {
+		http.Error(w, "Failed to generate code", http.StatusInternalServerError)
+		return
+	}
+
+	// In production: send OTP via SMS or WhatsApp message
+	// For now, we'll return a success message (and log the OTP for testing)
+	fmt.Printf("📱 OTP for %s: %s\n", req.PhoneNumber, otp)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(LinkPhoneResponse{
+		Message:  "Code sent to your phone",
+		CodeSent: true,
+	})
+}
+
+// ---------------------------------------------------------
+// POST /me/whatsapp/verify - Verify OTP and complete linking
+// ---------------------------------------------------------
+type VerifyOTPRequest struct {
+	Code string `json:"code"`
+}
+
+func (h *Handler) VerifyPhoneLink(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+
+	var req VerifyOTPRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Code == "" {
+		http.Error(w, "Code is required", http.StatusBadRequest)
+		return
+	}
+
+	// Verify OTP
+	var phoneNumber string
+	var expiresAt time.Time
+	err := h.db.QueryRow(r.Context(), `
+		SELECT phone_number, expires_at
+		FROM public.phone_linking_otps
+		WHERE user_id = $1 AND otp_code = $2 AND verified = false
+	`, userID, req.Code).Scan(&phoneNumber, &expiresAt)
+
+	if err != nil {
+		http.Error(w, "Invalid code", http.StatusBadRequest)
+		return
+	}
+
+	if time.Now().After(expiresAt) {
+		http.Error(w, "Code expired", http.StatusBadRequest)
+		return
+	}
+
+	// Mark OTP as verified
+	_, _ = h.db.Exec(r.Context(), `
+		UPDATE public.phone_linking_otps SET verified = true WHERE user_id = $1
+	`, userID)
+
+	// Link phone to user
+	_, err = h.db.Exec(r.Context(), `
+		UPDATE public.users
+		SET phone_number = $1, phone_verified = true, whatsapp_linked_at = now()
+		WHERE id = $2
+	`, phoneNumber, userID)
+
+	if err != nil {
+		http.Error(w, "Failed to link phone", http.StatusInternalServerError)
+		return
+	}
+
+	// Convert pending WhatsApp user if exists
+	_, _ = h.db.Exec(r.Context(), `
+		UPDATE public.whatsapp_pending_users
+		SET converted_to_user_id = $1
+		WHERE phone_number = $2
+	`, userID, phoneNumber)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":      true,
+		"phone_number": phoneNumber,
+		"message":      "WhatsApp linked successfully!",
+	})
+}
+
+// ---------------------------------------------------------
+// DELETE /me/whatsapp - Unlink WhatsApp
+// ---------------------------------------------------------
+func (h *Handler) UnlinkWhatsApp(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+
+	_, err := h.db.Exec(r.Context(), `
+		UPDATE public.users
+		SET phone_number = NULL, phone_verified = false, whatsapp_linked_at = NULL
+		WHERE id = $1
+	`, userID)
+
+	if err != nil {
+		http.Error(w, "Failed to unlink WhatsApp", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// generateOTP creates a 6-digit OTP
+func generateOTP() string {
+	return fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
+}

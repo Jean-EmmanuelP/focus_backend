@@ -116,8 +116,11 @@ func (h *AIHandler) GenerateDayPlan(w http.ResponseWriter, r *http.Request) {
 	// Get user's areas
 	areas, _ := h.getUserAreas(r.Context(), userID)
 
+	// Get user's weekly goals
+	weeklyGoals, _ := h.getUserWeeklyGoals(r.Context(), userID)
+
 	// Build the AI prompt
-	prompt := h.buildDayPlanPrompt(req.IdealDayPrompt, req.Date, quests, areas)
+	prompt := h.buildDayPlanPrompt(req.IdealDayPrompt, req.Date, quests, areas, weeklyGoals)
 
 	// Call Gemini API
 	aiResponse, err := h.callGemini(prompt)
@@ -208,7 +211,7 @@ func (h *AIHandler) GenerateTasksForBlock(w http.ResponseWriter, r *http.Request
 // AI PROMPT BUILDERS
 // ==========================================
 
-func (h *AIHandler) buildDayPlanPrompt(idealDay, date string, quests []Quest, areas []Area) string {
+func (h *AIHandler) buildDayPlanPrompt(idealDay, date string, quests []Quest, areas []Area, weeklyGoals []WeeklyGoalItem) string {
 	// Build quest context (quests = projects)
 	var questContext strings.Builder
 	for _, q := range quests {
@@ -221,11 +224,28 @@ func (h *AIHandler) buildDayPlanPrompt(idealDay, date string, quests []Quest, ar
 		areaContext.WriteString(fmt.Sprintf("- %s (%s)\n", a.Name, a.Icon))
 	}
 
+	// Build weekly goals context
+	var weeklyGoalsContext strings.Builder
+	if len(weeklyGoals) > 0 {
+		for _, g := range weeklyGoals {
+			status := "⬜"
+			if g.IsCompleted {
+				status = "✅"
+			}
+			weeklyGoalsContext.WriteString(fmt.Sprintf("- %s %s\n", status, g.Content))
+		}
+	} else {
+		weeklyGoalsContext.WriteString("(Aucun objectif défini pour cette semaine)\n")
+	}
+
 	prompt := fmt.Sprintf(`Tu es un assistant de productivité expert. L'utilisateur décrit sa journée idéale et tu dois créer un plan structuré.
 
 DATE: %s
 
 DESCRIPTION DE LA JOURNÉE IDÉALE:
+%s
+
+OBJECTIFS DE LA SEMAINE (priorité haute - aide l'utilisateur à avancer dessus):
 %s
 
 PROJETS/QUÊTES EN COURS:
@@ -237,9 +257,10 @@ CATÉGORIES (AREAS):
 INSTRUCTIONS:
 1. Analyse la description et crée des blocs de temps réalistes
 2. Pour chaque bloc, génère des tâches concrètes et actionnables
-3. Si l'utilisateur mentionne un projet/quête, utilise-le pour créer les tâches
-4. Chaque tâche doit avoir une durée estimée réaliste
-5. Lie les tâches aux catégories appropriées
+3. IMPORTANT: Priorise les tâches qui contribuent aux OBJECTIFS DE LA SEMAINE non complétés
+4. Si l'utilisateur mentionne un projet/quête, utilise-le pour créer les tâches
+5. Chaque tâche doit avoir une durée estimée réaliste
+6. Lie les tâches aux catégories appropriées
 
 RÉPONDS UNIQUEMENT EN JSON avec ce format exact:
 {
@@ -261,7 +282,7 @@ RÉPONDS UNIQUEMENT EN JSON avec ce format exact:
       ]
     }
   ]
-}`, date, idealDay, questContext.String(), areaContext.String())
+}`, date, idealDay, weeklyGoalsContext.String(), questContext.String(), areaContext.String())
 
 	return prompt
 }
@@ -615,4 +636,42 @@ func safeString(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// WeeklyGoalItem represents a weekly goal item for AI context
+type WeeklyGoalItem struct {
+	Content     string `json:"content"`
+	IsCompleted bool   `json:"isCompleted"`
+}
+
+func (h *AIHandler) getUserWeeklyGoals(ctx context.Context, userID string) ([]WeeklyGoalItem, error) {
+	// Get current week's Monday
+	now := time.Now()
+	weekday := int(now.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	daysToMonday := weekday - 1
+	monday := now.AddDate(0, 0, -daysToMonday).Format("2006-01-02")
+
+	rows, err := h.db.Query(ctx, `
+		SELECT wgi.content, wgi.is_completed
+		FROM weekly_goal_items wgi
+		JOIN weekly_goals wg ON wgi.weekly_goal_id = wg.id
+		WHERE wg.user_id = $1 AND wg.week_start_date = $2
+		ORDER BY wgi.position
+	`, userID, monday)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var goals []WeeklyGoalItem
+	for rows.Next() {
+		var g WeeklyGoalItem
+		rows.Scan(&g.Content, &g.IsCompleted)
+		goals = append(goals, g)
+	}
+
+	return goals, nil
 }

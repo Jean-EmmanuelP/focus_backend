@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"firelevel-backend/internal/auth"
-	"firelevel-backend/internal/telegram"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -98,12 +97,12 @@ type Task struct {
 	IsAIGenerated    bool       `json:"isAiGenerated"`
 	AINotes          *string    `json:"aiNotes,omitempty"`
 	IsPrivate        bool       `json:"isPrivate"`
+	BlockApps        bool       `json:"blockApps"`                  // If true, iOS blocks apps during this task
 	CreatedAt        time.Time  `json:"createdAt"`
 	UpdatedAt        time.Time  `json:"updatedAt"`
 	QuestTitle       *string    `json:"questTitle,omitempty"`
 	AreaName         *string    `json:"areaName,omitempty"`
 	AreaIcon         *string    `json:"areaIcon,omitempty"`
-	PhotosCount      *int       `json:"photosCount,omitempty"` // Number of community posts linked to this task
 }
 
 // ==========================================
@@ -158,6 +157,7 @@ type CreateTaskRequest struct {
 	Priority         *string    `json:"priority,omitempty"`
 	DueAt            *time.Time `json:"due_at,omitempty"`
 	IsPrivate        *bool      `json:"is_private,omitempty"`
+	BlockApps        *bool      `json:"block_apps,omitempty"`       // If true, iOS blocks apps during this task
 }
 
 type UpdateTaskRequest struct {
@@ -496,21 +496,27 @@ func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		isPrivate = *req.IsPrivate
 	}
 
+	// Handle block_apps field
+	blockApps := false
+	if req.BlockApps != nil {
+		blockApps = *req.BlockApps
+	}
+
 	var task Task
 	var scheduledStartStr, scheduledEndStr *string
 	err := h.db.QueryRow(r.Context(), `
-		INSERT INTO tasks (user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, priority, due_at, is_private)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::time, $8::time, $9, $10, $11, $12, $13, $14)
+		INSERT INTO tasks (user_id, quest_id, area_id, title, description, date, scheduled_start, scheduled_end, time_block, position, estimated_minutes, priority, due_at, is_private, block_apps)
+		VALUES ($1, $2, $3, $4, $5, $6, $7::time, $8::time, $9, $10, $11, $12, $13, $14, $15)
 		RETURNING id, user_id, quest_id, area_id, title, description, date,
 			TO_CHAR(scheduled_start, 'HH24:MI') as scheduled_start,
 			TO_CHAR(scheduled_end, 'HH24:MI') as scheduled_end,
-			time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, is_private, created_at, updated_at
-	`, userID, req.QuestID, req.AreaID, req.Title, req.Description, req.Date, req.ScheduledStart, req.ScheduledEnd, timeBlock, position, req.EstimatedMinutes, priority, req.DueAt, isPrivate).Scan(
+			time_block, position, estimated_minutes, actual_minutes, priority, status, due_at, completed_at, is_ai_generated, ai_notes, is_private, block_apps, created_at, updated_at
+	`, userID, req.QuestID, req.AreaID, req.Title, req.Description, req.Date, req.ScheduledStart, req.ScheduledEnd, timeBlock, position, req.EstimatedMinutes, priority, req.DueAt, isPrivate, blockApps).Scan(
 		&task.ID, &task.UserID, &task.QuestID, &task.AreaID,
 		&task.Title, &task.Description, &task.Date, &scheduledStartStr, &scheduledEndStr,
 		&task.TimeBlock, &task.Position, &task.EstimatedMinutes, &task.ActualMinutes,
 		&task.Priority, &task.Status, &task.DueAt, &task.CompletedAt,
-		&task.IsAIGenerated, &task.AINotes, &task.IsPrivate, &task.CreatedAt, &task.UpdatedAt,
+		&task.IsAIGenerated, &task.AINotes, &task.IsPrivate, &task.BlockApps, &task.CreatedAt, &task.UpdatedAt,
 	)
 
 	if err != nil {
@@ -540,40 +546,6 @@ func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	}
-
-	// Check if this is the user's first task and send notification
-	go func() {
-		var taskCount int
-		h.db.QueryRow(r.Context(), `SELECT COUNT(*) FROM public.tasks WHERE user_id = $1`, userID).Scan(&taskCount)
-		if taskCount == 1 {
-			// Get user info
-			var pseudo, firstName, email *string
-			h.db.QueryRow(r.Context(),
-				`SELECT pseudo, first_name, email FROM public.users WHERE id = $1`, userID,
-			).Scan(&pseudo, &firstName, &email)
-
-			userName := "User"
-			if pseudo != nil && *pseudo != "" {
-				userName = *pseudo
-			} else if firstName != nil && *firstName != "" {
-				userName = *firstName
-			}
-			userEmail := ""
-			if email != nil {
-				userEmail = *email
-			}
-
-			telegram.Get().Send(telegram.Event{
-				Type:      telegram.EventFirstTaskCreated,
-				UserID:    userID,
-				UserName:  userName,
-				UserEmail: userEmail,
-				Data: map[string]interface{}{
-					"task_title": task.Title,
-				},
-			})
-		}
-	}()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -830,9 +802,10 @@ func (h *Handler) getTasksForDay(ctx context.Context, userID, date string, dayPl
 			TO_CHAR(t.scheduled_end, 'HH24:MI') as scheduled_end,
 			t.time_block, t.position, t.estimated_minutes, t.actual_minutes,
 			t.priority, t.status, t.due_at, t.completed_at, t.is_ai_generated,
-			t.ai_notes, COALESCE(t.is_private, false) as is_private, t.created_at, t.updated_at,
-			q.title as quest_title, a.name as area_name, a.icon as area_icon,
-			(SELECT COUNT(*) FROM community_posts cp WHERE cp.task_id = t.id AND cp.is_hidden = false) as photos_count
+			t.ai_notes, COALESCE(t.is_private, false) as is_private,
+			COALESCE(t.block_apps, false) as block_apps,
+			t.created_at, t.updated_at,
+			q.title as quest_title, a.name as area_name, a.icon as area_icon
 		FROM tasks t
 		LEFT JOIN quests q ON t.quest_id = q.id
 		LEFT JOIN areas a ON t.area_id = a.id
@@ -850,22 +823,16 @@ func (h *Handler) getTasksForDay(ctx context.Context, userID, date string, dayPl
 		var t Task
 		var scheduledStart, scheduledEnd *string
 		var timeBlock *string
-		var photosCount int
 		err := rows.Scan(
 			&t.ID, &t.UserID, &t.QuestID, &t.AreaID,
 			&t.Title, &t.Description, &t.Date, &scheduledStart, &scheduledEnd,
 			&timeBlock, &t.Position, &t.EstimatedMinutes, &t.ActualMinutes,
 			&t.Priority, &t.Status, &t.DueAt, &t.CompletedAt, &t.IsAIGenerated,
-			&t.AINotes, &t.IsPrivate, &t.CreatedAt, &t.UpdatedAt,
-			&t.QuestTitle, &t.AreaName, &t.AreaIcon, &photosCount,
+			&t.AINotes, &t.IsPrivate, &t.BlockApps, &t.CreatedAt, &t.UpdatedAt,
+			&t.QuestTitle, &t.AreaName, &t.AreaIcon,
 		)
 		if err != nil {
 			continue
-		}
-
-		// Set photos count if > 0
-		if photosCount > 0 {
-			t.PhotosCount = &photosCount
 		}
 
 		if timeBlock != nil {
