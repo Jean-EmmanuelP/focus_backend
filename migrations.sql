@@ -698,9 +698,13 @@ create index idx_chat_messages_created on public.chat_messages(user_id, created_
 
 -- ==========================================
 -- 22. CHAT CONTEXT (Semantic Memory Storage)
--- Stores facts extracted from conversations for infinite memory
--- Inspired by Mira architecture
+-- Stores facts with vector embeddings for semantic search
+-- Inspired by Mira architecture + pgvector
 -- ==========================================
+
+-- Enable pgvector extension (run in Supabase dashboard first)
+-- create extension if not exists vector;
+
 create table public.chat_contexts (
   id uuid default gen_random_uuid() primary key,
   user_id uuid not null references auth.users on delete cascade,
@@ -712,10 +716,13 @@ create table public.chat_contexts (
   first_mentioned timestamp with time zone default now(),
   last_mentioned timestamp with time zone default now(),
 
+  -- Vector embedding (768 dimensions for text-embedding-004)
+  embedding vector(768),
+
   -- Timestamps
   created_at timestamp with time zone default now(),
 
-  -- Same fact from same user should be unique (for upsert)
+  -- Same fact from same user should be unique (for exact text dedup)
   unique (user_id, fact)
 );
 
@@ -728,6 +735,75 @@ create policy "Users can manage own chat_contexts" on public.chat_contexts
 create index idx_chat_contexts_user on public.chat_contexts(user_id);
 create index idx_chat_contexts_last_mentioned on public.chat_contexts(user_id, last_mentioned desc);
 create index idx_chat_contexts_category on public.chat_contexts(user_id, category);
+
+-- HNSW index for fast vector similarity search
+create index idx_chat_contexts_embedding on public.chat_contexts
+  using hnsw (embedding vector_cosine_ops);
+
+-- Function: Semantic similarity search
+create or replace function match_memories(
+  query_embedding vector(768),
+  match_user_id uuid,
+  match_threshold float default 0.5,
+  match_count int default 10
+)
+returns table (
+  id uuid,
+  fact text,
+  category text,
+  mention_count int,
+  first_mentioned timestamptz,
+  last_mentioned timestamptz,
+  similarity float
+)
+language plpgsql
+as $$
+begin
+  return query
+  select
+    c.id,
+    c.fact,
+    c.category,
+    c.mention_count,
+    c.first_mentioned,
+    c.last_mentioned,
+    1 - (c.embedding <=> query_embedding) as similarity
+  from chat_contexts c
+  where c.user_id = match_user_id
+    and c.embedding is not null
+    and 1 - (c.embedding <=> query_embedding) > match_threshold
+  order by c.embedding <=> query_embedding
+  limit match_count;
+end;
+$$;
+
+-- Function: Find similar memory for deduplication (85% threshold)
+create or replace function find_similar_memory(
+  query_embedding vector(768),
+  match_user_id uuid,
+  similarity_threshold float default 0.85
+)
+returns table (
+  id uuid,
+  fact text,
+  similarity float
+)
+language plpgsql
+as $$
+begin
+  return query
+  select
+    c.id,
+    c.fact,
+    1 - (c.embedding <=> query_embedding) as similarity
+  from chat_contexts c
+  where c.user_id = match_user_id
+    and c.embedding is not null
+    and 1 - (c.embedding <=> query_embedding) >= similarity_threshold
+  order by c.embedding <=> query_embedding
+  limit 1;
+end;
+$$;
 
 
 -- ==========================================

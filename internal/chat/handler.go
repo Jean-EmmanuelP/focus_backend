@@ -33,6 +33,7 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Post("/chat/message", h.SendMessage)
+	r.Post("/chat/voice", h.SendVoiceMessage)
 	r.Get("/chat/history", h.GetHistory)
 	r.Delete("/chat/history", h.ClearHistory)
 }
@@ -59,6 +60,13 @@ type SendMessageResponse struct {
 	Tool      *string     `json:"tool,omitempty"`
 	MessageID string      `json:"message_id"`
 	Action    *ActionData `json:"action,omitempty"`
+}
+
+type VoiceMessageResponse struct {
+	Reply      string      `json:"reply"`
+	Transcript string      `json:"transcript"`
+	MessageID  string      `json:"message_id"`
+	Action     *ActionData `json:"action,omitempty"`
 }
 
 type ActionData struct {
@@ -243,8 +251,183 @@ func (h *Handler) ClearHistory(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// SendVoiceMessage handles voice messages - transcribes and processes
+func (h *Handler) SendVoiceMessage(w http.ResponseWriter, r *http.Request) {
+	userID, ok := r.Context().Value(auth.UserContextKey).(string)
+	if !ok || userID == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Parse multipart form (max 10MB)
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		http.Error(w, "Failed to parse form", http.StatusBadRequest)
+		return
+	}
+
+	// Get audio file
+	file, header, err := r.FormFile("audio")
+	if err != nil {
+		http.Error(w, "Audio file required", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Read audio data
+	audioData := make([]byte, header.Size)
+	if _, err := file.Read(audioData); err != nil {
+		http.Error(w, "Failed to read audio", http.StatusInternalServerError)
+		return
+	}
+
+	source := r.FormValue("source")
+	if source == "" {
+		source = "app"
+	}
+
+	// Transcribe audio using Gemini
+	transcript, err := h.transcribeAudio(r.Context(), audioData, header.Filename)
+	if err != nil {
+		fmt.Printf("Transcription error: %v\n", err)
+		// Return error response
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(VoiceMessageResponse{
+			Reply:      "J'ai pas bien entendu, tu peux répéter?",
+			Transcript: "",
+			MessageID:  "",
+		})
+		return
+	}
+
+	if transcript == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(VoiceMessageResponse{
+			Reply:      "J'ai pas compris ce que tu as dit, tu peux répéter?",
+			Transcript: "",
+			MessageID:  "",
+		})
+		return
+	}
+
+	// Save user voice message
+	userMsgID := uuid.New().String()
+	h.db.Exec(r.Context(), `
+		INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, source)
+		VALUES ($1, $2, $3, true, 'voice', $4)
+	`, userMsgID, userID, transcript, source)
+
+	// Get user info
+	userInfo := h.getUserInfo(r.Context(), userID)
+
+	// Get relevant memories
+	memories := h.getRelevantMemories(r.Context(), userID, transcript)
+
+	// Get recent history
+	history, _ := h.getRecentHistory(r.Context(), userID, 20)
+
+	// Generate AI response
+	response, err := h.generateResponse(r.Context(), userID, transcript, userInfo, memories, history)
+	if err != nil {
+		fmt.Printf("AI error: %v\n", err)
+		response = &SendMessageResponse{
+			Reply: "Désolé, j'ai un souci technique. Tu peux réessayer?",
+		}
+	}
+
+	// Extract and save memories from transcript (async)
+	go h.extractAndSaveMemories(context.Background(), userID, transcript)
+
+	// If focus intent detected, create task
+	if response.Action != nil && response.Action.Type == "focus_scheduled" && response.Action.TaskData != nil {
+		taskID, err := h.createFocusTask(r.Context(), userID, response.Action.TaskData)
+		if err != nil {
+			fmt.Printf("Failed to create focus task: %v\n", err)
+		} else {
+			response.Action.TaskID = &taskID
+			response.Action.Type = "task_created"
+		}
+	}
+
+	// Save AI response
+	aiMsgID := uuid.New().String()
+	h.db.Exec(r.Context(), `
+		INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, source)
+		VALUES ($1, $2, $3, false, 'text', $4)
+	`, aiMsgID, userID, response.Reply, source)
+
+	// Build voice response
+	voiceResponse := VoiceMessageResponse{
+		Reply:      response.Reply,
+		Transcript: transcript,
+		MessageID:  aiMsgID,
+		Action:     response.Action,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(voiceResponse)
+}
+
+// transcribeAudio uses Gemini to transcribe audio
+func (h *Handler) transcribeAudio(ctx context.Context, audioData []byte, filename string) (string, error) {
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	if apiKey == "" {
+		return "", fmt.Errorf("GEMINI_API_KEY not set")
+	}
+
+	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
+	if err != nil {
+		return "", err
+	}
+	defer client.Close()
+
+	// Use Gemini 1.5 Flash for audio transcription
+	model := client.GenerativeModel("gemini-1.5-flash")
+	model.SetTemperature(0.1)
+
+	// Determine MIME type
+	mimeType := "audio/mp4"
+	if strings.HasSuffix(filename, ".m4a") {
+		mimeType = "audio/mp4"
+	} else if strings.HasSuffix(filename, ".mp3") {
+		mimeType = "audio/mp3"
+	} else if strings.HasSuffix(filename, ".wav") {
+		mimeType = "audio/wav"
+	}
+
+	// Create audio part
+	audioPart := genai.Blob{
+		MIMEType: mimeType,
+		Data:     audioData,
+	}
+
+	// Prompt for transcription
+	prompt := genai.Text(`Transcris ce message vocal en français.
+Retourne UNIQUEMENT le texte transcrit, sans commentaires ni formatting.
+Si l'audio est inaudible ou vide, retourne une chaîne vide.`)
+
+	resp, err := model.GenerateContent(ctx, audioPart, prompt)
+	if err != nil {
+		return "", err
+	}
+
+	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
+		return "", fmt.Errorf("empty transcription response")
+	}
+
+	// Extract text
+	transcript := ""
+	for _, part := range resp.Candidates[0].Content.Parts {
+		if text, ok := part.(genai.Text); ok {
+			transcript += string(text)
+		}
+	}
+
+	return strings.TrimSpace(transcript), nil
+}
+
 // ===========================================
 // MEMORY SYSTEM (Inspired by Mira)
+// With Vector Embeddings + Semantic Search
 // ===========================================
 
 type UserInfo struct {
@@ -253,6 +436,12 @@ type UserInfo struct {
 	FocusWeek      int
 	TasksToday     int
 	TasksCompleted int
+}
+
+// SemanticMemoryWithScore includes similarity score from vector search
+type SemanticMemoryWithScore struct {
+	SemanticMemory
+	Similarity float64 `json:"similarity"`
 }
 
 func (h *Handler) getUserInfo(ctx context.Context, userID string) *UserInfo {
@@ -284,8 +473,81 @@ func (h *Handler) getUserInfo(ctx context.Context, userID string) *UserInfo {
 	return info
 }
 
+// generateEmbedding creates a 768-dim embedding using Gemini
+func (h *Handler) generateEmbedding(ctx context.Context, text string) ([]float32, error) {
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	if apiKey == "" {
+		return nil, fmt.Errorf("GEMINI_API_KEY not set")
+	}
+
+	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	// Use text-embedding-004 model (768 dimensions)
+	em := client.EmbeddingModel("text-embedding-004")
+	res, err := em.EmbedContent(ctx, genai.Text(text))
+	if err != nil {
+		return nil, err
+	}
+
+	return res.Embedding.Values, nil
+}
+
+// vectorToString converts embedding to PostgreSQL vector format
+func vectorToString(embedding []float32) string {
+	parts := make([]string, len(embedding))
+	for i, v := range embedding {
+		parts[i] = fmt.Sprintf("%f", v)
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}
+
+// getRelevantMemories uses vector similarity search to find relevant memories
 func (h *Handler) getRelevantMemories(ctx context.Context, userID, message string) []SemanticMemory {
-	// For now, get last 10 memories - later can add semantic search
+	// Generate embedding for the query
+	embedding, err := h.generateEmbedding(ctx, message)
+	if err != nil {
+		fmt.Printf("⚠️ Embedding error, falling back to recent memories: %v\n", err)
+		return h.getRecentMemories(ctx, userID)
+	}
+
+	// Use the match_memories function for vector similarity search
+	embeddingStr := vectorToString(embedding)
+	rows, err := h.db.Query(ctx, `
+		SELECT id, fact, category, mention_count, first_mentioned, last_mentioned, similarity
+		FROM match_memories($1::vector(768), $2::uuid, 0.3, 10)
+	`, embeddingStr, userID)
+	if err != nil {
+		fmt.Printf("⚠️ Vector search error, falling back to recent memories: %v\n", err)
+		return h.getRecentMemories(ctx, userID)
+	}
+	defer rows.Close()
+
+	var memories []SemanticMemory
+	for rows.Next() {
+		var m SemanticMemory
+		var similarity float64
+		if err := rows.Scan(&m.ID, &m.Fact, &m.Category, &m.MentionCount, &m.FirstMention, &m.LastMention, &similarity); err != nil {
+			fmt.Printf("⚠️ Scan error: %v\n", err)
+			continue
+		}
+		fmt.Printf("📝 Memory found (%.2f similarity): %s\n", similarity, m.Fact)
+		memories = append(memories, m)
+	}
+
+	// If no vector matches, fall back to recent memories
+	if len(memories) == 0 {
+		return h.getRecentMemories(ctx, userID)
+	}
+
+	return memories
+}
+
+// getRecentMemories fallback when vector search fails or no embeddings exist
+func (h *Handler) getRecentMemories(ctx context.Context, userID string) []SemanticMemory {
 	rows, err := h.db.Query(ctx, `
 		SELECT id, user_id, fact, category, mention_count, first_mentioned, last_mentioned
 		FROM chat_contexts
@@ -307,8 +569,8 @@ func (h *Handler) getRelevantMemories(ctx context.Context, userID, message strin
 	return memories
 }
 
+// extractAndSaveMemories extracts facts and stores with embeddings + semantic deduplication
 func (h *Handler) extractAndSaveMemories(ctx context.Context, userID, message string) {
-	// Use Gemini to extract facts from message
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
 		return
@@ -366,20 +628,54 @@ Réponds UNIQUEMENT avec le JSON array:`, message)
 		return
 	}
 
-	// Save each fact
+	// Process each fact with semantic deduplication
 	for _, f := range facts {
 		if f.Fact == "" {
 			continue
 		}
 
-		// Upsert fact (update if similar exists, insert if new)
-		h.db.Exec(ctx, `
-			INSERT INTO chat_contexts (id, user_id, fact, category, mention_count, first_mentioned, last_mentioned)
-			VALUES (gen_random_uuid(), $1, $2, $3, 1, NOW(), NOW())
-			ON CONFLICT (user_id, fact) DO UPDATE SET
-				mention_count = chat_contexts.mention_count + 1,
-				last_mentioned = NOW()
-		`, userID, f.Fact, f.Category)
+		// Generate embedding for this fact
+		embedding, err := h.generateEmbedding(ctx, f.Fact)
+		if err != nil {
+			fmt.Printf("⚠️ Failed to generate embedding for fact: %v\n", err)
+			// Fallback: save without embedding
+			h.db.Exec(ctx, `
+				INSERT INTO chat_contexts (id, user_id, fact, category, mention_count, first_mentioned, last_mentioned)
+				VALUES (gen_random_uuid(), $1, $2, $3, 1, NOW(), NOW())
+				ON CONFLICT (user_id, fact) DO UPDATE SET
+					mention_count = chat_contexts.mention_count + 1,
+					last_mentioned = NOW()
+			`, userID, f.Fact, f.Category)
+			continue
+		}
+
+		embeddingStr := vectorToString(embedding)
+
+		// Check for semantic duplicate (85% similarity threshold)
+		var existingID string
+		var existingFact string
+		var similarity float64
+		err = h.db.QueryRow(ctx, `
+			SELECT id, fact, similarity
+			FROM find_similar_memory($1::vector(768), $2::uuid, 0.85)
+		`, embeddingStr, userID).Scan(&existingID, &existingFact, &similarity)
+
+		if err == nil && existingID != "" {
+			// Found similar memory - update mention count
+			fmt.Printf("🔄 Semantic duplicate found (%.2f): '%s' ≈ '%s'\n", similarity, f.Fact, existingFact)
+			h.db.Exec(ctx, `
+				UPDATE chat_contexts
+				SET mention_count = mention_count + 1, last_mentioned = NOW()
+				WHERE id = $1
+			`, existingID)
+		} else {
+			// New unique memory - insert with embedding
+			fmt.Printf("✨ New memory: %s [%s]\n", f.Fact, f.Category)
+			h.db.Exec(ctx, `
+				INSERT INTO chat_contexts (id, user_id, fact, category, mention_count, first_mentioned, last_mentioned, embedding)
+				VALUES (gen_random_uuid(), $1, $2, $3, 1, NOW(), NOW(), $4::vector(768))
+			`, userID, f.Fact, f.Category, embeddingStr)
+		}
 	}
 }
 
