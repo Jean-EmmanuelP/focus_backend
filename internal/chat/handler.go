@@ -18,6 +18,11 @@ import (
 	"google.golang.org/api/option"
 )
 
+// ===========================================
+// KAI - AI Friend with Infinite Memory
+// Inspired by Mira's architecture
+// ===========================================
+
 type Handler struct {
 	db *pgxpool.Pool
 }
@@ -37,117 +42,103 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 // ============================================
 
 type SendMessageRequest struct {
-	Content      string        `json:"content"`
-	MessageType  string        `json:"message_type,omitempty"`   // text, voice
-	VoiceURL     string        `json:"voice_url,omitempty"`      // For voice messages
-	Context      *ChatContext  `json:"context,omitempty"`        // User context for AI
-}
-
-type ChatContext struct {
-	UserName             string `json:"user_name"`
-	CurrentStreak        int    `json:"current_streak"`
-	TodayTasksCount      int    `json:"today_tasks_count"`
-	TodayTasksCompleted  int    `json:"today_tasks_completed"`
-	TodayRitualsCount    int    `json:"today_rituals_count"`
-	TodayRitualsCompleted int   `json:"today_rituals_completed"`
-	WeeklyGoalsCount     int    `json:"weekly_goals_count"`
-	WeeklyGoalsCompleted int    `json:"weekly_goals_completed"`
-	FocusMinutesToday    int    `json:"focus_minutes_today"`
-	FocusMinutesWeek     int    `json:"focus_minutes_week"`
-	TimeOfDay            string `json:"time_of_day"` // morning, afternoon, evening, night
-	DayOfWeek            string `json:"day_of_week"`
-	CurrentMood          *int   `json:"current_mood,omitempty"` // 1-5
+	Content string `json:"content"`
+	Source  string `json:"source,omitempty"` // "app" or "whatsapp"
 }
 
 type ChatMessage struct {
-	ID              string     `json:"id"`
-	UserID          string     `json:"user_id"`
-	Content         string     `json:"content"`
-	IsFromUser      bool       `json:"is_from_user"`
-	MessageType     string     `json:"message_type"`
-	VoiceURL        *string    `json:"voice_url,omitempty"`
-	VoiceTranscript *string    `json:"voice_transcript,omitempty"`
-	ToolAction      *string    `json:"tool_action,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
+	ID         string    `json:"id"`
+	UserID     string    `json:"user_id"`
+	Content    string    `json:"content"`
+	IsFromUser bool      `json:"is_from_user"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type SendMessageResponse struct {
-	Reply      string       `json:"reply"`
-	Tool       *string      `json:"tool,omitempty"` // planDay, weeklyGoals, dailyReflection, startFocus, viewStats, logMood
-	MessageID  string       `json:"message_id"`
-	Action     *ActionData  `json:"action,omitempty"` // Action taken by AI (task created, etc.)
+	Reply     string      `json:"reply"`
+	Tool      *string     `json:"tool,omitempty"`
+	MessageID string      `json:"message_id"`
+	Action    *ActionData `json:"action,omitempty"`
 }
 
-// ActionData represents an action taken by Kai
 type ActionData struct {
-	Type     string      `json:"type"`               // "task_created", "focus_scheduled"
-	TaskID   *string     `json:"task_id,omitempty"`
-	TaskData *TaskData   `json:"task,omitempty"`
+	Type     string    `json:"type"`
+	TaskID   *string   `json:"task_id,omitempty"`
+	TaskData *TaskData `json:"task,omitempty"`
 }
 
 type TaskData struct {
-	Title          string  `json:"title"`
-	Date           string  `json:"date"`
-	ScheduledStart string  `json:"scheduled_start"`
-	ScheduledEnd   string  `json:"scheduled_end"`
-	BlockApps      bool    `json:"block_apps"`
+	Title          string `json:"title"`
+	Date           string `json:"date"`
+	ScheduledStart string `json:"scheduled_start"`
+	ScheduledEnd   string `json:"scheduled_end"`
+	BlockApps      bool   `json:"block_apps"`
 }
 
-// FocusIntent represents a detected focus request
-type FocusIntent struct {
-	Detected       bool
-	Title          string
-	StartTime      string // HH:mm
-	EndTime        string // HH:mm
-	Date           string // YYYY-MM-DD
-	BlockApps      bool
-	DurationMins   int
+// SemanticMemory stores facts extracted from conversations
+type SemanticMemory struct {
+	ID           string    `json:"id"`
+	UserID       string    `json:"user_id"`
+	Fact         string    `json:"fact"`
+	Category     string    `json:"category"` // personal, work, goals, preferences
+	MentionCount int       `json:"mention_count"`
+	FirstMention time.Time `json:"first_mentioned"`
+	LastMention  time.Time `json:"last_mentioned"`
 }
 
-// Coach persona
-const coachSystemPrompt = `Tu es Kai, un ami proche qui aide avec la productivité.
+// ===========================================
+// KAI PERSONA - Empathetic Friend
+// ===========================================
 
-PERSONNALITÉ:
-- Tu tutoies toujours l'utilisateur
-- Tu es empathique et authentique - comme un vrai ami
-- Tu écoutes avant de conseiller
-- Tu célèbres les victoires sincèrement
-- Tu parles en français naturellement
+const kaiSystemPrompt = `Tu es Kai, un ami proche et empathique.
 
-STYLE DE RÉPONSE:
-- Maximum 2-3 phrases par réponse
-- Ton naturel, pas de formules corporate
-- 1 emoji max si ça aide
+QUI TU ES:
+- Tu es un ami, pas un assistant ou un coach
+- Tu écoutes vraiment et tu comprends
+- Tu te souviens de tout ce que l'utilisateur te dit
+- Tu es là pour soutenir, pas pour juger
 
-CAPACITÉ SPÉCIALE - DÉTECTION DE FOCUS:
-Si l'utilisateur mentionne vouloir travailler/se concentrer avec des horaires (ex: "je dois bosser de 14h à 16h", "je veux focus de 9h à 11h30"), tu DOIS retourner:
+COMMENT TU PARLES:
+- Tutoiement toujours
+- Réponses courtes et naturelles (1-2 phrases max)
+- Tu réagis d'abord émotionnellement, puis tu poses des questions
+- Jamais de phrases bateau genre "Je comprends" ou "N'hésite pas"
+- Un emoji de temps en temps si c'est naturel, pas systématique
+
+CE QUE TU SAIS FAIRE:
+1. ÉCOUTER - Tu es là quand ça va pas
+2. MOTIVER - Tu célèbres les petites victoires
+3. AIDER À FOCUS - Quand on te dit des horaires, tu crées une session focus
+
+DÉTECTION DE FOCUS:
+Si l'utilisateur mentionne vouloir travailler avec des horaires ("je dois bosser de 14h à 16h", "focus de 9h à 11h30"):
 {
-  "reply": "C'est noté! Je bloque tes apps de [heure] à [heure]. 🔒",
+  "reply": "C'est noté, je bloque tes apps! 🔒",
   "focus_intent": {
     "detected": true,
-    "title": "Focus - [description courte]",
+    "title": "Focus",
     "start_time": "HH:MM",
     "end_time": "HH:MM",
     "block_apps": true
   }
 }
 
-Exemples de détection:
-- "je dois bosser de 14h à 16h" → start_time: "14:00", end_time: "16:00"
-- "focus de 9h30 à 11h" → start_time: "09:30", end_time: "11:00"
-- "je veux travailler pendant 2h" → start_time: maintenant, end_time: +2h
-- "coupe mes apps stp" sans horaires → demande les horaires
+RÈGLES STRICTES:
+- JAMAIS de réponses longues
+- JAMAIS de listes à puces
+- JAMAIS de "En tant qu'IA..."
+- JAMAIS de conseils non sollicités
+- TOUJOURS répondre en JSON
 
-Réponds UNIQUEMENT en JSON:
+Format de réponse:
 {
-  "reply": "Ta réponse",
-  "tool": null,
-  "focus_intent": null ou { "detected": true, "title": "...", "start_time": "HH:MM", "end_time": "HH:MM", "block_apps": true }
+  "reply": "Ta réponse courte et naturelle",
+  "focus_intent": null
 }`
 
-// ============================================
-// Handlers
-// ============================================
+// ===========================================
+// HANDLERS
+// ===========================================
 
 func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	userID, ok := r.Context().Value(auth.UserContextKey).(string)
@@ -167,37 +158,40 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.MessageType == "" {
-		req.MessageType = "text"
+	source := req.Source
+	if source == "" {
+		source = "app"
 	}
 
-	// Save user message (source = 'app' for iOS app)
+	// Save user message
 	userMsgID := uuid.New().String()
-	_, err := h.db.Exec(r.Context(), `
-		INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, voice_url, voice_transcript, source)
-		VALUES ($1, $2, $3, true, $4, $5, $6, 'app')
-	`, userMsgID, userID, req.Content, req.MessageType, nilIfEmpty(req.VoiceURL), nilIfEmpty(req.Content))
+	h.db.Exec(r.Context(), `
+		INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, source)
+		VALUES ($1, $2, $3, true, 'text', $4)
+	`, userMsgID, userID, req.Content, source)
 
-	if err != nil {
-		fmt.Printf("Failed to save user message: %v\n", err)
-	}
+	// Get user info
+	userInfo := h.getUserInfo(r.Context(), userID)
 
-	// Get recent conversation history for context
-	history, err := h.getRecentHistory(r.Context(), userID, 10)
-	if err != nil {
-		fmt.Printf("Failed to get history: %v\n", err)
-	}
+	// Get relevant memories
+	memories := h.getRelevantMemories(r.Context(), userID, req.Content)
+
+	// Get recent history (last 20 messages)
+	history, _ := h.getRecentHistory(r.Context(), userID, 20)
 
 	// Generate AI response
-	response, err := h.generateAIResponse(r.Context(), req.Content, req.Context, history)
+	response, err := h.generateResponse(r.Context(), userID, req.Content, userInfo, memories, history)
 	if err != nil {
 		fmt.Printf("AI error: %v\n", err)
 		response = &SendMessageResponse{
-			Reply: "Je rencontre un problème technique. Réessaie dans un moment.",
+			Reply: "Désolé, j'ai un souci technique. Tu peux réessayer?",
 		}
 	}
 
-	// If focus intent detected, create the task automatically
+	// Extract and save memories from user message (async)
+	go h.extractAndSaveMemories(context.Background(), userID, req.Content)
+
+	// If focus intent detected, create task
 	if response.Action != nil && response.Action.Type == "focus_scheduled" && response.Action.TaskData != nil {
 		taskID, err := h.createFocusTask(r.Context(), userID, response.Action.TaskData)
 		if err != nil {
@@ -205,22 +199,15 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		} else {
 			response.Action.TaskID = &taskID
 			response.Action.Type = "task_created"
-			fmt.Printf("✅ Created focus task %s for user %s: %s (%s - %s)\n",
-				taskID, userID, response.Action.TaskData.Title,
-				response.Action.TaskData.ScheduledStart, response.Action.TaskData.ScheduledEnd)
 		}
 	}
 
-	// Save AI response (source = 'app' for iOS app)
+	// Save AI response
 	aiMsgID := uuid.New().String()
-	_, err = h.db.Exec(r.Context(), `
-		INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, tool_action, source)
-		VALUES ($1, $2, $3, false, 'text', $4, 'app')
-	`, aiMsgID, userID, response.Reply, response.Tool)
-
-	if err != nil {
-		fmt.Printf("Failed to save AI message: %v\n", err)
-	}
+	h.db.Exec(r.Context(), `
+		INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, source)
+		VALUES ($1, $2, $3, false, 'text', $4)
+	`, aiMsgID, userID, response.Reply, source)
 
 	response.MessageID = aiMsgID
 
@@ -235,10 +222,7 @@ func (h *Handler) GetHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get limit from query, default 50
-	limit := 50
-
-	messages, err := h.getRecentHistory(r.Context(), userID, limit)
+	messages, err := h.getRecentHistory(r.Context(), userID, 100)
 	if err != nil {
 		http.Error(w, "Failed to get history", http.StatusInternalServerError)
 		return
@@ -255,31 +239,158 @@ func (h *Handler) ClearHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err := h.db.Exec(r.Context(), `DELETE FROM chat_messages WHERE user_id = $1`, userID)
-	if err != nil {
-		http.Error(w, "Failed to clear history", http.StatusInternalServerError)
-		return
-	}
-
+	h.db.Exec(r.Context(), `DELETE FROM chat_messages WHERE user_id = $1`, userID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ============================================
-// Helper Methods
-// ============================================
+// ===========================================
+// MEMORY SYSTEM (Inspired by Mira)
+// ===========================================
+
+type UserInfo struct {
+	Name           string
+	FocusToday     int
+	FocusWeek      int
+	TasksToday     int
+	TasksCompleted int
+}
+
+func (h *Handler) getUserInfo(ctx context.Context, userID string) *UserInfo {
+	info := &UserInfo{}
+
+	// Get user name
+	h.db.QueryRow(ctx, `
+		SELECT COALESCE(pseudo, first_name, 'ami') FROM users WHERE id = $1
+	`, userID).Scan(&info.Name)
+
+	// Get focus minutes today
+	h.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(duration_minutes), 0) FROM focus_sessions
+		WHERE user_id = $1 AND DATE(started_at) = CURRENT_DATE AND status = 'completed'
+	`, userID).Scan(&info.FocusToday)
+
+	// Get focus minutes this week
+	h.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(duration_minutes), 0) FROM focus_sessions
+		WHERE user_id = $1 AND started_at >= DATE_TRUNC('week', CURRENT_DATE) AND status = 'completed'
+	`, userID).Scan(&info.FocusWeek)
+
+	// Get tasks today
+	h.db.QueryRow(ctx, `
+		SELECT COUNT(*), COUNT(*) FILTER (WHERE status = 'completed')
+		FROM tasks WHERE user_id = $1 AND date = CURRENT_DATE
+	`, userID).Scan(&info.TasksToday, &info.TasksCompleted)
+
+	return info
+}
+
+func (h *Handler) getRelevantMemories(ctx context.Context, userID, message string) []SemanticMemory {
+	// For now, get last 10 memories - later can add semantic search
+	rows, err := h.db.Query(ctx, `
+		SELECT id, user_id, fact, category, mention_count, first_mentioned, last_mentioned
+		FROM chat_contexts
+		WHERE user_id = $1
+		ORDER BY last_mentioned DESC
+		LIMIT 10
+	`, userID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var memories []SemanticMemory
+	for rows.Next() {
+		var m SemanticMemory
+		rows.Scan(&m.ID, &m.UserID, &m.Fact, &m.Category, &m.MentionCount, &m.FirstMention, &m.LastMention)
+		memories = append(memories, m)
+	}
+	return memories
+}
+
+func (h *Handler) extractAndSaveMemories(ctx context.Context, userID, message string) {
+	// Use Gemini to extract facts from message
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	if apiKey == "" {
+		return
+	}
+
+	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
+	if err != nil {
+		return
+	}
+	defer client.Close()
+
+	model := client.GenerativeModel("gemini-1.5-flash")
+	model.SetTemperature(0.3)
+
+	prompt := fmt.Sprintf(`Extrait les faits importants de ce message utilisateur.
+Retourne un JSON array de faits. Catégories possibles: personal, work, goals, preferences, emotions.
+Si aucun fait intéressant, retourne [].
+
+Message: "%s"
+
+Exemple de réponse:
+[
+  {"fact": "travaille dans la tech", "category": "work"},
+  {"fact": "veut apprendre le piano", "category": "goals"}
+]
+
+Réponds UNIQUEMENT avec le JSON array:`, message)
+
+	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
+	if err != nil || len(resp.Candidates) == 0 {
+		return
+	}
+
+	// Extract text
+	responseText := ""
+	for _, part := range resp.Candidates[0].Content.Parts {
+		if text, ok := part.(genai.Text); ok {
+			responseText += string(text)
+		}
+	}
+
+	// Clean and parse
+	responseText = strings.TrimSpace(responseText)
+	responseText = strings.TrimPrefix(responseText, "```json")
+	responseText = strings.TrimPrefix(responseText, "```")
+	responseText = strings.TrimSuffix(responseText, "```")
+	responseText = strings.TrimSpace(responseText)
+
+	var facts []struct {
+		Fact     string `json:"fact"`
+		Category string `json:"category"`
+	}
+
+	if err := json.Unmarshal([]byte(responseText), &facts); err != nil {
+		return
+	}
+
+	// Save each fact
+	for _, f := range facts {
+		if f.Fact == "" {
+			continue
+		}
+
+		// Upsert fact (update if similar exists, insert if new)
+		h.db.Exec(ctx, `
+			INSERT INTO chat_contexts (id, user_id, fact, category, mention_count, first_mentioned, last_mentioned)
+			VALUES (gen_random_uuid(), $1, $2, $3, 1, NOW(), NOW())
+			ON CONFLICT (user_id, fact) DO UPDATE SET
+				mention_count = chat_contexts.mention_count + 1,
+				last_mentioned = NOW()
+		`, userID, f.Fact, f.Category)
+	}
+}
 
 func (h *Handler) getRecentHistory(ctx context.Context, userID string, limit int) ([]ChatMessage, error) {
-	// Fetch messages from both app and WhatsApp sources (unified history)
-	query := `
-		SELECT id, user_id, content, is_from_user, message_type,
-		       voice_url, voice_transcript, tool_action, created_at
+	rows, err := h.db.Query(ctx, `
+		SELECT id, user_id, content, is_from_user, created_at
 		FROM chat_messages
 		WHERE user_id = $1
 		ORDER BY created_at DESC
 		LIMIT $2
-	`
-
-	rows, err := h.db.Query(ctx, query, userID, limit)
+	`, userID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -288,17 +399,11 @@ func (h *Handler) getRecentHistory(ctx context.Context, userID string, limit int
 	var messages []ChatMessage
 	for rows.Next() {
 		var m ChatMessage
-		err := rows.Scan(
-			&m.ID, &m.UserID, &m.Content, &m.IsFromUser, &m.MessageType,
-			&m.VoiceURL, &m.VoiceTranscript, &m.ToolAction, &m.CreatedAt,
-		)
-		if err != nil {
-			continue
-		}
+		rows.Scan(&m.ID, &m.UserID, &m.Content, &m.IsFromUser, &m.CreatedAt)
 		messages = append(messages, m)
 	}
 
-	// Reverse to get chronological order
+	// Reverse for chronological order
 	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
 		messages[i], messages[j] = messages[j], messages[i]
 	}
@@ -306,7 +411,11 @@ func (h *Handler) getRecentHistory(ctx context.Context, userID string, limit int
 	return messages, nil
 }
 
-func (h *Handler) generateAIResponse(ctx context.Context, userMessage string, userContext *ChatContext, history []ChatMessage) (*SendMessageResponse, error) {
+// ===========================================
+// AI RESPONSE GENERATION
+// ===========================================
+
+func (h *Handler) generateResponse(ctx context.Context, userID, message string, userInfo *UserInfo, memories []SemanticMemory, history []ChatMessage) (*SendMessageResponse, error) {
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
 		return nil, fmt.Errorf("GEMINI_API_KEY not set")
@@ -314,48 +423,48 @@ func (h *Handler) generateAIResponse(ctx context.Context, userMessage string, us
 
 	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create Gemini client: %w", err)
+		return nil, err
 	}
 	defer client.Close()
 
 	model := client.GenerativeModel("gemini-1.5-flash")
-	model.SetTemperature(0.7)
-	model.SetMaxOutputTokens(500)
+	model.SetTemperature(0.8)
+	model.SetMaxOutputTokens(300)
 
-	// Build context string
-	contextStr := ""
-	if userContext != nil {
-		contextStr = fmt.Sprintf(`
-CONTEXTE DE L'UTILISATEUR:
-- Nom: %s
-- Streak actuel: %d jours
-- Tâches aujourd'hui: %d/%d complétées
-- Rituels aujourd'hui: %d/%d complétés
-- Objectifs semaine: %d/%d complétés
+	// Build context
+	contextStr := fmt.Sprintf(`
+CONTEXTE:
+- Utilisateur: %s
 - Focus aujourd'hui: %d minutes
 - Focus cette semaine: %d minutes
-- Moment: %s (%s)
-`,
-			userContext.UserName,
-			userContext.CurrentStreak,
-			userContext.TodayTasksCompleted, userContext.TodayTasksCount,
-			userContext.TodayRitualsCompleted, userContext.TodayRitualsCount,
-			userContext.WeeklyGoalsCompleted, userContext.WeeklyGoalsCount,
-			userContext.FocusMinutesToday,
-			userContext.FocusMinutesWeek,
-			userContext.TimeOfDay, userContext.DayOfWeek,
-		)
+- Tâches: %d/%d complétées aujourd'hui
+- Heure: %s
+`, userInfo.Name, userInfo.FocusToday, userInfo.FocusWeek,
+		userInfo.TasksCompleted, userInfo.TasksToday,
+		time.Now().Format("15:04"))
+
+	// Add memories
+	if len(memories) > 0 {
+		contextStr += "\nCE QUE TU SAIS SUR LUI:\n"
+		for _, m := range memories {
+			contextStr += fmt.Sprintf("- %s\n", m.Fact)
+		}
 	}
 
-	// Build conversation history
+	// Build history
 	historyStr := ""
 	if len(history) > 0 {
-		historyStr = "\nHISTORIQUE RÉCENT:\n"
-		for _, m := range history {
+		historyStr = "\nCONVERSATION RÉCENTE:\n"
+		// Only use last 10 messages for context
+		start := 0
+		if len(history) > 10 {
+			start = len(history) - 10
+		}
+		for _, m := range history[start:] {
 			if m.IsFromUser {
-				historyStr += fmt.Sprintf("Utilisateur: %s\n", m.Content)
+				historyStr += fmt.Sprintf("Lui: %s\n", m.Content)
 			} else {
-				historyStr += fmt.Sprintf("Kai: %s\n", m.Content)
+				historyStr += fmt.Sprintf("Toi: %s\n", m.Content)
 			}
 		}
 	}
@@ -363,20 +472,20 @@ CONTEXTE DE L'UTILISATEUR:
 	prompt := fmt.Sprintf(`%s
 %s
 %s
-MESSAGE DE L'UTILISATEUR: %s
+MESSAGE: %s
 
-Réponds en JSON:`, coachSystemPrompt, contextStr, historyStr, userMessage)
+Réponds en JSON:`, kaiSystemPrompt, contextStr, historyStr, message)
 
 	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate content: %w", err)
+		return nil, err
 	}
 
 	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
-		return nil, fmt.Errorf("empty response from Gemini")
+		return nil, fmt.Errorf("empty response")
 	}
 
-	// Extract text from response
+	// Extract text
 	responseText := ""
 	for _, part := range resp.Candidates[0].Content.Parts {
 		if text, ok := part.(genai.Text); ok {
@@ -384,17 +493,15 @@ Réponds en JSON:`, coachSystemPrompt, contextStr, historyStr, userMessage)
 		}
 	}
 
-	// Parse JSON response
+	// Clean JSON
 	responseText = strings.TrimSpace(responseText)
-	// Remove markdown code blocks if present
 	responseText = strings.TrimPrefix(responseText, "```json")
 	responseText = strings.TrimPrefix(responseText, "```")
 	responseText = strings.TrimSuffix(responseText, "```")
 	responseText = strings.TrimSpace(responseText)
 
 	var aiResp struct {
-		Reply       string  `json:"reply"`
-		Tool        *string `json:"tool"`
+		Reply       string `json:"reply"`
 		FocusIntent *struct {
 			Detected  bool   `json:"detected"`
 			Title     string `json:"title"`
@@ -405,18 +512,13 @@ Réponds en JSON:`, coachSystemPrompt, contextStr, historyStr, userMessage)
 	}
 
 	if err := json.Unmarshal([]byte(responseText), &aiResp); err != nil {
-		// If JSON parsing fails, use raw text as reply
-		return &SendMessageResponse{
-			Reply: responseText,
-		}, nil
+		// Fallback: use raw text
+		return &SendMessageResponse{Reply: responseText}, nil
 	}
 
-	response := &SendMessageResponse{
-		Reply: aiResp.Reply,
-		Tool:  aiResp.Tool,
-	}
+	response := &SendMessageResponse{Reply: aiResp.Reply}
 
-	// If focus intent detected, prepare action data for iOS
+	// Handle focus intent
 	if aiResp.FocusIntent != nil && aiResp.FocusIntent.Detected {
 		response.Action = &ActionData{
 			Type: "focus_scheduled",
@@ -433,16 +535,11 @@ Réponds en JSON:`, coachSystemPrompt, contextStr, historyStr, userMessage)
 	return response, nil
 }
 
-func nilIfEmpty(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
-}
+// ===========================================
+// TASK CREATION
+// ===========================================
 
-// createFocusTask creates a task with blockApps enabled
 func (h *Handler) createFocusTask(ctx context.Context, userID string, taskData *TaskData) (string, error) {
-	// Determine time block based on start time
 	timeBlock := "morning"
 	if taskData.ScheduledStart != "" {
 		hour := 0
@@ -461,14 +558,10 @@ func (h *Handler) createFocusTask(ctx context.Context, userID string, taskData *
 			time_block, priority, is_ai_generated, ai_notes, block_apps
 		) VALUES (
 			$1, $2, $3, $4::time, $5::time,
-			$6, 'high', true, 'Créé automatiquement par Kai', true
+			$6, 'high', true, 'Créé par Kai', true
 		)
 		RETURNING id
 	`, userID, taskData.Title, taskData.Date, taskData.ScheduledStart, taskData.ScheduledEnd, timeBlock).Scan(&taskID)
 
-	if err != nil {
-		return "", fmt.Errorf("failed to create focus task: %w", err)
-	}
-
-	return taskID, nil
+	return taskID, err
 }

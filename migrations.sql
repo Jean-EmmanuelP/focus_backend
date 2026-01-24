@@ -697,32 +697,26 @@ create index idx_chat_messages_created on public.chat_messages(user_id, created_
 
 
 -- ==========================================
--- 22. CHAT CONTEXT (AI Context Snapshots)
--- Optional: Store context snapshots for AI memory
+-- 22. CHAT CONTEXT (Semantic Memory Storage)
+-- Stores facts extracted from conversations for infinite memory
+-- Inspired by Mira architecture
 -- ==========================================
 create table public.chat_contexts (
   id uuid default gen_random_uuid() primary key,
   user_id uuid not null references auth.users on delete cascade,
 
-  -- Context snapshot
-  context_date date not null default current_date,
-  user_name text,
-  current_streak integer default 0,
-  today_tasks_count integer default 0,
-  today_tasks_completed integer default 0,
-  today_rituals_count integer default 0,
-  today_rituals_completed integer default 0,
-  weekly_goals_count integer default 0,
-  weekly_goals_completed integer default 0,
-  focus_minutes_today integer default 0,
-  focus_minutes_week integer default 0,
-  current_mood integer,             -- 1-5
+  -- Semantic memory fields
+  fact text not null,                -- The fact/memory extracted
+  category text not null default 'personal', -- personal, work, goals, preferences, emotions
+  mention_count integer not null default 1,  -- How many times this was mentioned
+  first_mentioned timestamp with time zone default now(),
+  last_mentioned timestamp with time zone default now(),
 
   -- Timestamps
   created_at timestamp with time zone default now(),
 
-  -- One context per user per day
-  unique (user_id, context_date)
+  -- Same fact from same user should be unique (for upsert)
+  unique (user_id, fact)
 );
 
 -- RLS
@@ -732,7 +726,8 @@ create policy "Users can manage own chat_contexts" on public.chat_contexts
 
 -- Indexes
 create index idx_chat_contexts_user on public.chat_contexts(user_id);
-create index idx_chat_contexts_date on public.chat_contexts(user_id, context_date desc);
+create index idx_chat_contexts_last_mentioned on public.chat_contexts(user_id, last_mentioned desc);
+create index idx_chat_contexts_category on public.chat_contexts(user_id, category);
 
 
 -- ==========================================
