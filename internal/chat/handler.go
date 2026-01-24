@@ -389,8 +389,8 @@ func (h *Handler) transcribeAudio(ctx context.Context, audioData []byte, filenam
 	}
 	defer client.Close()
 
-	// Use Gemini 1.5 Flash for audio transcription
-	model := client.GenerativeModel("gemini-1.5-flash")
+	// Use Gemini 2.0 Flash for audio transcription
+	model := client.GenerativeModel("gemini-2.0-flash")
 	model.SetTemperature(0.1)
 
 	// Determine MIME type
@@ -540,7 +540,7 @@ func (h *Handler) extractEntities(ctx context.Context, text string) []string {
 	}
 	defer client.Close()
 
-	model := client.GenerativeModel("gemini-1.5-flash")
+	model := client.GenerativeModel("gemini-2.0-flash")
 	model.SetTemperature(0.1)
 
 	prompt := fmt.Sprintf(`Extrait les entités nommées de ce texte.
@@ -795,7 +795,7 @@ func (h *Handler) extractAndSaveMemories(ctx context.Context, userID, message st
 	}
 	defer client.Close()
 
-	model := client.GenerativeModel("gemini-1.5-flash")
+	model := client.GenerativeModel("gemini-2.0-flash")
 	model.SetTemperature(0.3)
 
 	// Mira-style extraction prompt with confidence and entities
@@ -934,7 +934,7 @@ func (h *Handler) generateResponse(ctx context.Context, userID, message string, 
 	}
 	defer client.Close()
 
-	model := client.GenerativeModel("gemini-1.5-flash")
+	model := client.GenerativeModel("gemini-2.0-flash")
 	model.SetTemperature(0.8)
 	model.SetMaxOutputTokens(300)
 
