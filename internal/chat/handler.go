@@ -55,6 +55,7 @@ type ChatMessage struct {
 	Content    string    `json:"content"`
 	IsFromUser bool      `json:"is_from_user"`
 	CreatedAt  time.Time `json:"created_at"`
+	AudioURL   *string   `json:"audio_url,omitempty"` // Supabase Storage path for voice messages
 }
 
 type SendMessageResponse struct {
@@ -287,6 +288,12 @@ func (h *Handler) SendVoiceMessage(w http.ResponseWriter, r *http.Request) {
 		source = "app"
 	}
 
+	// Get audio_url (Supabase Storage path) if provided
+	audioURL := r.FormValue("audio_url")
+	if audioURL != "" {
+		fmt.Printf("📎 Voice message audio_url: %s\n", audioURL)
+	}
+
 	// Transcribe audio using Gemini
 	transcript, err := h.transcribeAudio(r.Context(), audioData, header.Filename)
 	if err != nil {
@@ -311,12 +318,12 @@ func (h *Handler) SendVoiceMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Save user voice message
+	// Save user voice message (with audio_url if provided)
 	userMsgID := uuid.New().String()
 	h.db.Exec(r.Context(), `
-		INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, source)
-		VALUES ($1, $2, $3, true, 'voice', $4)
-	`, userMsgID, userID, transcript, source)
+		INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, source, audio_url)
+		VALUES ($1, $2, $3, true, 'voice', $4, $5)
+	`, userMsgID, userID, transcript, source, audioURL)
 
 	// Get user info
 	userInfo := h.getUserInfo(r.Context(), userID)
@@ -885,7 +892,7 @@ Réponds UNIQUEMENT avec le JSON array:`, message)
 
 func (h *Handler) getRecentHistory(ctx context.Context, userID string, limit int) ([]ChatMessage, error) {
 	rows, err := h.db.Query(ctx, `
-		SELECT id, user_id, content, is_from_user, created_at
+		SELECT id, user_id, content, is_from_user, created_at, audio_url
 		FROM chat_messages
 		WHERE user_id = $1
 		ORDER BY created_at DESC
@@ -899,7 +906,7 @@ func (h *Handler) getRecentHistory(ctx context.Context, userID string, limit int
 	var messages []ChatMessage
 	for rows.Next() {
 		var m ChatMessage
-		rows.Scan(&m.ID, &m.UserID, &m.Content, &m.IsFromUser, &m.CreatedAt)
+		rows.Scan(&m.ID, &m.UserID, &m.Content, &m.IsFromUser, &m.CreatedAt, &m.AudioURL)
 		messages = append(messages, m)
 	}
 
