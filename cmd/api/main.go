@@ -93,6 +93,7 @@ func main() {
 		// CHAT WITH KAI (Core)
 		// =====================
 		r.Post("/chat/message", chatHandler.SendMessage)
+		r.Post("/chat/voice", chatHandler.SendVoiceMessage)
 		r.Get("/chat/history", chatHandler.GetHistory)
 		r.Delete("/chat/history", chatHandler.ClearHistory)
 
@@ -101,6 +102,7 @@ func main() {
 		// =====================
 		r.Get("/me", usersHandler.GetProfile)
 		r.Patch("/me", usersHandler.UpdateProfile)
+		r.Delete("/me", usersHandler.DeleteAccount) // Account deletion (GDPR)
 		r.Post("/me/avatar", usersHandler.UploadAvatar)
 		r.Delete("/me/avatar", usersHandler.DeleteAvatar)
 
