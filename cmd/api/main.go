@@ -15,20 +15,27 @@ import (
 	"firelevel-backend/internal/chat"
 	"firelevel-backend/internal/database"
 	"firelevel-backend/internal/focus"
+	"firelevel-backend/internal/gmail"
+	"firelevel-backend/internal/journal"
+	"firelevel-backend/internal/notifications"
 	"firelevel-backend/internal/onboarding"
 	"firelevel-backend/internal/routines"
 	"firelevel-backend/internal/users"
 )
 
 // ===========================================
-// CLEAN BACKEND - Focus on Kai as AI Friend
+// FOCUS BACKEND - Kai AI Motivation Coach
 // ===========================================
 // Core features:
-// 1. Chat with Kai (infinite memory, focus intent detection)
-// 2. Tasks (with app blocking)
-// 3. Focus sessions
+// 1. Chat with Kai (semantic memory, persona from Gmail)
+// 2. Tasks (calendar)
+// 3. Focus sessions (pomodoro)
 // 4. Routines/habits
-// 5. User profile
+// 5. User profile + location
+// 6. Journal (audio/video entries)
+// 7. Push notifications
+// 8. Onboarding
+// 9. Gmail integration (AI persona building)
 // ===========================================
 
 func main() {
@@ -52,7 +59,7 @@ func main() {
 		log.Fatalf("Failed to setup auth middleware: %v", err)
 	}
 
-	// 3. Initialize Handlers (only essential ones)
+	// 3. Initialize Handlers
 	usersHandler := users.NewHandler(pool)
 	routinesHandler := routines.NewHandler(pool)
 	completionsHandler := routines.NewCompletionHandler(pool)
@@ -60,6 +67,9 @@ func main() {
 	onboardingHandler := onboarding.NewHandler(pool)
 	calendarHandler := calendar.NewHandler(pool)
 	chatHandler := chat.NewHandler(pool)
+	journalHandler := journal.NewHandler(pool)
+	notificationsHandler := notifications.NewHandler(pool)
+	gmailHandler := gmail.NewHandler(pool)
 
 	// 4. Setup Router
 	r := chi.NewRouter()
@@ -102,7 +112,7 @@ func main() {
 		// =====================
 		r.Get("/me", usersHandler.GetProfile)
 		r.Patch("/me", usersHandler.UpdateProfile)
-		r.Delete("/me", usersHandler.DeleteAccount) // Account deletion (GDPR)
+		r.Delete("/me", usersHandler.DeleteAccount)
 		r.Post("/me/avatar", usersHandler.UploadAvatar)
 		r.Delete("/me/avatar", usersHandler.DeleteAvatar)
 
@@ -137,11 +147,42 @@ func main() {
 		r.Get("/completions", completionsHandler.List)
 
 		// =====================
-		// ONBOARDING
+		// ONBOARDING (22 Steps)
 		// =====================
 		r.Get("/onboarding/status", onboardingHandler.GetStatus)
 		r.Put("/onboarding/progress", onboardingHandler.SaveProgress)
 		r.Post("/onboarding/complete", onboardingHandler.Complete)
+		r.Delete("/onboarding/reset", onboardingHandler.Reset)
+
+		// =====================
+		// JOURNAL (Audio/Video Entries)
+		// =====================
+		r.Get("/journal/entries", journalHandler.ListEntries)
+		r.Get("/journal/entries/{id}", journalHandler.GetEntry)
+		r.Post("/journal/entries", journalHandler.CreateEntry)
+		r.Delete("/journal/entries/{id}", journalHandler.DeleteEntry)
+		r.Get("/journal/mood-stats", journalHandler.GetMoodStats)
+
+		// =====================
+		// NOTIFICATIONS
+		// =====================
+		r.Post("/notifications/device-token", notificationsHandler.RegisterToken)
+		r.Delete("/notifications/device-token", notificationsHandler.DeleteToken)
+		r.Get("/notifications/settings", notificationsHandler.GetSettings)
+		r.Patch("/notifications/settings", notificationsHandler.UpdateSettings)
+
+		// =====================
+		// GMAIL INTEGRATION
+		// =====================
+		r.Get("/gmail/config", gmailHandler.GetConfig)
+		r.Post("/gmail/tokens", gmailHandler.SaveTokens)
+		r.Post("/gmail/analyze", gmailHandler.Analyze)
+		r.Delete("/gmail/config", gmailHandler.Disconnect)
+
+		// =====================
+		// LOCATION
+		// =====================
+		r.Post("/me/location", usersHandler.UpdateLocation)
 	})
 
 	port := os.Getenv("PORT")

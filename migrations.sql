@@ -902,3 +902,68 @@ ALTER TABLE public.users ADD COLUMN IF NOT EXISTS language text default 'fr';
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS timezone text default 'Europe/Paris';
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS notifications_enabled boolean default true;
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS morning_reminder_time text default '08:00';
+
+-- ==========================================
+-- LOCATION TRACKING
+-- User location fields for AI context
+-- ==========================================
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS latitude double precision;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS longitude double precision;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS city text;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS country text;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS neighborhood text;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS location_updated_at timestamp with time zone;
+
+-- Index for location queries
+CREATE INDEX IF NOT EXISTS idx_users_location ON public.users(city, country);
+
+-- ==========================================
+-- WORK PLACE
+-- Store user's work/school info from onboarding
+-- ==========================================
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS work_place text;
+
+-- ==========================================
+-- COMPANION (AI Assistant) Customization
+-- ==========================================
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS companion_name text default 'Kai';
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS companion_gender text default 'female';
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS avatar_style text default 'realistic';
+
+-- ==========================================
+-- GMAIL INTEGRATION CONFIG
+-- OAuth tokens and analysis state for Gmail persona building
+-- ==========================================
+CREATE TABLE IF NOT EXISTS public.gmail_config (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES auth.users ON DELETE CASCADE,
+
+  -- OAuth tokens
+  access_token text NOT NULL,
+  refresh_token text NOT NULL,
+  token_expiry timestamp with time zone NOT NULL,
+
+  -- Account info
+  google_email text,
+
+  -- Analysis state
+  is_enabled boolean DEFAULT true,
+  last_analyzed_at timestamp with time zone,
+  messages_analyzed integer DEFAULT 0,
+  persona_generated boolean DEFAULT false,
+
+  -- Timestamps
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+
+  -- One config per user
+  UNIQUE (user_id)
+);
+
+-- RLS
+ALTER TABLE public.gmail_config ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users can manage own gmail_config" ON public.gmail_config
+  USING (auth.uid() = user_id);
+
+-- Index
+CREATE INDEX IF NOT EXISTS idx_gmail_config_user ON public.gmail_config(user_id);

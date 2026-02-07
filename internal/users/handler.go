@@ -498,3 +498,66 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ---------------------------------------------------------
+// POST /me/location - Update user location
+// ---------------------------------------------------------
+type LocationUpdateRequest struct {
+	Latitude     float64  `json:"latitude"`
+	Longitude    float64  `json:"longitude"`
+	City         *string  `json:"city"`
+	Country      *string  `json:"country"`
+	Neighborhood *string  `json:"neighborhood"`
+	Timezone     *string  `json:"timezone"`
+}
+
+func (h *Handler) UpdateLocation(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+
+	var req LocationUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Update user location in database
+	query := `
+		UPDATE public.users
+		SET latitude = $2,
+		    longitude = $3,
+		    city = COALESCE($4, city),
+		    country = COALESCE($5, country),
+		    neighborhood = COALESCE($6, neighborhood),
+		    timezone = COALESCE($7, timezone),
+		    location_updated_at = NOW()
+		WHERE id = $1
+	`
+
+	_, err := h.db.Exec(r.Context(), query,
+		userID,
+		req.Latitude,
+		req.Longitude,
+		req.City,
+		req.Country,
+		req.Neighborhood,
+		req.Timezone,
+	)
+
+	if err != nil {
+		fmt.Printf("❌ Failed to update location: %v\n", err)
+		http.Error(w, "Failed to update location", http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Printf("📍 Location updated for user %s: %s, %s\n", userID, stringValue(req.City), stringValue(req.Country))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func stringValue(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+

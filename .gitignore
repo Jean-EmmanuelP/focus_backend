@@ -4,6 +4,8 @@
 # Binary
 main
 server
+api
+firelevel-backend
 *.exe
 
 # Helper/Scripts
