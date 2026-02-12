@@ -500,63 +500,106 @@ func (h *Handler) DeleteAvatar(w http.ResponseWriter, r *http.Request) {
 
 // ---------------------------------------------------------
 // DELETE /me - Delete user account (GDPR compliant)
+// Deletes ALL user data from ALL tables, then the user record.
+// Each deletion runs independently so a missing table doesn't
+// block the rest.
 // ---------------------------------------------------------
 func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
+	fmt.Printf("🗑️ Starting account deletion for user: %s\n", userID)
 
-	// Start a transaction to delete all user data
-	tx, err := h.db.Begin(r.Context())
+	type deletion struct {
+		query string
+		table string
+	}
+
+	// Order: deepest child tables first, parent tables last, user record at the end
+	deletions := []deletion{
+		// ── Chat & AI ──
+		{`DELETE FROM public.chat_messages WHERE user_id = $1`, "chat_messages"},
+		{`DELETE FROM public.chat_contexts WHERE user_id = $1`, "chat_contexts"},
+
+		// ── Journal & Reflections ──
+		{`DELETE FROM public.daily_reflections WHERE user_id = $1`, "daily_reflections"},
+		{`DELETE FROM public.journal_entries WHERE user_id = $1`, "journal_entries"},
+		{`DELETE FROM public.journal_bilans WHERE user_id = $1`, "journal_bilans"},
+
+		// ── Focus & Tasks ──
+		{`DELETE FROM public.focus_sessions WHERE user_id = $1`, "focus_sessions"},
+		{`DELETE FROM public.tasks WHERE user_id = $1`, "tasks"},
+		{`DELETE FROM public.day_plans WHERE user_id = $1`, "day_plans"},
+
+		// ── Routines (child tables first) ──
+		{`DELETE FROM public.routine_completions WHERE user_id = $1`, "routine_completions"},
+		{`DELETE FROM public.group_routines WHERE shared_by = $1`, "group_routines"},
+		{`DELETE FROM public.routine_google_events WHERE user_id = $1`, "routine_google_events"},
+		{`DELETE FROM public.routines WHERE user_id = $1`, "routines"},
+
+		// ── Quests & Areas ──
+		{`DELETE FROM public.quests WHERE user_id = $1`, "quests"},
+		{`DELETE FROM public.areas WHERE user_id = $1`, "areas"},
+
+		// ── Weekly goals (child table first) ──
+		{`DELETE FROM public.weekly_goal_items WHERE weekly_goal_id IN (SELECT id FROM public.weekly_goals WHERE user_id = $1)`, "weekly_goal_items"},
+		{`DELETE FROM public.weekly_goals WHERE user_id = $1`, "weekly_goals"},
+
+		// ── Daily tracking ──
+		{`DELETE FROM public.morning_checkins WHERE user_id = $1`, "morning_checkins"},
+		{`DELETE FROM public.evening_checkins WHERE user_id = $1`, "evening_checkins"},
+		{`DELETE FROM public.daily_intentions WHERE user_id = $1`, "daily_intentions"},
+
+		// ── Community & Social ──
+		{`DELETE FROM public.community_post_reports WHERE reporter_id = $1`, "community_post_reports"},
+		{`DELETE FROM public.community_post_likes WHERE user_id = $1`, "community_post_likes"},
+		{`DELETE FROM public.community_posts WHERE user_id = $1`, "community_posts"},
+
+		// ── Friends & Groups ──
+		{`DELETE FROM public.friend_group_members WHERE member_id = $1`, "friend_group_members"},
+		{`DELETE FROM public.friend_groups WHERE user_id = $1`, "friend_groups"},
+
+		// ── Integrations ──
+		{`DELETE FROM public.google_calendar_config WHERE user_id = $1`, "google_calendar_config"},
+		{`DELETE FROM public.gmail_config WHERE user_id = $1`, "gmail_config"},
+		{`DELETE FROM public.whatsapp_users WHERE user_id = $1`, "whatsapp_users"},
+		{`DELETE FROM public.whatsapp_verification_codes WHERE user_id = $1`, "whatsapp_verification_codes"},
+		{`DELETE FROM public.whatsapp_otp WHERE user_id = $1`, "whatsapp_otp"},
+		{`DELETE FROM public.whatsapp_pending_users WHERE converted_to_user_id = $1`, "whatsapp_pending_users"},
+		{`DELETE FROM public.phone_linking_otps WHERE user_id = $1`, "phone_linking_otps"},
+
+		// ── Device & Notifications ──
+		{`DELETE FROM public.device_tokens WHERE user_id = $1`, "device_tokens"},
+
+		// ── Onboarding ──
+		{`DELETE FROM public.user_onboarding WHERE user_id = $1`, "user_onboarding"},
+	}
+
+	// Execute each deletion independently (no transaction)
+	// so a missing/failing table doesn't block the rest
+	var failedTables []string
+	for _, d := range deletions {
+		_, err := h.db.Exec(r.Context(), d.query, userID)
+		if err != nil {
+			fmt.Printf("⚠️ Failed to delete from %s: %v\n", d.table, err)
+			failedTables = append(failedTables, d.table)
+		} else {
+			fmt.Printf("✅ Deleted from %s\n", d.table)
+		}
+	}
+
+	// Finally delete the user record itself
+	_, err := h.db.Exec(r.Context(), `DELETE FROM public.users WHERE id = $1`, userID)
 	if err != nil {
-		http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+		fmt.Printf("❌ Failed to delete user record: %v\n", err)
+		http.Error(w, "Failed to delete account", http.StatusInternalServerError)
 		return
 	}
-	defer tx.Rollback(r.Context())
 
-	// Delete all related data first (order matters for FK constraints)
-	// Each deletion is executed independently to handle missing tables gracefully
-	deletions := []string{
-		`DELETE FROM public.chat_messages WHERE user_id = $1`,
-		`DELETE FROM public.chat_contexts WHERE user_id = $1`,
-		`DELETE FROM public.daily_reflections WHERE user_id = $1`,
-		`DELETE FROM public.journal_entries WHERE user_id = $1`,
-		`DELETE FROM public.focus_sessions WHERE user_id = $1`,
-		`DELETE FROM public.tasks WHERE user_id = $1`,
-		`DELETE FROM public.routine_completions WHERE user_id = $1`,
-		`DELETE FROM public.routines WHERE user_id = $1`,
-		`DELETE FROM public.device_tokens WHERE user_id = $1`,
-		`DELETE FROM public.user_onboarding WHERE user_id = $1`,
-		`DELETE FROM public.gmail_config WHERE user_id = $1`,
-		// Finally delete the user
-		`DELETE FROM public.users WHERE id = $1`,
+	if len(failedTables) > 0 {
+		fmt.Printf("⚠️ Account deleted with some table errors for %s: %v\n", userID, failedTables)
+	} else {
+		fmt.Printf("✅ Account fully deleted: %s (all %d tables cleaned)\n", userID, len(deletions)+1)
 	}
 
-	for _, query := range deletions {
-		_, err := tx.Exec(r.Context(), query, userID)
-		if err != nil {
-			fmt.Printf("⚠️ Delete query failed: %v - rolling back and retrying without this table\n", err)
-			// If a table doesn't exist, rollback and restart without it
-			tx.Rollback(r.Context())
-			tx, err = h.db.Begin(r.Context())
-			if err != nil {
-				http.Error(w, "Failed to restart transaction", http.StatusInternalServerError)
-				return
-			}
-			continue
-		}
-	}
-
-	if err := tx.Commit(r.Context()); err != nil {
-		// Fallback: try deleting just the user (cascades might handle the rest)
-		fmt.Printf("⚠️ Transaction commit failed, trying direct user delete: %v\n", err)
-		_, fallbackErr := h.db.Exec(r.Context(), `DELETE FROM public.users WHERE id = $1`, userID)
-		if fallbackErr != nil {
-			fmt.Printf("❌ Fallback delete also failed: %v\n", fallbackErr)
-			http.Error(w, "Failed to delete account", http.StatusInternalServerError)
-			return
-		}
-	}
-
-	fmt.Printf("🗑️ Account deleted: %s\n", userID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
