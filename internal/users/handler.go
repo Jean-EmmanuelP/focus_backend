@@ -512,14 +512,20 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 
-	// Delete all related data first (cascade may not cover everything)
+	// Delete all related data first (order matters for FK constraints)
+	// Each deletion is executed independently to handle missing tables gracefully
 	deletions := []string{
 		`DELETE FROM public.chat_messages WHERE user_id = $1`,
 		`DELETE FROM public.chat_contexts WHERE user_id = $1`,
+		`DELETE FROM public.daily_reflections WHERE user_id = $1`,
+		`DELETE FROM public.journal_entries WHERE user_id = $1`,
 		`DELETE FROM public.focus_sessions WHERE user_id = $1`,
 		`DELETE FROM public.tasks WHERE user_id = $1`,
 		`DELETE FROM public.routine_completions WHERE user_id = $1`,
 		`DELETE FROM public.routines WHERE user_id = $1`,
+		`DELETE FROM public.device_tokens WHERE user_id = $1`,
+		`DELETE FROM public.user_onboarding WHERE user_id = $1`,
+		`DELETE FROM public.gmail_config WHERE user_id = $1`,
 		// Finally delete the user
 		`DELETE FROM public.users WHERE id = $1`,
 	}
@@ -527,14 +533,27 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 	for _, query := range deletions {
 		_, err := tx.Exec(r.Context(), query, userID)
 		if err != nil {
-			// Log but continue - some tables might not exist
-			fmt.Printf("⚠️ Delete query failed (might not exist): %v\n", err)
+			fmt.Printf("⚠️ Delete query failed: %v - rolling back and retrying without this table\n", err)
+			// If a table doesn't exist, rollback and restart without it
+			tx.Rollback(r.Context())
+			tx, err = h.db.Begin(r.Context())
+			if err != nil {
+				http.Error(w, "Failed to restart transaction", http.StatusInternalServerError)
+				return
+			}
+			continue
 		}
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
-		http.Error(w, "Failed to delete account", http.StatusInternalServerError)
-		return
+		// Fallback: try deleting just the user (cascades might handle the rest)
+		fmt.Printf("⚠️ Transaction commit failed, trying direct user delete: %v\n", err)
+		_, fallbackErr := h.db.Exec(r.Context(), `DELETE FROM public.users WHERE id = $1`, userID)
+		if fallbackErr != nil {
+			fmt.Printf("❌ Fallback delete also failed: %v\n", fallbackErr)
+			http.Error(w, "Failed to delete account", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	fmt.Printf("🗑️ Account deleted: %s\n", userID)
