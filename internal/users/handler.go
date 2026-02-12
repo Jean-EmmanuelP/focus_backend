@@ -18,23 +18,27 @@ import (
 
 // 1. The Model: Represents the database row in 'public.users'
 type User struct {
-	ID                   string  `json:"id"`
-	Email                *string `json:"email"`
-	Pseudo               *string `json:"pseudo"`                 // Display name / username
-	FirstName            *string `json:"first_name"`
-	LastName             *string `json:"last_name"`
-	Gender               *string `json:"gender"`                 // male, female, other, prefer_not_to_say
-	Age                  *int    `json:"age"`
-	Description          *string `json:"description"`            // Bio / tagline
-	Hobbies              *string `json:"hobbies"`                // Comma-separated or free text
-	LifeGoal             *string `json:"life_goal"`              // What they want to achieve
-	AvatarURL            *string `json:"avatar_url"`
-	DayVisibility        *string `json:"day_visibility"`         // public, crew, private
-	ProductivityPeak     *string `json:"productivity_peak"`      // morning, afternoon, evening
-	Language             *string `json:"language"`               // fr, en
-	Timezone             *string `json:"timezone"`               // Europe/Paris, etc.
-	NotificationsEnabled *bool   `json:"notifications_enabled"`  // true/false
-	MorningReminderTime  *string `json:"morning_reminder_time"`  // HH:MM format
+	ID                   string     `json:"id"`
+	Email                *string    `json:"email"`
+	Pseudo               *string    `json:"pseudo"`                 // Display name / username
+	FirstName            *string    `json:"first_name"`
+	LastName             *string    `json:"last_name"`
+	Gender               *string    `json:"gender"`                 // male, female, other, prefer_not_to_say
+	Age                  *int       `json:"age"`
+	Birthday             *time.Time `json:"birthday"`               // Date of birth
+	Description          *string    `json:"description"`            // Bio / tagline
+	Hobbies              *string    `json:"hobbies"`                // Comma-separated or free text
+	LifeGoal             *string    `json:"life_goal"`              // What they want to achieve
+	AvatarURL            *string    `json:"avatar_url"`
+	DayVisibility        *string    `json:"day_visibility"`         // public, crew, private
+	ProductivityPeak     *string    `json:"productivity_peak"`      // morning, afternoon, evening
+	Language             *string    `json:"language"`               // fr, en
+	Timezone             *string    `json:"timezone"`               // Europe/Paris, etc.
+	NotificationsEnabled *bool      `json:"notifications_enabled"`  // true/false
+	MorningReminderTime  *string    `json:"morning_reminder_time"`  // HH:MM format
+	CompanionName        *string    `json:"companion_name"`         // AI companion name
+	CompanionGender      *string    `json:"companion_gender"`       // AI companion gender
+	AvatarStyle          *string    `json:"avatar_style"`           // Avatar style choice
 }
 
 // 2. The DTO: Represents what a user is ALLOWED to update
@@ -45,6 +49,7 @@ type UpdateUserRequest struct {
 	LastName             *string `json:"last_name"`
 	Gender               *string `json:"gender"`
 	Age                  *int    `json:"age"`
+	Birthday             *string `json:"birthday"` // Format: YYYY-MM-DD
 	Description          *string `json:"description"`
 	Hobbies              *string `json:"hobbies"`
 	LifeGoal             *string `json:"life_goal"`
@@ -54,6 +59,9 @@ type UpdateUserRequest struct {
 	Timezone             *string `json:"timezone"`
 	NotificationsEnabled *bool   `json:"notifications_enabled"`
 	MorningReminderTime  *string `json:"morning_reminder_time"`
+	CompanionName        *string `json:"companion_name"`
+	CompanionGender      *string `json:"companion_gender"`
+	AvatarStyle          *string `json:"avatar_style"`
 }
 
 // 3. The Handler: Holds dependencies (the database client)
@@ -74,14 +82,15 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 
 	// RAW SQL Query with all profile fields
 	query := `
-		SELECT id, email, pseudo, first_name, last_name, gender, age,
+		SELECT id, email, pseudo, first_name, last_name, gender, age, birthday,
 		       description, hobbies, life_goal, avatar_url,
 		       COALESCE(day_visibility, 'crew') as day_visibility,
 		       productivity_peak,
 		       COALESCE(language, 'fr') as language,
 		       COALESCE(timezone, 'Europe/Paris') as timezone,
 		       COALESCE(notifications_enabled, true) as notifications_enabled,
-		       COALESCE(morning_reminder_time, '08:00') as morning_reminder_time
+		       COALESCE(morning_reminder_time, '08:00') as morning_reminder_time,
+		       companion_name, companion_gender, avatar_style
 		FROM public.users
 		WHERE id = $1
 	`
@@ -95,6 +104,7 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		&user.LastName,
 		&user.Gender,
 		&user.Age,
+		&user.Birthday,
 		&user.Description,
 		&user.Hobbies,
 		&user.LifeGoal,
@@ -105,6 +115,9 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		&user.Timezone,
 		&user.NotificationsEnabled,
 		&user.MorningReminderTime,
+		&user.CompanionName,
+		&user.CompanionGender,
+		&user.AvatarStyle,
 	)
 
 	if err != nil {
@@ -223,6 +236,30 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		argId++
 	}
 
+	if req.Birthday != nil {
+		setParts = append(setParts, fmt.Sprintf("birthday = $%d", argId))
+		args = append(args, *req.Birthday)
+		argId++
+	}
+
+	if req.CompanionName != nil {
+		setParts = append(setParts, fmt.Sprintf("companion_name = $%d", argId))
+		args = append(args, *req.CompanionName)
+		argId++
+	}
+
+	if req.CompanionGender != nil {
+		setParts = append(setParts, fmt.Sprintf("companion_gender = $%d", argId))
+		args = append(args, *req.CompanionGender)
+		argId++
+	}
+
+	if req.AvatarStyle != nil {
+		setParts = append(setParts, fmt.Sprintf("avatar_style = $%d", argId))
+		args = append(args, *req.AvatarStyle)
+		argId++
+	}
+
 	if len(setParts) == 0 {
 		http.Error(w, "No fields to update", http.StatusBadRequest)
 		return
@@ -232,10 +269,12 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	args = append(args, userID)
 	query := fmt.Sprintf(
 		`UPDATE public.users SET %s WHERE id = $%d
-		 RETURNING id, email, pseudo, first_name, last_name, gender, age, description, hobbies, life_goal, avatar_url,
+		 RETURNING id, email, pseudo, first_name, last_name, gender, age, birthday,
+		           description, hobbies, life_goal, avatar_url,
 		           COALESCE(day_visibility, 'crew'), productivity_peak,
 		           COALESCE(language, 'fr'), COALESCE(timezone, 'Europe/Paris'),
-		           COALESCE(notifications_enabled, true), COALESCE(morning_reminder_time, '08:00')`,
+		           COALESCE(notifications_enabled, true), COALESCE(morning_reminder_time, '08:00'),
+		           companion_name, companion_gender, avatar_style`,
 		strings.Join(setParts, ", "),
 		argId,
 	)
@@ -250,6 +289,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		&updatedUser.LastName,
 		&updatedUser.Gender,
 		&updatedUser.Age,
+		&updatedUser.Birthday,
 		&updatedUser.Description,
 		&updatedUser.Hobbies,
 		&updatedUser.LifeGoal,
@@ -260,6 +300,9 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		&updatedUser.Timezone,
 		&updatedUser.NotificationsEnabled,
 		&updatedUser.MorningReminderTime,
+		&updatedUser.CompanionName,
+		&updatedUser.CompanionGender,
+		&updatedUser.AvatarStyle,
 	)
 
 	if err != nil {
@@ -559,5 +602,145 @@ func stringValue(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// ---------------------------------------------------------
+// PUT /me/email - Change email via Supabase Auth
+// ---------------------------------------------------------
+type ChangeEmailRequest struct {
+	NewEmail string `json:"new_email"`
+}
+
+func (h *Handler) ChangeEmail(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	accessToken := r.Header.Get("Authorization")
+	if strings.HasPrefix(accessToken, "Bearer ") {
+		accessToken = strings.TrimPrefix(accessToken, "Bearer ")
+	}
+
+	var req ChangeEmailRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.NewEmail == "" {
+		http.Error(w, "Email is required", http.StatusBadRequest)
+		return
+	}
+
+	// Call Supabase Auth API to update email
+	supabaseURL := os.Getenv("SUPABASE_URL")
+	if supabaseURL == "" {
+		http.Error(w, "Server configuration error", http.StatusInternalServerError)
+		return
+	}
+
+	updateURL := supabaseURL + "/auth/v1/user"
+	payload := map[string]string{"email": req.NewEmail}
+	payloadBytes, _ := json.Marshal(payload)
+
+	httpReq, err := http.NewRequest("PUT", updateURL, strings.NewReader(string(payloadBytes)))
+	if err != nil {
+		http.Error(w, "Failed to create request", http.StatusInternalServerError)
+		return
+	}
+
+	httpReq.Header.Set("Authorization", "Bearer "+accessToken)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("apikey", os.Getenv("SUPABASE_KEY"))
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		fmt.Printf("❌ Supabase auth error: %v\n", err)
+		http.Error(w, "Failed to update email", http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Printf("❌ Supabase auth error: %s - %s\n", resp.Status, string(body))
+		http.Error(w, "Failed to update email: "+string(body), resp.StatusCode)
+		return
+	}
+
+	fmt.Printf("✅ Email change initiated for user %s to %s\n", userID, req.NewEmail)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"message": "Confirmation emails sent to both addresses",
+	})
+}
+
+// ---------------------------------------------------------
+// PUT /me/password - Change password via Supabase Auth
+// ---------------------------------------------------------
+type ChangePasswordRequest struct {
+	NewPassword string `json:"new_password"`
+}
+
+func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+	accessToken := r.Header.Get("Authorization")
+	if strings.HasPrefix(accessToken, "Bearer ") {
+		accessToken = strings.TrimPrefix(accessToken, "Bearer ")
+	}
+
+	var req ChangePasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.NewPassword == "" || len(req.NewPassword) < 6 {
+		http.Error(w, "Password must be at least 6 characters", http.StatusBadRequest)
+		return
+	}
+
+	// Call Supabase Auth API to update password
+	supabaseURL := os.Getenv("SUPABASE_URL")
+	if supabaseURL == "" {
+		http.Error(w, "Server configuration error", http.StatusInternalServerError)
+		return
+	}
+
+	updateURL := supabaseURL + "/auth/v1/user"
+	payload := map[string]string{"password": req.NewPassword}
+	payloadBytes, _ := json.Marshal(payload)
+
+	httpReq, err := http.NewRequest("PUT", updateURL, strings.NewReader(string(payloadBytes)))
+	if err != nil {
+		http.Error(w, "Failed to create request", http.StatusInternalServerError)
+		return
+	}
+
+	httpReq.Header.Set("Authorization", "Bearer "+accessToken)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("apikey", os.Getenv("SUPABASE_KEY"))
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		fmt.Printf("❌ Supabase auth error: %v\n", err)
+		http.Error(w, "Failed to update password", http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Printf("❌ Supabase auth error: %s - %s\n", resp.Status, string(body))
+		http.Error(w, "Failed to update password: "+string(body), resp.StatusCode)
+		return
+	}
+
+	fmt.Printf("✅ Password changed for user %s\n", userID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"message": "Password updated successfully",
+	})
 }
 

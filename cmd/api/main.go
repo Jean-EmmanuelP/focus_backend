@@ -115,6 +115,8 @@ func main() {
 		r.Delete("/me", usersHandler.DeleteAccount)
 		r.Post("/me/avatar", usersHandler.UploadAvatar)
 		r.Delete("/me/avatar", usersHandler.DeleteAvatar)
+		r.Put("/me/email", usersHandler.ChangeEmail)
+		r.Put("/me/password", usersHandler.ChangePassword)
 
 		// =====================
 		// TASKS (Calendar)
