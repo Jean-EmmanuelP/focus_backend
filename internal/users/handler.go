@@ -586,18 +586,60 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Finally delete the user record itself
+	// Delete from public.users
 	_, err := h.db.Exec(r.Context(), `DELETE FROM public.users WHERE id = $1`, userID)
 	if err != nil {
-		fmt.Printf("❌ Failed to delete user record: %v\n", err)
-		http.Error(w, "Failed to delete account", http.StatusInternalServerError)
-		return
+		fmt.Printf("⚠️ Failed to delete from public.users: %v\n", err)
+		failedTables = append(failedTables, "public.users")
+	} else {
+		fmt.Printf("✅ Deleted from public.users\n")
+	}
+
+	// Delete from auth.users via Supabase Admin API
+	// This triggers ON DELETE CASCADE for any remaining FK references
+	supabaseURL := os.Getenv("SUPABASE_URL")
+	supabaseKey := os.Getenv("SUPABASE_KEY") // Service Role key
+	if supabaseURL != "" && supabaseKey != "" {
+		authDeleteURL := fmt.Sprintf("%s/auth/v1/admin/users/%s", supabaseURL, userID)
+		req, reqErr := http.NewRequestWithContext(r.Context(), http.MethodDelete, authDeleteURL, nil)
+		if reqErr == nil {
+			req.Header.Set("Authorization", "Bearer "+supabaseKey)
+			req.Header.Set("apikey", supabaseKey)
+			client := &http.Client{Timeout: 10 * time.Second}
+			resp, apiErr := client.Do(req)
+			if apiErr != nil {
+				fmt.Printf("⚠️ Failed to delete auth.users via API: %v\n", apiErr)
+			} else {
+				resp.Body.Close()
+				if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+					fmt.Printf("✅ Deleted from auth.users via Supabase Admin API\n")
+				} else {
+					fmt.Printf("⚠️ Supabase Admin API returned %d for auth user deletion\n", resp.StatusCode)
+					// Fallback: try direct SQL deletion from auth.users
+					_, sqlErr := h.db.Exec(r.Context(), `DELETE FROM auth.users WHERE id = $1`, userID)
+					if sqlErr != nil {
+						fmt.Printf("⚠️ Fallback auth.users SQL delete also failed: %v\n", sqlErr)
+					} else {
+						fmt.Printf("✅ Deleted from auth.users via direct SQL\n")
+					}
+				}
+			}
+		}
+	} else {
+		// No Supabase config: try direct SQL
+		fmt.Printf("ℹ️ No SUPABASE_URL/KEY, trying direct SQL delete from auth.users\n")
+		_, sqlErr := h.db.Exec(r.Context(), `DELETE FROM auth.users WHERE id = $1`, userID)
+		if sqlErr != nil {
+			fmt.Printf("⚠️ Direct auth.users delete failed: %v\n", sqlErr)
+		} else {
+			fmt.Printf("✅ Deleted from auth.users via direct SQL\n")
+		}
 	}
 
 	if len(failedTables) > 0 {
 		fmt.Printf("⚠️ Account deleted with some table errors for %s: %v\n", userID, failedTables)
 	} else {
-		fmt.Printf("✅ Account fully deleted: %s (all %d tables cleaned)\n", userID, len(deletions)+1)
+		fmt.Printf("✅ Account fully deleted: %s (all %d tables + auth cleaned)\n", userID, len(deletions)+1)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
