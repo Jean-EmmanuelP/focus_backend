@@ -254,12 +254,23 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		source = "app"
 	}
 
-	// Save user message
-	userMsgID := uuid.New().String()
-	h.db.Exec(r.Context(), `
-		INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, source)
-		VALUES ($1, $2, $3, true, 'text', $4)
-	`, userMsgID, userID, req.Content, source)
+	// Check if this is a greeting request (first message from coach)
+	isGreeting := req.Content == "__greeting__"
+
+	// Only save user message if it's NOT a greeting request
+	if !isGreeting {
+		userMsgID := uuid.New().String()
+		h.db.Exec(r.Context(), `
+			INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, source)
+			VALUES ($1, $2, $3, true, 'text', $4)
+		`, userMsgID, userID, req.Content, source)
+	}
+
+	// Replace greeting trigger with a prompt for the AI
+	messageForAI := req.Content
+	if isGreeting {
+		messageForAI = "[SYSTEM: L'utilisateur vient d'ouvrir l'app pour la première fois. Envoie un message de bienvenue chaleureux et personnel. Présente-toi brièvement avec ton nom, et demande-lui comment tu peux l'aider aujourd'hui. Sois bref et engageant.]"
+	}
 
 	// Get user info BEFORE updating streak (so isFirstSession detection works)
 	userInfo := h.getUserInfo(r.Context(), userID)
@@ -269,13 +280,13 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	streak.UpdateUserStreak(r.Context(), h.db, userID)
 
 	// Get relevant memories
-	memories := h.getRelevantMemories(r.Context(), userID, req.Content)
+	memories := h.getRelevantMemories(r.Context(), userID, messageForAI)
 
 	// Get recent history (last 20 messages)
 	history, _ := h.getRecentHistory(r.Context(), userID, 20)
 
 	// Generate AI response
-	response, err := h.generateResponse(r.Context(), userID, req.Content, userInfo, memories, history)
+	response, err := h.generateResponse(r.Context(), userID, messageForAI, userInfo, memories, history)
 	if err != nil {
 		fmt.Printf("AI error: %v\n", err)
 		response = &SendMessageResponse{
@@ -283,8 +294,10 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Extract and save memories from user message (async)
-	go h.extractAndSaveMemories(context.Background(), userID, req.Content)
+	// Extract and save memories from user message (async, skip for greetings)
+	if !isGreeting {
+		go h.extractAndSaveMemories(context.Background(), userID, req.Content)
+	}
 
 	// If focus intent detected, create task
 	if response.Action != nil && response.Action.Type == "focus_scheduled" && response.Action.TaskData != nil {
@@ -599,7 +612,7 @@ func (h *Handler) getUserInfo(ctx context.Context, userID string) *UserInfo {
 	// User profile + companion name + streak
 	h.db.QueryRow(ctx, `
 		SELECT COALESCE(pseudo, first_name, 'ami'),
-		       COALESCE(companion_name, 'Kai'),
+		       COALESCE(companion_name, 'ton coach'),
 		       COALESCE(current_streak, 0)
 		FROM users WHERE id = $1
 	`, userID).Scan(&info.Name, &info.CompanionName, &info.CurrentStreak)
