@@ -967,3 +967,15 @@ CREATE POLICY "Users can manage own gmail_config" ON public.gmail_config
 
 -- Index
 CREATE INDEX IF NOT EXISTS idx_gmail_config_user ON public.gmail_config(user_id);
+
+-- ==========================================
+-- STREAK TRACKING
+-- last_active_date tracks the last day the user engaged
+-- Streak increments if consecutive days, resets otherwise
+-- ==========================================
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS last_active_date date;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS current_streak integer DEFAULT 0;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS longest_streak integer DEFAULT 0;
+
+-- Unique constraint on areas (user_id, slug) for upsert
+CREATE UNIQUE INDEX IF NOT EXISTS idx_areas_user_slug ON public.areas(user_id, slug);

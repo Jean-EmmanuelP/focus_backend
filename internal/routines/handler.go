@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"firelevel-backend/internal/auth"
+	"firelevel-backend/internal/streak"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -259,6 +260,8 @@ func (h *Handler) Complete(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("⚠️ Routine completion already exists for %s (no rows inserted)\n", completionDate)
 	} else {
 		fmt.Printf("✅ Routine completion created successfully for %s\n", completionDate)
+		// Update streak when a routine is completed
+		streak.UpdateUserStreak(r.Context(), h.db, userID)
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -319,6 +322,9 @@ func (h *Handler) BatchComplete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
 		return
 	}
+
+	// Update streak when routines are batch completed
+	streak.UpdateUserStreak(r.Context(), h.db, userID)
 
 	w.WriteHeader(http.StatusOK)
 }

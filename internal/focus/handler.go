@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"firelevel-backend/internal/auth"
+	"firelevel-backend/internal/streak"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -94,6 +95,11 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Update streak when a focus session is completed
+	if status == "completed" {
+		streak.UpdateUserStreak(r.Context(), h.db, userID)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(s)
 }
@@ -152,6 +158,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Failed to update session", http.StatusInternalServerError)
 		return
+	}
+
+	// Update streak when session is completed
+	if req.Status != nil && *req.Status == "completed" {
+		streak.UpdateUserStreak(r.Context(), h.db, userID)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"firelevel-backend/internal/auth"
+	"firelevel-backend/internal/streak"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -617,6 +618,11 @@ func (h *Handler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 		task.ScheduledEnd = scheduledEndStr
 	}
 
+	// Update streak when task is completed via UpdateTask
+	if req.Status != nil && *req.Status == "completed" {
+		streak.UpdateUserStreak(r.Context(), h.db, userID)
+	}
+
 	// Sync to Google Calendar (async, don't block response)
 	if h.googleCalSvc != nil {
 		go func() {
@@ -671,6 +677,9 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	if task.QuestID != nil {
 		h.updateQuestProgress(r.Context(), userID, *task.QuestID, task.ID, task.ActualMinutes)
 	}
+
+	// Update streak when a task is completed
+	streak.UpdateUserStreak(r.Context(), h.db, userID)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(task)

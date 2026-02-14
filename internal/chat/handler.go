@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"firelevel-backend/internal/auth"
+	"firelevel-backend/internal/streak"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/generative-ai-go/genai"
@@ -45,8 +46,9 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 // ============================================
 
 type SendMessageRequest struct {
-	Content string `json:"content"`
-	Source  string `json:"source,omitempty"` // "app" or "whatsapp"
+	Content     string `json:"content"`
+	Source      string `json:"source,omitempty"`       // "app" or "whatsapp"
+	AppsBlocked bool   `json:"apps_blocked,omitempty"` // Whether apps are currently blocked on device
 }
 
 type ChatMessage struct {
@@ -98,33 +100,86 @@ type SemanticMemory struct {
 }
 
 // ===========================================
-// KAI PERSONA - Empathetic Friend
+// COACH PERSONA - Life Coach
 // ===========================================
 
-const kaiSystemPrompt = `Tu es Kai, un ami proche et empathique.
+// kaiSystemPromptTemplate uses %s for the companion name
+const kaiSystemPromptTemplate = `Tu es %s, un coach de vie personnel.
 
 QUI TU ES:
-- Tu es un ami, pas un assistant ou un coach
-- Tu écoutes vraiment et tu comprends
-- Tu te souviens de tout ce que l'utilisateur te dit
-- Tu es là pour soutenir, pas pour juger
+- Un coach exigeant mais bienveillant — tu pousses l'utilisateur à se dépasser
+- Tu connais ses objectifs, ses routines, ses tâches et sa progression
+- Tu te souviens de tout ce qu'il te dit
+- Tu le challenges quand il procrastine, tu célèbres quand il avance vraiment
+- Tu es là aussi dans les moments difficiles — un bon coach sait écouter
 
-COMMENT TU PARLES:
+COMMENT TU PARLES (c'est un CHAT, pas un email):
 - Tutoiement toujours
-- Réponses courtes et naturelles (1-2 phrases max)
-- Tu réagis d'abord émotionnellement, puis tu poses des questions
-- Jamais de phrases bateau genre "Je comprends" ou "N'hésite pas"
-- Un emoji de temps en temps si c'est naturel, pas systématique
+- Réponses courtes et naturelles — 2-4 phrases max, comme un texto
+- Direct, pas de blabla motivation LinkedIn
+- Tu mentionnes ses vraies données quand c'est pertinent (tâches, routines, quests, streak)
+- Un emoji max par message, seulement si naturel
+- Tu finis souvent par une question ou une action concrète
 
-CE QUE TU SAIS FAIRE:
-1. ÉCOUTER - Tu es là quand ça va pas
-2. MOTIVER - Tu célèbres les petites victoires
-3. AIDER À FOCUS - Quand on te dit des horaires, tu crées une session focus
+PREMIER CONTACT (si le contexte montre "PREMIÈRE SÉANCE"):
+C'est la toute première rencontre. Tu dois établir la relation et poser les fondations :
+1. Accueille-le chaleureusement mais brièvement
+2. Demande-lui ce qu'il veut améliorer dans sa vie (pas "aujourd'hui", dans sa VIE)
+3. Quand il te donne ses objectifs, crée ses premières quests avec create_quest
+4. Propose-lui des routines quotidiennes adaptées avec create_routine
+5. Guide-le étape par étape — c'est OK de faire des messages un peu plus longs ici
+Exemple de flow :
+- "Bienvenue. Je suis ton coach. Dis-moi : c'est quoi le truc que tu veux vraiment changer dans ta vie ?"
+- (il répond "être plus discipliné, lire plus, faire du sport")
+- Tu crées les quests et routines, puis tu lui dis "C'est noté. Je t'ai créé tes objectifs. On commence par quoi aujourd'hui ?"
+
+UTILISATEUR ACTIF (si le contexte a des tâches/routines/quests):
+- Le matin → orienter vers la planification, mentionner les tâches du jour
+- L'après-midi → checker l'avancement, pousser si rien n'est fait
+- Le soir → bilan, célébrer ou challenger
+- Si des routines ne sont pas faites → les mentionner naturellement
+- Si le streak est long → le valoriser
+- Si des tâches sont en retard → demander ce qui bloque
+- Si une quest avance bien → encourager à maintenir le rythme
+- Si l'utilisateur dit "ça va pas" → écouter d'abord, coacher après
+
+CRÉATION DE QUESTS:
+Quand l'utilisateur exprime des objectifs ("je veux lire 12 livres", "perdre 5kg", "apprendre le piano"), tu peux en créer PLUSIEURS d'un coup :
+{
+  "reply": "C'est posé. 3 objectifs créés, on va les traquer ensemble 💪",
+  "create_quests": [
+    {"title": "Lire 12 livres", "target_value": 12, "area": "learning"},
+    {"title": "Perdre 5kg", "target_value": 5, "area": "health"}
+  ]
+}
+Areas possibles: health, learning, career, relationships, creativity, other
+
+CRÉATION DE ROUTINES:
+Quand l'utilisateur veut créer des habitudes, tu peux en créer PLUSIEURS d'un coup.
+Si l'utilisateur mentionne une heure, ajoute "scheduled_time" au format "HH:MM".
+{
+  "reply": "3 routines ajoutées. On commence demain matin.",
+  "create_routines": [
+    {"title": "Méditation", "frequency": "daily", "scheduled_time": "07:00"},
+    {"title": "Sport", "frequency": "daily", "scheduled_time": "18:00"},
+    {"title": "Lire 30 min", "frequency": "daily"}
+  ]
+}
+
+MISE À JOUR DE QUEST:
+Quand l'utilisateur dit avoir progressé ("j'ai lu un chapitre", "j'ai perdu 1kg", "j'ai couru aujourd'hui"), incrémente la quest correspondante :
+{
+  "reply": "Noté ! T'es à 5/12 livres maintenant. Continue 📚",
+  "update_quest": {
+    "title": "Lire 12 livres",
+    "increment": 1
+  }
+}
 
 DÉTECTION DE FOCUS:
 Si l'utilisateur mentionne vouloir travailler avec des horaires ("je dois bosser de 14h à 16h", "focus de 9h à 11h30"):
 {
-  "reply": "C'est noté, je bloque tes apps! 🔒",
+  "reply": "C'est noté, je bloque tes apps 🔒",
   "focus_intent": {
     "detected": true,
     "title": "Focus",
@@ -134,17 +189,42 @@ Si l'utilisateur mentionne vouloir travailler avec des horaires ("je dois bosser
   }
 }
 
+BLOCAGE D'APPS:
+Tu peux bloquer les apps de l'utilisateur pour l'aider à se concentrer.
+- Sur demande : "bloque mes apps", "bloque les apps pendant 2h", etc.
+- De ta propre initiative : quand l'utilisateur a des tâches importantes et procrastine
+Pour bloquer MAINTENANT (sans horaire spécifique):
+{
+  "reply": "C'est parti, je bloque tes apps 🔒",
+  "block_now": true
+}
+
+DEMANDE DE DÉBLOCAGE:
+- TOUJOURS demander la raison AVANT de débloquer
+- Raison valable (urgence, appel, app nécessaire) → débloquer
+- Raison faible (scroller, "juste 5 min", ennui) → refuser fermement
+Pour débloquer :
+{
+  "reply": "OK, je débloque. Mais reviens vite 💪",
+  "unblock_now": true
+}
+
 RÈGLES STRICTES:
-- JAMAIS de réponses longues
-- JAMAIS de listes à puces
-- JAMAIS de "En tant qu'IA..."
-- JAMAIS de conseils non sollicités
+- Réponses courtes (2-4 phrases), sauf pour le premier contact où tu peux être plus guidant
+- JAMAIS de listes à puces dans tes réponses
+- JAMAIS de "En tant qu'IA..." ou "N'hésite pas"
+- Tu peux créer PLUSIEURS quests ou routines dans un même message en faisant plusieurs réponses
 - TOUJOURS répondre en JSON
 
-Format de réponse:
+Format de réponse (inclure seulement les champs pertinents):
 {
-  "reply": "Ta réponse courte et naturelle",
-  "focus_intent": null
+  "reply": "Ta réponse de coach",
+  "focus_intent": null,
+  "block_now": false,
+  "unblock_now": false,
+  "create_quests": [],
+  "create_routines": [],
+  "update_quest": null
 }`
 
 // ===========================================
@@ -181,8 +261,12 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		VALUES ($1, $2, $3, true, 'text', $4)
 	`, userMsgID, userID, req.Content, source)
 
-	// Get user info
+	// Get user info BEFORE updating streak (so isFirstSession detection works)
 	userInfo := h.getUserInfo(r.Context(), userID)
+	userInfo.AppsBlocked = req.AppsBlocked
+
+	// Update streak (user engaged today by sending a message)
+	streak.UpdateUserStreak(r.Context(), h.db, userID)
 
 	// Get relevant memories
 	memories := h.getRelevantMemories(r.Context(), userID, req.Content)
@@ -441,10 +525,53 @@ Si l'audio est inaudible ou vide, retourne une chaîne vide.`)
 
 type UserInfo struct {
 	Name           string
+	CompanionName  string
 	FocusToday     int
 	FocusWeek      int
 	TasksToday     int
 	TasksCompleted int
+	CurrentStreak  int
+	// Detailed data for coach context
+	Tasks    []TaskSummary
+	Routines []RoutineSummary
+	Quests   []QuestSummary
+	// Check-in status
+	HasMorningCheckin bool
+	HasEveningReview  bool
+	// Last reflection
+	LastReflectionWin     *string
+	LastReflectionBlocker *string
+	LastReflectionGoal    *string
+	// Weekly goals
+	WeeklyGoals []WeeklyGoalSummary
+	// Latest mood
+	LatestMood *string
+	// Device state (from client)
+	AppsBlocked bool
+}
+
+type TaskSummary struct {
+	Title     string
+	Status    string
+	TimeBlock string
+	StartTime *string
+}
+
+type RoutineSummary struct {
+	Title       string
+	IsCompleted bool
+}
+
+type QuestSummary struct {
+	Title        string
+	CurrentValue int
+	TargetValue  int
+	AreaName     *string
+}
+
+type WeeklyGoalSummary struct {
+	Content     string
+	IsCompleted bool
 }
 
 // ScoredMemory includes all scoring factors
@@ -469,10 +596,15 @@ type ExtractedFact struct {
 func (h *Handler) getUserInfo(ctx context.Context, userID string) *UserInfo {
 	info := &UserInfo{}
 
+	// User profile + companion name + streak
 	h.db.QueryRow(ctx, `
-		SELECT COALESCE(pseudo, first_name, 'ami') FROM users WHERE id = $1
-	`, userID).Scan(&info.Name)
+		SELECT COALESCE(pseudo, first_name, 'ami'),
+		       COALESCE(companion_name, 'Kai'),
+		       COALESCE(current_streak, 0)
+		FROM users WHERE id = $1
+	`, userID).Scan(&info.Name, &info.CompanionName, &info.CurrentStreak)
 
+	// Focus stats
 	h.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(duration_minutes), 0) FROM focus_sessions
 		WHERE user_id = $1 AND DATE(started_at) = CURRENT_DATE AND status = 'completed'
@@ -483,10 +615,119 @@ func (h *Handler) getUserInfo(ctx context.Context, userID string) *UserInfo {
 		WHERE user_id = $1 AND started_at >= DATE_TRUNC('week', CURRENT_DATE) AND status = 'completed'
 	`, userID).Scan(&info.FocusWeek)
 
+	// Tasks count
 	h.db.QueryRow(ctx, `
 		SELECT COUNT(*), COUNT(*) FILTER (WHERE status = 'completed')
 		FROM tasks WHERE user_id = $1 AND date = CURRENT_DATE
 	`, userID).Scan(&info.TasksToday, &info.TasksCompleted)
+
+	// Today's tasks (detailed, max 10)
+	taskRows, err := h.db.Query(ctx, `
+		SELECT title, COALESCE(status, 'pending'), COALESCE(time_block, 'morning'),
+		       CASE WHEN scheduled_start IS NOT NULL THEN to_char(scheduled_start, 'HH24:MI') END
+		FROM tasks WHERE user_id = $1 AND date = CURRENT_DATE
+		ORDER BY CASE time_block WHEN 'morning' THEN 1 WHEN 'afternoon' THEN 2 WHEN 'evening' THEN 3 ELSE 4 END,
+		         scheduled_start NULLS LAST
+		LIMIT 10
+	`, userID)
+	if err == nil {
+		defer taskRows.Close()
+		for taskRows.Next() {
+			var t TaskSummary
+			taskRows.Scan(&t.Title, &t.Status, &t.TimeBlock, &t.StartTime)
+			info.Tasks = append(info.Tasks, t)
+		}
+	}
+
+	// Routines with today's completion status
+	routineRows, err := h.db.Query(ctx, `
+		SELECT r.title,
+		       EXISTS(
+		           SELECT 1 FROM routine_completions rc
+		           WHERE rc.routine_id = r.id AND rc.user_id = $1
+		           AND DATE(rc.completed_at) = CURRENT_DATE
+		       ) as is_completed
+		FROM routines r
+		WHERE r.user_id = $1
+		ORDER BY r.created_at
+		LIMIT 10
+	`, userID)
+	if err == nil {
+		defer routineRows.Close()
+		for routineRows.Next() {
+			var r RoutineSummary
+			routineRows.Scan(&r.Title, &r.IsCompleted)
+			info.Routines = append(info.Routines, r)
+		}
+	}
+
+	// Active quests with progress
+	questRows, err := h.db.Query(ctx, `
+		SELECT q.title, q.current_value, q.target_value, a.name
+		FROM quests q
+		LEFT JOIN areas a ON a.id = q.area_id
+		WHERE q.user_id = $1 AND q.status = 'active'
+		ORDER BY q.created_at
+		LIMIT 8
+	`, userID)
+	if err == nil {
+		defer questRows.Close()
+		for questRows.Next() {
+			var q QuestSummary
+			questRows.Scan(&q.Title, &q.CurrentValue, &q.TargetValue, &q.AreaName)
+			info.Quests = append(info.Quests, q)
+		}
+	}
+
+	// Morning check-in status
+	var morningCount int
+	h.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM daily_reflections
+		WHERE user_id = $1 AND date = CURRENT_DATE AND reflection_type = 'morning'
+	`, userID).Scan(&morningCount)
+	info.HasMorningCheckin = morningCount > 0
+
+	// Evening review status
+	var eveningCount int
+	h.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM daily_reflections
+		WHERE user_id = $1 AND date = CURRENT_DATE AND reflection_type = 'evening'
+	`, userID).Scan(&eveningCount)
+	info.HasEveningReview = eveningCount > 0
+
+	// Last reflection (yesterday or today)
+	h.db.QueryRow(ctx, `
+		SELECT biggest_win, challenges, goal_for_tomorrow
+		FROM daily_reflections
+		WHERE user_id = $1
+		ORDER BY date DESC LIMIT 1
+	`, userID).Scan(&info.LastReflectionWin, &info.LastReflectionBlocker, &info.LastReflectionGoal)
+
+	// Weekly goals for current week
+	weeklyRows, err := h.db.Query(ctx, `
+		SELECT wgi.content, wgi.is_completed
+		FROM weekly_goal_items wgi
+		JOIN weekly_goals wg ON wg.id = wgi.weekly_goal_id
+		WHERE wg.user_id = $1
+		AND wg.week_start_date = DATE_TRUNC('week', CURRENT_DATE)::date
+		ORDER BY wgi.position
+		LIMIT 5
+	`, userID)
+	if err == nil {
+		defer weeklyRows.Close()
+		for weeklyRows.Next() {
+			var g WeeklyGoalSummary
+			weeklyRows.Scan(&g.Content, &g.IsCompleted)
+			info.WeeklyGoals = append(info.WeeklyGoals, g)
+		}
+	}
+
+	// Latest mood from journal
+	h.db.QueryRow(ctx, `
+		SELECT mood FROM journal_entries
+		WHERE user_id = $1 AND mood IS NOT NULL
+		ORDER BY entry_date DESC LIMIT 1
+	`, userID).Scan(&info.LatestMood)
 
 	return info
 }
@@ -936,19 +1177,113 @@ func (h *Handler) generateResponse(ctx context.Context, userID, message string, 
 
 	model := client.GenerativeModel("gemini-2.0-flash")
 	model.SetTemperature(0.8)
-	model.SetMaxOutputTokens(300)
+	model.SetMaxOutputTokens(500)
 
-	// Build context
+	// Build rich coach context
+	streakStr := ""
+	if userInfo.CurrentStreak > 0 {
+		jourStr := "jour"
+		if userInfo.CurrentStreak > 1 {
+			jourStr = "jours"
+		}
+		streakStr = fmt.Sprintf("\n- Streak: %d %s 🔥", userInfo.CurrentStreak, jourStr)
+	}
+
+	appsBlockedStr := ""
+	if userInfo.AppsBlocked {
+		appsBlockedStr = "\n- Apps: BLOQUÉES 🔒"
+	}
+
 	contextStr := fmt.Sprintf(`
 CONTEXTE:
-- Utilisateur: %s
+- Utilisateur: %s%s
 - Focus aujourd'hui: %d minutes
 - Focus cette semaine: %d minutes
 - Tâches: %d/%d complétées aujourd'hui
-- Heure: %s
-`, userInfo.Name, userInfo.FocusToday, userInfo.FocusWeek,
+- Heure: %s%s
+`, userInfo.Name, streakStr, userInfo.FocusToday, userInfo.FocusWeek,
 		userInfo.TasksCompleted, userInfo.TasksToday,
-		time.Now().Format("15:04"))
+		time.Now().Format("15:04"), appsBlockedStr)
+
+	// Detect first session (new user with no data)
+	isFirstSession := len(userInfo.Tasks) == 0 && len(userInfo.Routines) == 0 && len(userInfo.Quests) == 0 && userInfo.CurrentStreak == 0
+	if isFirstSession {
+		contextStr += "\n⭐ PREMIÈRE SÉANCE — C'est un nouvel utilisateur, pas de données existantes. Guide-le pour créer ses premiers objectifs et routines.\n"
+	}
+
+	// Add today's tasks
+	if len(userInfo.Tasks) > 0 {
+		contextStr += "\nTÂCHES AUJOURD'HUI:\n"
+		for _, t := range userInfo.Tasks {
+			icon := "⬜"
+			if t.Status == "completed" {
+				icon = "✅"
+			} else if t.Status == "in_progress" {
+				icon = "⏳"
+			}
+			timeStr := ""
+			if t.StartTime != nil {
+				timeStr = fmt.Sprintf(" (%s)", *t.StartTime)
+			}
+			contextStr += fmt.Sprintf("%s %s%s\n", icon, t.Title, timeStr)
+		}
+	}
+
+	// Add routines
+	if len(userInfo.Routines) > 0 {
+		completedCount := 0
+		contextStr += "\nROUTINES AUJOURD'HUI:\n"
+		for _, r := range userInfo.Routines {
+			icon := "⬜"
+			if r.IsCompleted {
+				icon = "✅"
+				completedCount++
+			}
+			contextStr += fmt.Sprintf("%s %s\n", icon, r.Title)
+		}
+		contextStr += fmt.Sprintf("→ %d/%d complétées\n", completedCount, len(userInfo.Routines))
+	}
+
+	// Add active quests
+	if len(userInfo.Quests) > 0 {
+		contextStr += "\nQUESTS ACTIVES:\n"
+		for _, q := range userInfo.Quests {
+			pct := 0
+			if q.TargetValue > 0 {
+				pct = (q.CurrentValue * 100) / q.TargetValue
+			}
+			areaStr := ""
+			if q.AreaName != nil {
+				areaStr = fmt.Sprintf(" [%s]", *q.AreaName)
+			}
+			contextStr += fmt.Sprintf("- \"%s\" → %d/%d (%d%%)%s\n", q.Title, q.CurrentValue, q.TargetValue, pct, areaStr)
+		}
+	}
+
+	// Add weekly goals
+	if len(userInfo.WeeklyGoals) > 0 {
+		contextStr += "\nOBJECTIFS DE LA SEMAINE:\n"
+		for _, g := range userInfo.WeeklyGoals {
+			icon := "⬜"
+			if g.IsCompleted {
+				icon = "✅"
+			}
+			contextStr += fmt.Sprintf("%s %s\n", icon, g.Content)
+		}
+	}
+
+	// Add last reflection
+	if userInfo.LastReflectionGoal != nil && *userInfo.LastReflectionGoal != "" {
+		contextStr += fmt.Sprintf("\nDERNIER OBJECTIF FIXÉ: %s\n", *userInfo.LastReflectionGoal)
+	}
+	if userInfo.LastReflectionBlocker != nil && *userInfo.LastReflectionBlocker != "" {
+		contextStr += fmt.Sprintf("DERNIER BLOCAGE: %s\n", *userInfo.LastReflectionBlocker)
+	}
+
+	// Add mood
+	if userInfo.LatestMood != nil {
+		contextStr += fmt.Sprintf("\nDERNIÈRE HUMEUR: %s\n", *userInfo.LatestMood)
+	}
 
 	// Add memories
 	if len(memories) > 0 {
@@ -976,12 +1311,15 @@ CONTEXTE:
 		}
 	}
 
+	// Build system prompt with dynamic companion name
+	systemPrompt := fmt.Sprintf(kaiSystemPromptTemplate, userInfo.CompanionName)
+
 	prompt := fmt.Sprintf(`%s
 %s
 %s
 MESSAGE: %s
 
-Réponds en JSON:`, kaiSystemPrompt, contextStr, historyStr, message)
+Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 
 	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
 	if err != nil {
@@ -1016,6 +1354,22 @@ Réponds en JSON:`, kaiSystemPrompt, contextStr, historyStr, message)
 			EndTime   string `json:"end_time"`
 			BlockApps bool   `json:"block_apps"`
 		} `json:"focus_intent"`
+		BlockNow      bool `json:"block_now"`
+		UnblockNow    bool `json:"unblock_now"`
+		CreateQuests  []struct {
+			Title       string `json:"title"`
+			TargetValue int    `json:"target_value"`
+			Area        string `json:"area"`
+		} `json:"create_quests"`
+		CreateRoutines []struct {
+			Title         string  `json:"title"`
+			Frequency     string  `json:"frequency"`
+			ScheduledTime *string `json:"scheduled_time"`
+		} `json:"create_routines"`
+		UpdateQuest *struct {
+			Title     string `json:"title"`
+			Increment int    `json:"increment"`
+		} `json:"update_quest"`
 	}
 
 	if err := json.Unmarshal([]byte(responseText), &aiResp); err != nil {
@@ -1025,7 +1379,7 @@ Réponds en JSON:`, kaiSystemPrompt, contextStr, historyStr, message)
 
 	response := &SendMessageResponse{Reply: aiResp.Reply}
 
-	// Handle focus intent
+	// Handle focus intent (scheduled blocking with times)
 	if aiResp.FocusIntent != nil && aiResp.FocusIntent.Detected {
 		response.Action = &ActionData{
 			Type: "focus_scheduled",
@@ -1036,6 +1390,58 @@ Réponds en JSON:`, kaiSystemPrompt, contextStr, historyStr, message)
 				ScheduledEnd:   aiResp.FocusIntent.EndTime,
 				BlockApps:      aiResp.FocusIntent.BlockApps,
 			},
+		}
+	}
+
+	// Handle immediate app blocking
+	if aiResp.BlockNow {
+		response.Action = &ActionData{
+			Type: "block_apps",
+		}
+	}
+
+	// Handle app unblocking
+	if aiResp.UnblockNow {
+		response.Action = &ActionData{
+			Type: "unblock_apps",
+		}
+	}
+
+	// Handle quest creation (multiple)
+	if len(aiResp.CreateQuests) > 0 {
+		for _, q := range aiResp.CreateQuests {
+			if q.Title == "" {
+				continue
+			}
+			_, err := h.createQuestFromChat(ctx, userID, q.Title, q.TargetValue, q.Area)
+			if err != nil {
+				fmt.Printf("⚠️ Failed to create quest '%s': %v\n", q.Title, err)
+			}
+		}
+		response.Action = &ActionData{Type: "quests_created"}
+	}
+
+	// Handle routine creation (multiple)
+	if len(aiResp.CreateRoutines) > 0 {
+		for _, r := range aiResp.CreateRoutines {
+			if r.Title == "" {
+				continue
+			}
+			_, err := h.createRoutineFromChat(ctx, userID, r.Title, r.Frequency, r.ScheduledTime)
+			if err != nil {
+				fmt.Printf("⚠️ Failed to create routine '%s': %v\n", r.Title, err)
+			}
+		}
+		response.Action = &ActionData{Type: "routines_created"}
+	}
+
+	// Handle quest update (increment progress)
+	if aiResp.UpdateQuest != nil && aiResp.UpdateQuest.Title != "" {
+		err := h.updateQuestProgress(ctx, userID, aiResp.UpdateQuest.Title, aiResp.UpdateQuest.Increment)
+		if err != nil {
+			fmt.Printf("⚠️ Failed to update quest '%s': %v\n", aiResp.UpdateQuest.Title, err)
+		} else {
+			response.Action = &ActionData{Type: "quest_updated"}
 		}
 	}
 
@@ -1065,10 +1471,159 @@ func (h *Handler) createFocusTask(ctx context.Context, userID string, taskData *
 			time_block, priority, is_ai_generated, ai_notes, block_apps
 		) VALUES (
 			$1, $2, $3, $4::time, $5::time,
-			$6, 'high', true, 'Créé par Kai', true
+			$6, 'high', true, 'Créé par le coach', true
 		)
 		RETURNING id
 	`, userID, taskData.Title, taskData.Date, taskData.ScheduledStart, taskData.ScheduledEnd, timeBlock).Scan(&taskID)
 
 	return taskID, err
 }
+
+// ===========================================
+// QUEST CREATION (from coach chat)
+// ===========================================
+
+func (h *Handler) createQuestFromChat(ctx context.Context, userID, title string, targetValue int, areaSlug string) (string, error) {
+	if targetValue <= 0 {
+		targetValue = 1
+	}
+	if areaSlug == "" {
+		areaSlug = "other"
+	}
+
+	// Find or create the user's area matching the slug
+	areaID, err := h.findOrCreateArea(ctx, userID, areaSlug)
+	if err != nil {
+		return "", fmt.Errorf("failed to find/create area: %w", err)
+	}
+
+	var questID string
+	err = h.db.QueryRow(ctx, `
+		INSERT INTO quests (user_id, area_id, title, target_value, current_value, status)
+		VALUES ($1, $2, $3, $4, 0, 'active')
+		RETURNING id
+	`, userID, areaID, title, targetValue).Scan(&questID)
+
+	if err != nil {
+		return "", err
+	}
+
+	fmt.Printf("✅ Quest created from chat: %s (target: %d, area: %s)\n", title, targetValue, areaSlug)
+	return questID, nil
+}
+
+// ===========================================
+// ROUTINE CREATION (from coach chat)
+// ===========================================
+
+func (h *Handler) createRoutineFromChat(ctx context.Context, userID, title, frequency string, scheduledTime *string) (string, error) {
+	if frequency == "" {
+		frequency = "daily"
+	}
+
+	var routineID string
+	err := h.db.QueryRow(ctx, `
+		INSERT INTO routines (user_id, title, frequency, scheduled_time)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id
+	`, userID, title, frequency, scheduledTime).Scan(&routineID)
+
+	if err != nil {
+		return "", err
+	}
+
+	timeStr := ""
+	if scheduledTime != nil {
+		timeStr = fmt.Sprintf(" à %s", *scheduledTime)
+	}
+	fmt.Printf("✅ Routine created from chat: %s (%s%s)\n", title, frequency, timeStr)
+	return routineID, nil
+}
+
+// ===========================================
+// AREA HELPER (find or create)
+// ===========================================
+
+var areaDefaults = map[string]struct {
+	Name string
+	Icon string
+}{
+	"health":        {Name: "Santé", Icon: "heart"},
+	"learning":      {Name: "Apprentissage", Icon: "book"},
+	"career":        {Name: "Carrière", Icon: "briefcase"},
+	"relationships": {Name: "Relations", Icon: "person.2"},
+	"creativity":    {Name: "Créativité", Icon: "paintbrush"},
+	"other":         {Name: "Autre", Icon: "star"},
+}
+
+func (h *Handler) findOrCreateArea(ctx context.Context, userID, slug string) (string, error) {
+	// Try to find existing area by slug
+	var areaID string
+	err := h.db.QueryRow(ctx, `
+		SELECT id FROM areas WHERE user_id = $1 AND slug = $2
+	`, userID, slug).Scan(&areaID)
+
+	if err == nil {
+		return areaID, nil
+	}
+
+	// Not found — create it with defaults
+	defaults, ok := areaDefaults[slug]
+	if !ok {
+		defaults = areaDefaults["other"]
+		slug = "other"
+	}
+
+	err = h.db.QueryRow(ctx, `
+		INSERT INTO areas (user_id, name, slug, icon)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (user_id, slug) DO UPDATE SET name = EXCLUDED.name
+		RETURNING id
+	`, userID, defaults.Name, slug, defaults.Icon).Scan(&areaID)
+
+	return areaID, err
+}
+
+// ===========================================
+// QUEST PROGRESS UPDATE (from coach chat)
+// ===========================================
+
+func (h *Handler) updateQuestProgress(ctx context.Context, userID, questTitle string, increment int) error {
+	if increment <= 0 {
+		increment = 1
+	}
+
+	// Find the best matching active quest (exact match first, then fuzzy, LIMIT 1)
+	result, err := h.db.Exec(ctx, `
+		UPDATE quests SET
+			current_value = LEAST(current_value + $3, target_value),
+			status = CASE
+				WHEN current_value + $3 >= target_value THEN 'completed'
+				ELSE status
+			END
+		WHERE id = (
+			SELECT id FROM quests
+			WHERE user_id = $1 AND status = 'active'
+			AND LOWER(title) LIKE '%' || LOWER($2) || '%'
+			ORDER BY
+				CASE WHEN LOWER(title) = LOWER($2) THEN 0 ELSE 1 END,
+				created_at DESC
+			LIMIT 1
+		)
+	`, userID, questTitle, increment)
+
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("no active quest matching '%s'", questTitle)
+	}
+
+	fmt.Printf("✅ Quest progress updated: '%s' +%d\n", questTitle, increment)
+	return nil
+}
+
+// ===========================================
+// STREAK UPDATE
+// Streak logic moved to internal/streak package (shared across handlers)
