@@ -209,12 +209,100 @@ Pour débloquer :
   "unblock_now": true
 }
 
+COMPLÉTION DE TÂCHES:
+Quand l'utilisateur dit qu'il a fini une tâche ("j'ai fini X", "c'est fait", "done"):
+{
+  "reply": "Bien joué ! Une de moins 💪",
+  "complete_task": {"title": "Nom de la tâche"}
+}
+
+COMPLÉTION DE ROUTINES:
+Quand l'utilisateur dit qu'il a fait un rituel ("j'ai médité", "sport fait", "j'ai lu"):
+{
+  "reply": "Noté ✅",
+  "complete_routines": ["Méditation", "Sport"]
+}
+
+SUPPRESSION:
+Quand l'utilisateur veut supprimer un objectif ou rituel:
+{
+  "reply": "Supprimé.",
+  "delete_quest": {"title": "Lire 12 livres"}
+}
+ou:
+{
+  "reply": "Supprimé.",
+  "delete_routine": {"title": "Méditation"}
+}
+
+MORNING CHECK-IN:
+Quand tu fais le check-in du matin avec l'utilisateur (humeur, sommeil, intentions), sauvegarde :
+{
+  "reply": "C'est noté, bonne journée !",
+  "morning_checkin": {
+    "mood": 4,
+    "sleep_quality": 3,
+    "top_priority": "Finir le projet X",
+    "intentions": ["Finir le projet", "Faire du sport", "Lire 30 min"],
+    "energy_level": 4
+  }
+}
+mood, sleep_quality, energy_level: 1-5. intentions: array de strings.
+
+EVENING CHECK-IN:
+Quand tu fais la review du soir (bilan, victoire, bloqueurs, objectif demain), sauvegarde :
+{
+  "reply": "Belle journée. Repose-toi bien 🌙",
+  "evening_checkin": {
+    "mood": 4,
+    "biggest_win": "J'ai fini le chapitre 3",
+    "blockers": "Trop de réunions",
+    "goal_for_tomorrow": "Finir le rapport",
+    "grateful_for": "Ma santé"
+  }
+}
+mood: 1-5. Les autres champs sont des strings.
+
+OBJECTIFS DE LA SEMAINE:
+Quand l'utilisateur définit ses objectifs hebdos:
+{
+  "reply": "Tes objectifs de la semaine sont posés 🎯",
+  "create_weekly_goals": ["Finir le projet X", "Courir 3 fois", "Lire 2 chapitres"]
+}
+
+COMPLÉTION D'OBJECTIF HEBDO:
+Quand l'utilisateur dit qu'un objectif hebdo est fait:
+{
+  "reply": "Coché ✅",
+  "complete_weekly_goal": {"content": "Courir 3 fois"}
+}
+
+CRÉATION DE TÂCHE:
+Quand l'utilisateur veut ajouter une tâche à son calendrier (pas focus, juste une tâche):
+{
+  "reply": "Ajouté à ton calendrier.",
+  "create_task": {"title": "Rendez-vous dentiste", "date": "2025-01-15", "time_block": "afternoon", "scheduled_start": "14:00", "scheduled_end": "15:00"}
+}
+date: YYYY-MM-DD. time_block: morning/afternoon/evening. scheduled_start et scheduled_end: HH:MM (optionnels).
+
+ENTRÉE JOURNAL:
+Quand l'utilisateur partage son humeur ou veut journaliser:
+{
+  "reply": "C'est noté dans ton journal.",
+  "create_journal_entry": {"mood": "happy", "transcript": "Bonne journée, j'ai avancé sur mes projets"}
+}
+mood: happy, calm, neutral, sad, anxious, angry, grateful, motivated, tired, stressed
+
 RÈGLES STRICTES:
 - Réponses courtes (2-4 phrases), sauf pour le premier contact où tu peux être plus guidant
 - JAMAIS de listes à puces dans tes réponses
 - JAMAIS de "En tant qu'IA..." ou "N'hésite pas"
-- Tu peux créer PLUSIEURS quests ou routines dans un même message en faisant plusieurs réponses
+- Tu peux créer PLUSIEURS quests ou routines dans un même message
 - TOUJOURS répondre en JSON
+- Utilise les actions pour TOUTE modification de données — ne dis jamais "je t'ai noté ça" sans l'action correspondante
+- Quand le matin tu demandes comment il va, son sommeil, ses intentions → morning_checkin
+- Quand le soir tu fais le bilan → evening_checkin
+- Quand il dit avoir fait quelque chose → complete_routines ou complete_task
 
 Format de réponse (inclure seulement les champs pertinents):
 {
@@ -224,7 +312,17 @@ Format de réponse (inclure seulement les champs pertinents):
   "unblock_now": false,
   "create_quests": [],
   "create_routines": [],
-  "update_quest": null
+  "update_quest": null,
+  "complete_task": null,
+  "complete_routines": [],
+  "delete_quest": null,
+  "delete_routine": null,
+  "morning_checkin": null,
+  "evening_checkin": null,
+  "create_weekly_goals": [],
+  "complete_weekly_goal": null,
+  "create_task": null,
+  "create_journal_entry": null
 }`
 
 // ===========================================
@@ -1383,6 +1481,45 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 			Title     string `json:"title"`
 			Increment int    `json:"increment"`
 		} `json:"update_quest"`
+		CompleteTask *struct {
+			Title string `json:"title"`
+		} `json:"complete_task"`
+		CompleteRoutines []string `json:"complete_routines"`
+		DeleteQuest *struct {
+			Title string `json:"title"`
+		} `json:"delete_quest"`
+		DeleteRoutine *struct {
+			Title string `json:"title"`
+		} `json:"delete_routine"`
+		MorningCheckin *struct {
+			Mood         int      `json:"mood"`
+			SleepQuality int      `json:"sleep_quality"`
+			TopPriority  string   `json:"top_priority"`
+			Intentions   []string `json:"intentions"`
+			EnergyLevel  int      `json:"energy_level"`
+		} `json:"morning_checkin"`
+		EveningCheckin *struct {
+			Mood            int    `json:"mood"`
+			BiggestWin      string `json:"biggest_win"`
+			Blockers        string `json:"blockers"`
+			GoalForTomorrow string `json:"goal_for_tomorrow"`
+			GratefulFor     string `json:"grateful_for"`
+		} `json:"evening_checkin"`
+		CreateWeeklyGoals   []string `json:"create_weekly_goals"`
+		CompleteWeeklyGoal *struct {
+			Content string `json:"content"`
+		} `json:"complete_weekly_goal"`
+		CreateTask *struct {
+			Title          string `json:"title"`
+			Date           string `json:"date"`
+			TimeBlock      string `json:"time_block"`
+			ScheduledStart string `json:"scheduled_start"`
+			ScheduledEnd   string `json:"scheduled_end"`
+		} `json:"create_task"`
+		CreateJournalEntry *struct {
+			Mood       string `json:"mood"`
+			Transcript string `json:"transcript"`
+		} `json:"create_journal_entry"`
 	}
 
 	if err := json.Unmarshal([]byte(responseText), &aiResp); err != nil {
@@ -1455,6 +1592,110 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 			fmt.Printf("⚠️ Failed to update quest '%s': %v\n", aiResp.UpdateQuest.Title, err)
 		} else {
 			response.Action = &ActionData{Type: "quest_updated"}
+		}
+	}
+
+	// Handle task completion
+	if aiResp.CompleteTask != nil && aiResp.CompleteTask.Title != "" {
+		err := h.completeTaskByTitle(ctx, userID, aiResp.CompleteTask.Title)
+		if err != nil {
+			fmt.Printf("⚠️ Failed to complete task '%s': %v\n", aiResp.CompleteTask.Title, err)
+		} else {
+			response.Action = &ActionData{Type: "task_completed"}
+		}
+	}
+
+	// Handle routine completion (multiple)
+	if len(aiResp.CompleteRoutines) > 0 {
+		for _, title := range aiResp.CompleteRoutines {
+			if title == "" {
+				continue
+			}
+			err := h.completeRoutineByTitle(ctx, userID, title)
+			if err != nil {
+				fmt.Printf("⚠️ Failed to complete routine '%s': %v\n", title, err)
+			}
+		}
+		response.Action = &ActionData{Type: "routines_completed"}
+	}
+
+	// Handle quest deletion
+	if aiResp.DeleteQuest != nil && aiResp.DeleteQuest.Title != "" {
+		err := h.deleteQuestByTitle(ctx, userID, aiResp.DeleteQuest.Title)
+		if err != nil {
+			fmt.Printf("⚠️ Failed to delete quest '%s': %v\n", aiResp.DeleteQuest.Title, err)
+		} else {
+			response.Action = &ActionData{Type: "quest_deleted"}
+		}
+	}
+
+	// Handle routine deletion
+	if aiResp.DeleteRoutine != nil && aiResp.DeleteRoutine.Title != "" {
+		err := h.deleteRoutineByTitle(ctx, userID, aiResp.DeleteRoutine.Title)
+		if err != nil {
+			fmt.Printf("⚠️ Failed to delete routine '%s': %v\n", aiResp.DeleteRoutine.Title, err)
+		} else {
+			response.Action = &ActionData{Type: "routine_deleted"}
+		}
+	}
+
+	// Handle morning check-in
+	if aiResp.MorningCheckin != nil && aiResp.MorningCheckin.Mood > 0 {
+		err := h.saveMorningCheckin(ctx, userID, aiResp.MorningCheckin.Mood, aiResp.MorningCheckin.SleepQuality, aiResp.MorningCheckin.TopPriority, aiResp.MorningCheckin.Intentions, aiResp.MorningCheckin.EnergyLevel)
+		if err != nil {
+			fmt.Printf("⚠️ Failed to save morning check-in: %v\n", err)
+		} else {
+			response.Action = &ActionData{Type: "morning_checkin_saved"}
+		}
+	}
+
+	// Handle evening check-in
+	if aiResp.EveningCheckin != nil && aiResp.EveningCheckin.Mood > 0 {
+		err := h.saveEveningCheckin(ctx, userID, aiResp.EveningCheckin.Mood, aiResp.EveningCheckin.BiggestWin, aiResp.EveningCheckin.Blockers, aiResp.EveningCheckin.GoalForTomorrow, aiResp.EveningCheckin.GratefulFor)
+		if err != nil {
+			fmt.Printf("⚠️ Failed to save evening check-in: %v\n", err)
+		} else {
+			response.Action = &ActionData{Type: "evening_checkin_saved"}
+		}
+	}
+
+	// Handle weekly goals creation
+	if len(aiResp.CreateWeeklyGoals) > 0 {
+		err := h.createWeeklyGoals(ctx, userID, aiResp.CreateWeeklyGoals)
+		if err != nil {
+			fmt.Printf("⚠️ Failed to create weekly goals: %v\n", err)
+		} else {
+			response.Action = &ActionData{Type: "weekly_goals_created"}
+		}
+	}
+
+	// Handle weekly goal completion
+	if aiResp.CompleteWeeklyGoal != nil && aiResp.CompleteWeeklyGoal.Content != "" {
+		err := h.completeWeeklyGoal(ctx, userID, aiResp.CompleteWeeklyGoal.Content)
+		if err != nil {
+			fmt.Printf("⚠️ Failed to complete weekly goal '%s': %v\n", aiResp.CompleteWeeklyGoal.Content, err)
+		} else {
+			response.Action = &ActionData{Type: "weekly_goal_completed"}
+		}
+	}
+
+	// Handle task creation (calendar task, not focus)
+	if aiResp.CreateTask != nil && aiResp.CreateTask.Title != "" {
+		taskID, err := h.createCalendarTask(ctx, userID, aiResp.CreateTask)
+		if err != nil {
+			fmt.Printf("⚠️ Failed to create task '%s': %v\n", aiResp.CreateTask.Title, err)
+		} else {
+			response.Action = &ActionData{Type: "task_created", TaskID: &taskID}
+		}
+	}
+
+	// Handle journal entry creation
+	if aiResp.CreateJournalEntry != nil && aiResp.CreateJournalEntry.Transcript != "" {
+		err := h.createJournalEntry(ctx, userID, aiResp.CreateJournalEntry.Mood, aiResp.CreateJournalEntry.Transcript)
+		if err != nil {
+			fmt.Printf("⚠️ Failed to create journal entry: %v\n", err)
+		} else {
+			response.Action = &ActionData{Type: "journal_entry_created"}
 		}
 	}
 
@@ -1634,6 +1875,363 @@ func (h *Handler) updateQuestProgress(ctx context.Context, userID, questTitle st
 	}
 
 	fmt.Printf("✅ Quest progress updated: '%s' +%d\n", questTitle, increment)
+	return nil
+}
+
+// ===========================================
+// TASK COMPLETION (from coach chat)
+// ===========================================
+
+func (h *Handler) completeTaskByTitle(ctx context.Context, userID, title string) error {
+	result, err := h.db.Exec(ctx, `
+		UPDATE tasks SET status = 'completed', completed_at = NOW()
+		WHERE id = (
+			SELECT id FROM tasks
+			WHERE user_id = $1 AND date = CURRENT_DATE AND status != 'completed'
+			AND LOWER(title) LIKE '%' || LOWER($2) || '%'
+			ORDER BY
+				CASE WHEN LOWER(title) = LOWER($2) THEN 0 ELSE 1 END,
+				created_at DESC
+			LIMIT 1
+		)
+	`, userID, title)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("no pending task matching '%s'", title)
+	}
+	fmt.Printf("✅ Task completed: '%s'\n", title)
+	return nil
+}
+
+// ===========================================
+// ROUTINE COMPLETION (from coach chat)
+// ===========================================
+
+func (h *Handler) completeRoutineByTitle(ctx context.Context, userID, title string) error {
+	// Find the routine by fuzzy title match
+	var routineID string
+	err := h.db.QueryRow(ctx, `
+		SELECT id FROM routines
+		WHERE user_id = $1
+		AND LOWER(title) LIKE '%' || LOWER($2) || '%'
+		ORDER BY
+			CASE WHEN LOWER(title) = LOWER($2) THEN 0 ELSE 1 END,
+			created_at DESC
+		LIMIT 1
+	`, userID, title).Scan(&routineID)
+	if err != nil {
+		return fmt.Errorf("no routine matching '%s'", title)
+	}
+
+	// Check if already completed today
+	var exists bool
+	h.db.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM routine_completions
+			WHERE user_id = $1 AND routine_id = $2 AND DATE(completed_at) = CURRENT_DATE
+		)
+	`, userID, routineID).Scan(&exists)
+	if exists {
+		return nil // Already done today, idempotent
+	}
+
+	_, err = h.db.Exec(ctx, `
+		INSERT INTO routine_completions (id, user_id, routine_id, completed_at)
+		VALUES ($1, $2, $3, NOW())
+	`, uuid.New().String(), userID, routineID)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("✅ Routine completed: '%s'\n", title)
+	return nil
+}
+
+// ===========================================
+// QUEST DELETION (from coach chat)
+// ===========================================
+
+func (h *Handler) deleteQuestByTitle(ctx context.Context, userID, title string) error {
+	result, err := h.db.Exec(ctx, `
+		DELETE FROM quests
+		WHERE id = (
+			SELECT id FROM quests
+			WHERE user_id = $1
+			AND LOWER(title) LIKE '%' || LOWER($2) || '%'
+			ORDER BY
+				CASE WHEN LOWER(title) = LOWER($2) THEN 0 ELSE 1 END,
+				created_at DESC
+			LIMIT 1
+		)
+	`, userID, title)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("no quest matching '%s'", title)
+	}
+	fmt.Printf("✅ Quest deleted: '%s'\n", title)
+	return nil
+}
+
+// ===========================================
+// ROUTINE DELETION (from coach chat)
+// ===========================================
+
+func (h *Handler) deleteRoutineByTitle(ctx context.Context, userID, title string) error {
+	result, err := h.db.Exec(ctx, `
+		DELETE FROM routines
+		WHERE id = (
+			SELECT id FROM routines
+			WHERE user_id = $1
+			AND LOWER(title) LIKE '%' || LOWER($2) || '%'
+			ORDER BY
+				CASE WHEN LOWER(title) = LOWER($2) THEN 0 ELSE 1 END,
+				created_at DESC
+			LIMIT 1
+		)
+	`, userID, title)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("no routine matching '%s'", title)
+	}
+	fmt.Printf("✅ Routine deleted: '%s'\n", title)
+	return nil
+}
+
+// ===========================================
+// MORNING CHECK-IN (from coach chat)
+// ===========================================
+
+func (h *Handler) saveMorningCheckin(ctx context.Context, userID string, mood, sleepQuality int, topPriority string, intentions []string, energyLevel int) error {
+	if mood < 1 {
+		mood = 3
+	}
+	if sleepQuality < 1 {
+		sleepQuality = 3
+	}
+	if energyLevel < 1 {
+		energyLevel = 3
+	}
+
+	intentionsJSON, _ := json.Marshal(intentions)
+
+	_, err := h.db.Exec(ctx, `
+		INSERT INTO morning_checkins (id, user_id, date, morning_mood, sleep_quality, top_priority, intentions, energy_level)
+		VALUES ($1, $2, CURRENT_DATE, $3, $4, $5, $6::jsonb, $7)
+		ON CONFLICT (user_id, date) DO UPDATE SET
+			morning_mood = EXCLUDED.morning_mood,
+			sleep_quality = EXCLUDED.sleep_quality,
+			top_priority = EXCLUDED.top_priority,
+			intentions = EXCLUDED.intentions,
+			energy_level = EXCLUDED.energy_level,
+			updated_at = NOW()
+	`, uuid.New().String(), userID, mood, sleepQuality, topPriority, string(intentionsJSON), energyLevel)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("✅ Morning check-in saved (mood: %d, sleep: %d)\n", mood, sleepQuality)
+	return nil
+}
+
+// ===========================================
+// EVENING CHECK-IN (from coach chat)
+// ===========================================
+
+func (h *Handler) saveEveningCheckin(ctx context.Context, userID string, mood int, biggestWin, blockers, goalForTomorrow, gratefulFor string) error {
+	if mood < 1 {
+		mood = 3
+	}
+
+	// Get today's stats for the evening check-in
+	var ritualsCompleted, tasksCompleted, focusMinutes int
+	h.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM routine_completions
+		WHERE user_id = $1 AND DATE(completed_at) = CURRENT_DATE
+	`, userID).Scan(&ritualsCompleted)
+	h.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM tasks
+		WHERE user_id = $1 AND date = CURRENT_DATE AND status = 'completed'
+	`, userID).Scan(&tasksCompleted)
+	h.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(duration_minutes), 0) FROM focus_sessions
+		WHERE user_id = $1 AND DATE(started_at) = CURRENT_DATE AND status = 'completed'
+	`, userID).Scan(&focusMinutes)
+
+	_, err := h.db.Exec(ctx, `
+		INSERT INTO evening_checkins (id, user_id, date, evening_mood, biggest_win, blockers, rituals_completed, tasks_completed, focus_minutes, goal_for_tomorrow, grateful_for)
+		VALUES ($1, $2, CURRENT_DATE, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (user_id, date) DO UPDATE SET
+			evening_mood = EXCLUDED.evening_mood,
+			biggest_win = EXCLUDED.biggest_win,
+			blockers = EXCLUDED.blockers,
+			rituals_completed = EXCLUDED.rituals_completed,
+			tasks_completed = EXCLUDED.tasks_completed,
+			focus_minutes = EXCLUDED.focus_minutes,
+			goal_for_tomorrow = EXCLUDED.goal_for_tomorrow,
+			grateful_for = EXCLUDED.grateful_for,
+			updated_at = NOW()
+	`, uuid.New().String(), userID, mood, biggestWin, blockers, ritualsCompleted, tasksCompleted, focusMinutes, goalForTomorrow, gratefulFor)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("✅ Evening check-in saved (mood: %d, rituals: %d, tasks: %d, focus: %dm)\n", mood, ritualsCompleted, tasksCompleted, focusMinutes)
+	return nil
+}
+
+// ===========================================
+// WEEKLY GOALS (from coach chat)
+// ===========================================
+
+func (h *Handler) createWeeklyGoals(ctx context.Context, userID string, goals []string) error {
+	// Get Monday of current week
+	now := time.Now()
+	weekday := int(now.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	monday := now.AddDate(0, 0, -(weekday - 1))
+	weekStart := monday.Format("2006-01-02")
+
+	// Create or get weekly_goals record
+	var weeklyGoalID string
+	err := h.db.QueryRow(ctx, `
+		INSERT INTO weekly_goals (id, user_id, week_start_date)
+		VALUES ($1, $2, $3::date)
+		ON CONFLICT (user_id, week_start_date) DO UPDATE SET updated_at = NOW()
+		RETURNING id
+	`, uuid.New().String(), userID, weekStart).Scan(&weeklyGoalID)
+	if err != nil {
+		return fmt.Errorf("failed to create weekly_goals: %w", err)
+	}
+
+	// Delete existing items for this week (replace all)
+	h.db.Exec(ctx, `DELETE FROM weekly_goal_items WHERE weekly_goal_id = $1`, weeklyGoalID)
+
+	// Insert new goals
+	for i, goal := range goals {
+		if goal == "" {
+			continue
+		}
+		_, err := h.db.Exec(ctx, `
+			INSERT INTO weekly_goal_items (id, weekly_goal_id, content, position, is_completed)
+			VALUES ($1, $2, $3, $4, false)
+		`, uuid.New().String(), weeklyGoalID, goal, i)
+		if err != nil {
+			fmt.Printf("⚠️ Failed to create weekly goal item '%s': %v\n", goal, err)
+		}
+	}
+
+	fmt.Printf("✅ Weekly goals created: %d items\n", len(goals))
+	return nil
+}
+
+func (h *Handler) completeWeeklyGoal(ctx context.Context, userID, content string) error {
+	// Get Monday of current week
+	now := time.Now()
+	weekday := int(now.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	monday := now.AddDate(0, 0, -(weekday - 1))
+	weekStart := monday.Format("2006-01-02")
+
+	result, err := h.db.Exec(ctx, `
+		UPDATE weekly_goal_items SET is_completed = true
+		WHERE id = (
+			SELECT wgi.id FROM weekly_goal_items wgi
+			JOIN weekly_goals wg ON wg.id = wgi.weekly_goal_id
+			WHERE wg.user_id = $1 AND wg.week_start_date = $2::date
+			AND LOWER(wgi.content) LIKE '%' || LOWER($3) || '%'
+			AND wgi.is_completed = false
+			ORDER BY
+				CASE WHEN LOWER(wgi.content) = LOWER($3) THEN 0 ELSE 1 END
+			LIMIT 1
+		)
+	`, userID, weekStart, content)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("no weekly goal matching '%s'", content)
+	}
+	fmt.Printf("✅ Weekly goal completed: '%s'\n", content)
+	return nil
+}
+
+// ===========================================
+// CALENDAR TASK CREATION (from coach chat)
+// ===========================================
+
+func (h *Handler) createCalendarTask(ctx context.Context, userID string, task *struct {
+	Title          string `json:"title"`
+	Date           string `json:"date"`
+	TimeBlock      string `json:"time_block"`
+	ScheduledStart string `json:"scheduled_start"`
+	ScheduledEnd   string `json:"scheduled_end"`
+}) (string, error) {
+	date := task.Date
+	if date == "" {
+		date = time.Now().Format("2006-01-02")
+	}
+	timeBlock := task.TimeBlock
+	if timeBlock == "" {
+		timeBlock = "morning"
+	}
+
+	var taskID string
+	var err error
+
+	if task.ScheduledStart != "" && task.ScheduledEnd != "" {
+		err = h.db.QueryRow(ctx, `
+			INSERT INTO tasks (user_id, title, date, time_block, scheduled_start, scheduled_end, priority, is_ai_generated, ai_notes)
+			VALUES ($1, $2, $3, $4, $5::time, $6::time, 'medium', true, 'Créé par le coach')
+			RETURNING id
+		`, userID, task.Title, date, timeBlock, task.ScheduledStart, task.ScheduledEnd).Scan(&taskID)
+	} else {
+		err = h.db.QueryRow(ctx, `
+			INSERT INTO tasks (user_id, title, date, time_block, priority, is_ai_generated, ai_notes)
+			VALUES ($1, $2, $3, $4, 'medium', true, 'Créé par le coach')
+			RETURNING id
+		`, userID, task.Title, date, timeBlock).Scan(&taskID)
+	}
+
+	if err != nil {
+		return "", err
+	}
+	fmt.Printf("✅ Calendar task created: '%s' on %s\n", task.Title, date)
+	return taskID, nil
+}
+
+// ===========================================
+// JOURNAL ENTRY (from coach chat)
+// ===========================================
+
+func (h *Handler) createJournalEntry(ctx context.Context, userID, mood, transcript string) error {
+	if mood == "" {
+		mood = "neutral"
+	}
+
+	// Try to add 'text' to allowed media_types (safe to run multiple times)
+	h.db.Exec(ctx, `
+		ALTER TABLE journal_entries DROP CONSTRAINT IF EXISTS journal_entries_media_type_check
+	`)
+	h.db.Exec(ctx, `
+		ALTER TABLE journal_entries ADD CONSTRAINT journal_entries_media_type_check
+		CHECK (media_type IN ('audio', 'video', 'text'))
+	`)
+
+	_, err := h.db.Exec(ctx, `
+		INSERT INTO journal_entries (id, user_id, media_type, transcript, mood, entry_date)
+		VALUES ($1, $2, 'text', $3, $4, CURRENT_DATE)
+	`, uuid.New().String(), userID, transcript, mood)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("✅ Journal entry created (mood: %s)\n", mood)
 	return nil
 }
 
