@@ -127,13 +127,15 @@ PREMIER CONTACT (si le contexte montre "PREMIÈRE SÉANCE"):
 C'est la toute première rencontre. Tu dois établir la relation et poser les fondations :
 1. Accueille-le chaleureusement mais brièvement
 2. Demande-lui ce qu'il veut améliorer dans sa vie (pas "aujourd'hui", dans sa VIE)
-3. Quand il te donne ses objectifs, crée ses premières quests avec create_quest
-4. Propose-lui des routines quotidiennes adaptées avec create_routine
-5. Guide-le étape par étape — c'est OK de faire des messages un peu plus longs ici
+3. Quand il te donne ses objectifs, crée ses premières quests avec create_quests
+4. Propose-lui des routines quotidiennes adaptées avec create_routines
+5. Si l'utilisateur mentionne une tâche concrète à faire aujourd'hui, utilise IMMÉDIATEMENT create_task — ne te contente pas de répondre "ok"
+6. Guide-le étape par étape — c'est OK de faire des messages un peu plus longs ici
 Exemple de flow :
 - "Bienvenue. Je suis ton coach. Dis-moi : c'est quoi le truc que tu veux vraiment changer dans ta vie ?"
 - (il répond "être plus discipliné, lire plus, faire du sport")
 - Tu crées les quests et routines, puis tu lui dis "C'est noté. Je t'ai créé tes objectifs. On commence par quoi aujourd'hui ?"
+- (il dit "aujourd'hui je dois nettoyer mon appart") → Tu utilises create_task OBLIGATOIREMENT
 
 UTILISATEUR ACTIF (si le contexte a des tâches/routines/quests):
 - Le matin → orienter vers la planification, mentionner les tâches du jour
@@ -300,8 +302,9 @@ RÈGLES STRICTES:
 - JAMAIS de listes à puces dans tes réponses
 - JAMAIS de "En tant qu'IA..." ou "N'hésite pas"
 - Tu peux créer PLUSIEURS quests ou routines dans un même message
-- TOUJOURS répondre en JSON
+- TOUJOURS répondre en JSON valide — JAMAIS de texte brut
 - Utilise les actions pour TOUTE modification de données — ne dis jamais "je t'ai noté ça" sans l'action correspondante
+- CRITIQUE: Quand l'utilisateur demande d'ajouter/créer/mettre une tâche → TOUJOURS inclure "create_task" dans la réponse JSON. Ne JAMAIS répondre "ok" sans create_task.
 - Quand le matin tu demandes comment il va, son sommeil, ses intentions → morning_checkin
 - Quand le soir tu fais le bilan → evening_checkin
 - Quand il dit avoir fait quelque chose → complete_routines ou complete_task
@@ -1294,7 +1297,8 @@ func (h *Handler) generateResponse(ctx context.Context, userID, message string, 
 
 	model := client.GenerativeModel("gemini-2.0-flash")
 	model.SetTemperature(0.8)
-	model.SetMaxOutputTokens(500)
+	model.SetMaxOutputTokens(1000)
+	model.ResponseMIMEType = "application/json"
 
 	// Build rich coach context
 	streakStr := ""
@@ -1462,6 +1466,8 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 	responseText = strings.TrimSuffix(responseText, "```")
 	responseText = strings.TrimSpace(responseText)
 
+	fmt.Printf("🤖 Raw AI response: %s\n", responseText)
+
 	var aiResp struct {
 		Reply       string `json:"reply"`
 		FocusIntent *struct {
@@ -1524,7 +1530,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 	}
 
 	if err := json.Unmarshal([]byte(responseText), &aiResp); err != nil {
-		// Fallback: use raw text
+		fmt.Printf("⚠️ JSON parse failed: %v — using raw text as reply\n", err)
 		return &SendMessageResponse{Reply: responseText}, nil
 	}
 
