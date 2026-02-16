@@ -65,6 +65,7 @@ type SendMessageResponse struct {
 	Tool      *string     `json:"tool,omitempty"`
 	MessageID string      `json:"message_id"`
 	Action    *ActionData `json:"action,omitempty"`
+	ShowCard  *string     `json:"show_card,omitempty"`
 }
 
 type VoiceMessageResponse struct {
@@ -72,6 +73,7 @@ type VoiceMessageResponse struct {
 	Transcript string      `json:"transcript"`
 	MessageID  string      `json:"message_id"`
 	Action     *ActionData `json:"action,omitempty"`
+	ShowCard   *string     `json:"show_card,omitempty"`
 }
 
 type ActionData struct {
@@ -322,8 +324,11 @@ Format de réponse (inclure seulement les champs pertinents):
   "create_weekly_goals": [],
   "complete_weekly_goal": null,
   "create_task": null,
-  "create_journal_entry": null
-}`
+  "create_journal_entry": null,
+  "show_card": null
+}
+
+SHOW_CARD: Quand l'utilisateur demande de voir ses tâches, sa to-do list, ou ses rituels/routines du jour, ajoute "show_card" avec la valeur "tasks" ou "routines" pour afficher une liste interactive. Exemples: "montre mes tâches" → "show_card": "tasks", "quels sont mes rituels" → "show_card": "routines".`
 
 // ===========================================
 // HANDLERS
@@ -565,6 +570,7 @@ func (h *Handler) SendVoiceMessage(w http.ResponseWriter, r *http.Request) {
 		Transcript: transcript,
 		MessageID:  aiMsgID,
 		Action:     response.Action,
+		ShowCard:   response.ShowCard,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1514,6 +1520,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 			Mood       string `json:"mood"`
 			Transcript string `json:"transcript"`
 		} `json:"create_journal_entry"`
+		ShowCard *string `json:"show_card"`
 	}
 
 	if err := json.Unmarshal([]byte(responseText), &aiResp); err != nil {
@@ -1521,7 +1528,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 		return &SendMessageResponse{Reply: responseText}, nil
 	}
 
-	response := &SendMessageResponse{Reply: aiResp.Reply}
+	response := &SendMessageResponse{Reply: aiResp.Reply, ShowCard: aiResp.ShowCard}
 
 	// Handle focus intent (scheduled blocking with times)
 	if aiResp.FocusIntent != nil && aiResp.FocusIntent.Detected {
