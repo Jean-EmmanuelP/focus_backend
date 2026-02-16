@@ -1509,13 +1509,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 		CompleteWeeklyGoal *struct {
 			Content string `json:"content"`
 		} `json:"complete_weekly_goal"`
-		CreateTask *struct {
-			Title          string `json:"title"`
-			Date           string `json:"date"`
-			TimeBlock      string `json:"time_block"`
-			ScheduledStart string `json:"scheduled_start"`
-			ScheduledEnd   string `json:"scheduled_end"`
-		} `json:"create_task"`
+		CreateTask *ChatTaskInput `json:"create_task"`
 		CreateJournalEntry *struct {
 			Mood       string `json:"mood"`
 			Transcript string `json:"transcript"`
@@ -2166,13 +2160,16 @@ func (h *Handler) completeWeeklyGoal(ctx context.Context, userID, content string
 // CALENDAR TASK CREATION (from coach chat)
 // ===========================================
 
-func (h *Handler) createCalendarTask(ctx context.Context, userID string, task *struct {
+// ChatTaskInput is used for task creation from chat
+type ChatTaskInput struct {
 	Title          string `json:"title"`
 	Date           string `json:"date"`
 	TimeBlock      string `json:"time_block"`
 	ScheduledStart string `json:"scheduled_start"`
 	ScheduledEnd   string `json:"scheduled_end"`
-}) (string, error) {
+}
+
+func (h *Handler) createCalendarTask(ctx context.Context, userID string, task *ChatTaskInput) (string, error) {
 	date := task.Date
 	if date == "" {
 		date = time.Now().Format("2006-01-02")
