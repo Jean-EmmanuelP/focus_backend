@@ -1807,6 +1807,7 @@ func (h *Handler) createRoutineFromChat(ctx context.Context, userID, title, freq
 	err = h.db.QueryRow(ctx, `
 		INSERT INTO routines (user_id, area_id, title, frequency, scheduled_time)
 		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (user_id, title) DO UPDATE SET frequency = EXCLUDED.frequency, scheduled_time = EXCLUDED.scheduled_time
 		RETURNING id
 	`, userID, areaID, title, frequency, scheduledTime).Scan(&routineID)
 
