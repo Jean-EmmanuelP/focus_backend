@@ -39,6 +39,9 @@ type User struct {
 	CompanionName        *string    `json:"companion_name"`         // AI companion name
 	CompanionGender      *string    `json:"companion_gender"`       // AI companion gender
 	AvatarStyle          *string    `json:"avatar_style"`           // Avatar style choice
+	CurrentStreak        *int       `json:"current_streak"`         // Current streak count
+	LongestStreak        *int       `json:"longest_streak"`         // Longest streak count
+	CreatedAt            *string    `json:"created_at"`             // Account creation date
 }
 
 // 2. The DTO: Represents what a user is ALLOWED to update
@@ -90,7 +93,10 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(timezone, 'Europe/Paris') as timezone,
 		       COALESCE(notifications_enabled, true) as notifications_enabled,
 		       COALESCE(morning_reminder_time, '08:00') as morning_reminder_time,
-		       companion_name, companion_gender, avatar_style
+		       companion_name, companion_gender, avatar_style,
+		       COALESCE(current_streak, 0) as current_streak,
+		       COALESCE(longest_streak, 0) as longest_streak,
+		       created_at
 		FROM public.users
 		WHERE id = $1
 	`
@@ -118,6 +124,9 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		&user.CompanionName,
 		&user.CompanionGender,
 		&user.AvatarStyle,
+		&user.CurrentStreak,
+		&user.LongestStreak,
+		&user.CreatedAt,
 	)
 
 	if err != nil {
@@ -274,7 +283,8 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		           COALESCE(day_visibility, 'crew'), productivity_peak,
 		           COALESCE(language, 'fr'), COALESCE(timezone, 'Europe/Paris'),
 		           COALESCE(notifications_enabled, true), COALESCE(morning_reminder_time, '08:00'),
-		           companion_name, companion_gender, avatar_style`,
+		           companion_name, companion_gender, avatar_style,
+		           COALESCE(current_streak, 0), COALESCE(longest_streak, 0), created_at`,
 		strings.Join(setParts, ", "),
 		argId,
 	)
@@ -303,6 +313,9 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		&updatedUser.CompanionName,
 		&updatedUser.CompanionGender,
 		&updatedUser.AvatarStyle,
+		&updatedUser.CurrentStreak,
+		&updatedUser.LongestStreak,
+		&updatedUser.CreatedAt,
 	)
 
 	if err != nil {

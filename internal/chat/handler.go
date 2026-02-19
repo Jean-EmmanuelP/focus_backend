@@ -1566,6 +1566,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 
 	// Handle quest creation (multiple)
 	if len(aiResp.CreateQuests) > 0 {
+		createdCount := 0
 		for _, q := range aiResp.CreateQuests {
 			if q.Title == "" {
 				continue
@@ -1573,13 +1574,18 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 			_, err := h.createQuestFromChat(ctx, userID, q.Title, q.TargetValue, q.Area)
 			if err != nil {
 				fmt.Printf("⚠️ Failed to create quest '%s': %v\n", q.Title, err)
+			} else {
+				createdCount++
 			}
 		}
-		response.Action = &ActionData{Type: "quests_created"}
+		if createdCount > 0 {
+			response.Action = &ActionData{Type: "quests_created"}
+		}
 	}
 
 	// Handle routine creation (multiple)
 	if len(aiResp.CreateRoutines) > 0 {
+		createdCount := 0
 		for _, r := range aiResp.CreateRoutines {
 			if r.Title == "" {
 				continue
@@ -1587,9 +1593,13 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 			_, err := h.createRoutineFromChat(ctx, userID, r.Title, r.Frequency, r.ScheduledTime)
 			if err != nil {
 				fmt.Printf("⚠️ Failed to create routine '%s': %v\n", r.Title, err)
+			} else {
+				createdCount++
 			}
 		}
-		response.Action = &ActionData{Type: "routines_created"}
+		if createdCount > 0 {
+			response.Action = &ActionData{Type: "routines_created"}
+		}
 	}
 
 	// Handle quest update (increment progress)
@@ -1614,6 +1624,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 
 	// Handle routine completion (multiple)
 	if len(aiResp.CompleteRoutines) > 0 {
+		completedCount := 0
 		for _, title := range aiResp.CompleteRoutines {
 			if title == "" {
 				continue
@@ -1621,9 +1632,13 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 			err := h.completeRoutineByTitle(ctx, userID, title)
 			if err != nil {
 				fmt.Printf("⚠️ Failed to complete routine '%s': %v\n", title, err)
+			} else {
+				completedCount++
 			}
 		}
-		response.Action = &ActionData{Type: "routines_completed"}
+		if completedCount > 0 {
+			response.Action = &ActionData{Type: "routines_completed"}
+		}
 	}
 
 	// Handle quest deletion

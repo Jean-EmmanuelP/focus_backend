@@ -21,7 +21,9 @@ create table public.areas (
   
   completeness integer default 0, -- Stored % value (0-100)
   
-  created_at timestamp with time zone default now()
+  created_at timestamp with time zone default now(),
+
+  UNIQUE (user_id, slug)
 );
 
 -- RLS: Only own data
