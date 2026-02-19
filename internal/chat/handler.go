@@ -1797,12 +1797,18 @@ func (h *Handler) createRoutineFromChat(ctx context.Context, userID, title, freq
 		frequency = "daily"
 	}
 
+	// Routines require an area_id (NOT NULL) — use "other" as default
+	areaID, err := h.findOrCreateArea(ctx, userID, "other")
+	if err != nil {
+		return "", fmt.Errorf("failed to find/create area for routine: %w", err)
+	}
+
 	var routineID string
-	err := h.db.QueryRow(ctx, `
-		INSERT INTO routines (user_id, title, frequency, scheduled_time)
-		VALUES ($1, $2, $3, $4)
+	err = h.db.QueryRow(ctx, `
+		INSERT INTO routines (user_id, area_id, title, frequency, scheduled_time)
+		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id
-	`, userID, title, frequency, scheduledTime).Scan(&routineID)
+	`, userID, areaID, title, frequency, scheduledTime).Scan(&routineID)
 
 	if err != nil {
 		return "", err
