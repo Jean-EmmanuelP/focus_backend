@@ -287,7 +287,8 @@ Quand l'utilisateur veut ajouter une tâche à son calendrier (pas focus, juste 
   "reply": "Ajouté à ton calendrier.",
   "create_task": {"title": "Rendez-vous dentiste", "date": "2025-01-15", "time_block": "afternoon", "scheduled_start": "14:00", "scheduled_end": "15:00"}
 }
-date: YYYY-MM-DD. time_block: morning/afternoon/evening. scheduled_start et scheduled_end: HH:MM (optionnels).
+date: YYYY-MM-DD (utilise la date du CONTEXTE — "aujourd'hui" = Date, "demain" = Demain). time_block: morning/afternoon/evening. scheduled_start et scheduled_end: HH:MM (optionnels).
+IMPORTANT: Tu DOIS TOUJOURS inclure "create_task" quand l'utilisateur mentionne une tâche. Si tu ne connais pas l'heure exacte, mets juste le titre et la date. Ne réponds JAMAIS "ajouté" sans le champ create_task.
 
 ENTRÉE JOURNAL:
 Quand l'utilisateur partage son humeur ou veut journaliser:
@@ -1315,16 +1316,21 @@ func (h *Handler) generateResponse(ctx context.Context, userID, message string, 
 		appsBlockedStr = "\n- Apps: BLOQUÉES 🔒"
 	}
 
+	now := time.Now()
+	tomorrow := now.AddDate(0, 0, 1)
 	contextStr := fmt.Sprintf(`
 CONTEXTE:
 - Utilisateur: %s%s
+- Date: %s
+- Demain: %s
 - Focus aujourd'hui: %d minutes
 - Focus cette semaine: %d minutes
 - Tâches: %d/%d complétées aujourd'hui
 - Heure: %s%s
-`, userInfo.Name, streakStr, userInfo.FocusToday, userInfo.FocusWeek,
+`, userInfo.Name, streakStr, now.Format("2006-01-02"), tomorrow.Format("2006-01-02"),
+		userInfo.FocusToday, userInfo.FocusWeek,
 		userInfo.TasksCompleted, userInfo.TasksToday,
-		time.Now().Format("15:04"), appsBlockedStr)
+		now.Format("15:04"), appsBlockedStr)
 
 	// Detect first session (new user with no data)
 	isFirstSession := len(userInfo.Tasks) == 0 && len(userInfo.Routines) == 0 && len(userInfo.Quests) == 0 && userInfo.CurrentStreak == 0
