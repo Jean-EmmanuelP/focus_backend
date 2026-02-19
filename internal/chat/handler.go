@@ -1717,6 +1717,27 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 		}
 	}
 
+	// Fallback: AI said "ajouté" but forgot create_task — extract task from user message
+	if aiResp.CreateTask == nil && response.Action == nil {
+		replyLower := strings.ToLower(aiResp.Reply)
+		msgLower := strings.ToLower(message)
+		taskKeywords := strings.Contains(msgLower, "tâche") || strings.Contains(msgLower, "tache") || strings.Contains(msgLower, "ajoute") || strings.Contains(msgLower, "réunion") || strings.Contains(msgLower, "rdv") || strings.Contains(msgLower, "rendez")
+		aiConfirmed := strings.Contains(replyLower, "ajouté") || strings.Contains(replyLower, "calendrier") || strings.Contains(replyLower, "noté")
+		if taskKeywords && aiConfirmed {
+			fmt.Printf("⚠️ Fallback: AI confirmed task but forgot create_task. Extracting from message: %s\n", message)
+			fallbackTask := h.extractTaskFromMessage(message)
+			if fallbackTask != nil {
+				taskID, err := h.createCalendarTask(ctx, userID, fallbackTask)
+				if err != nil {
+					fmt.Printf("⚠️ Fallback task creation failed: %v\n", err)
+				} else {
+					response.Action = &ActionData{Type: "task_created", TaskID: &taskID}
+					fmt.Printf("✅ Fallback task created: '%s'\n", fallbackTask.Title)
+				}
+			}
+		}
+	}
+
 	// Handle journal entry creation
 	if aiResp.CreateJournalEntry != nil && aiResp.CreateJournalEntry.Transcript != "" {
 		err := h.createJournalEntry(ctx, userID, aiResp.CreateJournalEntry.Mood, aiResp.CreateJournalEntry.Transcript)
@@ -2242,6 +2263,97 @@ func (h *Handler) createCalendarTask(ctx context.Context, userID string, task *C
 	}
 	fmt.Printf("✅ Calendar task created: '%s' on %s\n", task.Title, date)
 	return taskID, nil
+}
+
+// ===========================================
+// TASK EXTRACTION FALLBACK
+// ===========================================
+
+// extractTaskFromMessage parses the user's message to extract task info
+// when the AI forgot to include create_task in its JSON response
+func (h *Handler) extractTaskFromMessage(msg string) *ChatTaskInput {
+	msgLower := strings.ToLower(msg)
+
+	// Try to find the task title after common patterns
+	title := ""
+	for _, sep := range []string{" : ", ": ", " - "} {
+		if idx := strings.Index(msg, sep); idx != -1 {
+			title = strings.TrimSpace(msg[idx+len(sep):])
+			break
+		}
+	}
+	if title == "" {
+		// Use the whole message as title, cleaned up
+		title = msg
+		for _, prefix := range []string{"ajoute une tâche pour ", "ajoute une tache pour ", "ajoute une tâche ", "ajoute une tache ", "ajoute ", "crée une tâche ", "créer une tâche ", "mets une tâche "} {
+			if strings.HasPrefix(msgLower, prefix) {
+				title = strings.TrimSpace(msg[len(prefix):])
+				break
+			}
+		}
+	}
+
+	if title == "" {
+		return nil
+	}
+
+	now := time.Now()
+	date := now.Format("2006-01-02")
+	timeBlock := "morning"
+	scheduledStart := ""
+	scheduledEnd := ""
+
+	// Detect "demain"
+	if strings.Contains(msgLower, "demain") {
+		date = now.AddDate(0, 0, 1).Format("2006-01-02")
+	}
+
+	// Extract time like "14h", "14h30", "à 9h"
+	for i := 0; i < len(msgLower)-1; i++ {
+		if msgLower[i] >= '0' && msgLower[i] <= '9' && i+1 < len(msgLower) && msgLower[i+1] == 'h' {
+			hourStr := string(msgLower[i])
+			if i > 0 && msgLower[i-1] >= '0' && msgLower[i-1] <= '9' {
+				hourStr = string(msgLower[i-1]) + hourStr
+			}
+			hour := 0
+			fmt.Sscanf(hourStr, "%d", &hour)
+			if hour >= 0 && hour <= 23 {
+				minutes := "00"
+				if i+2 < len(msgLower) && msgLower[i+2] >= '0' && msgLower[i+2] <= '9' {
+					minutes = string(msgLower[i+2])
+					if i+3 < len(msgLower) && msgLower[i+3] >= '0' && msgLower[i+3] <= '9' {
+						minutes += string(msgLower[i+3])
+					} else {
+						minutes += "0"
+					}
+				}
+				scheduledStart = fmt.Sprintf("%02d:%s", hour, minutes)
+				// Default 1 hour duration
+				endHour := hour + 1
+				if endHour > 23 {
+					endHour = 23
+				}
+				scheduledEnd = fmt.Sprintf("%02d:%s", endHour, minutes)
+
+				if hour < 12 {
+					timeBlock = "morning"
+				} else if hour < 18 {
+					timeBlock = "afternoon"
+				} else {
+					timeBlock = "evening"
+				}
+			}
+			break
+		}
+	}
+
+	return &ChatTaskInput{
+		Title:          title,
+		Date:           date,
+		TimeBlock:      timeBlock,
+		ScheduledStart: scheduledStart,
+		ScheduledEnd:   scheduledEnd,
+	}
 }
 
 // ===========================================
