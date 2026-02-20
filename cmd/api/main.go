@@ -94,6 +94,9 @@ func main() {
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("OK"))
 	})
+	r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("v2.1-task-fallback"))
+	})
 
 	// Protected Routes
 	r.Group(func(r chi.Router) {
