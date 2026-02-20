@@ -418,12 +418,14 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fallback: if user asked to add a task but AI forgot create_task in JSON
+	fmt.Printf("🔍 FALLBACK CHECK: action=%v isGreeting=%v content='%s' reply='%s'\n", response.Action, isGreeting, req.Content, response.Reply)
 	if response.Action == nil && !isGreeting {
 		replyLower := strings.ToLower(response.Reply)
 		msgLower := strings.ToLower(req.Content)
 		taskMentioned := strings.Contains(msgLower, "tâche") || strings.Contains(msgLower, "tache") ||
 			(strings.Contains(msgLower, "ajoute") && (strings.Contains(msgLower, "réunion") || strings.Contains(msgLower, "rdv") || strings.Contains(msgLower, "rendez")))
 		aiConfirmed := strings.Contains(replyLower, "ajout") || strings.Contains(replyLower, "calendrier") || strings.Contains(replyLower, "noté")
+		fmt.Printf("🔍 FALLBACK MATCH: taskMentioned=%v aiConfirmed=%v\n", taskMentioned, aiConfirmed)
 		if taskMentioned && aiConfirmed {
 			fmt.Printf("⚠️ Task fallback triggered for: %s\n", req.Content)
 			fallbackTask := h.extractTaskFromMessage(req.Content)
