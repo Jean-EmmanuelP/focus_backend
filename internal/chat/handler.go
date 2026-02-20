@@ -1,9 +1,12 @@
 package chat
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"os"
@@ -37,6 +40,7 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Post("/chat/message", h.SendMessage)
 	r.Post("/chat/voice", h.SendVoiceMessage)
+	r.Post("/chat/tts", h.TextToSpeech)
 	r.Get("/chat/history", h.GetHistory)
 	r.Delete("/chat/history", h.ClearHistory)
 }
@@ -88,6 +92,16 @@ type TaskData struct {
 	ScheduledStart string `json:"scheduled_start"`
 	ScheduledEnd   string `json:"scheduled_end"`
 	BlockApps      bool   `json:"block_apps"`
+}
+
+// TTS Request/Response types
+type TTSRequest struct {
+	Text    string `json:"text"`
+	VoiceID string `json:"voice_id,omitempty"`
+}
+
+type TTSResponse struct {
+	AudioBase64 string `json:"audio_base64"`
 }
 
 // SemanticMemory stores facts extracted from conversations
@@ -332,7 +346,12 @@ Format de réponse (inclure seulement les champs pertinents):
   "show_card": null
 }
 
-SHOW_CARD: Quand l'utilisateur demande de voir ses tâches, sa to-do list, ou ses rituels/routines du jour, ajoute "show_card" avec la valeur "tasks" ou "routines" pour afficher une liste interactive. Exemples: "montre mes tâches" → "show_card": "tasks", "quels sont mes rituels" → "show_card": "routines".`
+SHOW_CARD (OBLIGATOIRE):
+Dès que l'utilisateur mentionne ses tâches, sa to-do, son planning, ses choses à faire, ou ses rituels/routines → tu DOIS ajouter "show_card" dans le JSON.
+- Mots-clés tâches: "tâches", "taches", "to-do", "todo", "planning", "programme", "quoi faire", "journée", "agenda", "mes tâches du jour", "c'est quoi aujourd'hui", "montre", "voir" → "show_card": "tasks"
+- Mots-clés routines: "rituels", "routines", "habitudes", "mes rituels" → "show_card": "routines"
+- IMPORTANT: NE PAS lister les tâches dans le texte "reply". Dis juste "Voici tes tâches du jour" ou similaire et mets "show_card": "tasks". L'app affichera la carte interactive.
+- Si tu listes les tâches dans reply ET que tu oublies show_card, l'utilisateur ne verra PAS la carte interactive. C'est un bug.`
 
 // ===========================================
 // HANDLERS
@@ -393,7 +412,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	history, _ := h.getRecentHistory(r.Context(), userID, 20)
 
 	// Generate AI response
-	response, err := h.generateResponse(r.Context(), userID, messageForAI, userInfo, memories, history)
+	response, err := h.generateResponse(r.Context(), userID, messageForAI, userInfo, memories, history, source)
 	if err != nil {
 		fmt.Printf("AI error: %v\n", err)
 		response = &SendMessageResponse{
@@ -1308,7 +1327,12 @@ func (h *Handler) getRecentHistory(ctx context.Context, userID string, limit int
 // AI RESPONSE GENERATION
 // ===========================================
 
-func (h *Handler) generateResponse(ctx context.Context, userID, message string, userInfo *UserInfo, memories []SemanticMemory, history []ChatMessage) (*SendMessageResponse, error) {
+func (h *Handler) generateResponse(ctx context.Context, userID, message string, userInfo *UserInfo, memories []SemanticMemory, history []ChatMessage, opts ...string) (*SendMessageResponse, error) {
+	// Optional source parameter (first opt)
+	source := ""
+	if len(opts) > 0 {
+		source = opts[0]
+	}
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
 		return nil, fmt.Errorf("GEMINI_API_KEY not set")
@@ -1464,6 +1488,11 @@ CONTEXTE:
 
 	// Build system prompt with dynamic companion name
 	systemPrompt := fmt.Sprintf(kaiSystemPromptTemplate, userInfo.CompanionName)
+
+	// Voice call mode: force very short responses
+	if source == "voice_call" {
+		systemPrompt += "\n\nMODE APPEL VOCAL: Tes réponses doivent être TRÈS courtes (1-3 phrases max), naturelles et conversationnelles. Pas de listes, pas de formatage, pas d'emojis. Parle comme dans une vraie conversation téléphonique."
+	}
 
 	prompt := fmt.Sprintf(`%s
 %s
@@ -2386,6 +2415,82 @@ func (h *Handler) createJournalEntry(ctx context.Context, userID, mood, transcri
 	}
 	fmt.Printf("✅ Journal entry created (mood: %s)\n", mood)
 	return nil
+}
+
+// ===========================================
+// TEXT TO SPEECH (Gradium API)
+// ===========================================
+
+func (h *Handler) TextToSpeech(w http.ResponseWriter, r *http.Request) {
+	_, ok := r.Context().Value(auth.UserContextKey).(string)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req TTSRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Text == "" {
+		http.Error(w, "Text is required", http.StatusBadRequest)
+		return
+	}
+
+	voiceID := req.VoiceID
+	if voiceID == "" {
+		voiceID = "b35yykvVppLXyw_l"
+	}
+
+	apiKey := os.Getenv("GRADIUM_API_KEY")
+	if apiKey == "" {
+		http.Error(w, "TTS service not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Call Gradium TTS API
+	gradiumBody, _ := json.Marshal(map[string]string{
+		"text":          req.Text,
+		"voice_id":      voiceID,
+		"output_format": "wav",
+	})
+
+	gradiumReq, err := http.NewRequestWithContext(r.Context(), "POST", "https://api.gradium.ai/v1/tts", bytes.NewReader(gradiumBody))
+	if err != nil {
+		http.Error(w, "Failed to create TTS request", http.StatusInternalServerError)
+		return
+	}
+	gradiumReq.Header.Set("Authorization", "Bearer "+apiKey)
+	gradiumReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(gradiumReq)
+	if err != nil {
+		fmt.Printf("Gradium TTS error: %v\n", err)
+		http.Error(w, "TTS request failed", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	audioBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, "Failed to read TTS response", http.StatusInternalServerError)
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("Gradium TTS status %d: %s\n", resp.StatusCode, string(audioBytes))
+		http.Error(w, "TTS service error", http.StatusBadGateway)
+		return
+	}
+
+	// Encode audio as base64
+	audioBase64 := base64.StdEncoding.EncodeToString(audioBytes)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(TTSResponse{AudioBase64: audioBase64})
 }
 
 // ===========================================

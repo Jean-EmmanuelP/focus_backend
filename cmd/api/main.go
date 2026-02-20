@@ -107,6 +107,7 @@ func main() {
 		// =====================
 		r.Post("/chat/message", chatHandler.SendMessage)
 		r.Post("/chat/voice", chatHandler.SendVoiceMessage)
+		r.Post("/chat/tts", chatHandler.TextToSpeech)
 		r.Get("/chat/history", chatHandler.GetHistory)
 		r.Delete("/chat/history", chatHandler.ClearHistory)
 
