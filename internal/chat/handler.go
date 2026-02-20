@@ -417,6 +417,28 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Fallback: if user asked to add a task but AI forgot create_task in JSON
+	if response.Action == nil && !isGreeting {
+		replyLower := strings.ToLower(response.Reply)
+		msgLower := strings.ToLower(req.Content)
+		taskMentioned := strings.Contains(msgLower, "tâche") || strings.Contains(msgLower, "tache") ||
+			(strings.Contains(msgLower, "ajoute") && (strings.Contains(msgLower, "réunion") || strings.Contains(msgLower, "rdv") || strings.Contains(msgLower, "rendez")))
+		aiConfirmed := strings.Contains(replyLower, "ajout") || strings.Contains(replyLower, "calendrier") || strings.Contains(replyLower, "noté")
+		if taskMentioned && aiConfirmed {
+			fmt.Printf("⚠️ Task fallback triggered for: %s\n", req.Content)
+			fallbackTask := h.extractTaskFromMessage(req.Content)
+			if fallbackTask != nil {
+				taskID, err := h.createCalendarTask(r.Context(), userID, fallbackTask)
+				if err != nil {
+					fmt.Printf("⚠️ Task fallback DB error: %v\n", err)
+				} else {
+					response.Action = &ActionData{Type: "task_created", TaskID: &taskID}
+					fmt.Printf("✅ Task fallback success: '%s' on %s\n", fallbackTask.Title, fallbackTask.Date)
+				}
+			}
+		}
+	}
+
 	// Save AI response
 	aiMsgID := uuid.New().String()
 	h.db.Exec(r.Context(), `
@@ -1714,27 +1736,6 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 			fmt.Printf("⚠️ Failed to create task '%s': %v\n", aiResp.CreateTask.Title, err)
 		} else {
 			response.Action = &ActionData{Type: "task_created", TaskID: &taskID}
-		}
-	}
-
-	// Fallback: AI said "ajouté" but forgot create_task — extract task from user message
-	if aiResp.CreateTask == nil && response.Action == nil {
-		replyLower := strings.ToLower(aiResp.Reply)
-		msgLower := strings.ToLower(message)
-		taskKeywords := strings.Contains(msgLower, "tâche") || strings.Contains(msgLower, "tache") || strings.Contains(msgLower, "ajoute") || strings.Contains(msgLower, "réunion") || strings.Contains(msgLower, "rdv") || strings.Contains(msgLower, "rendez")
-		aiConfirmed := strings.Contains(replyLower, "ajouté") || strings.Contains(replyLower, "calendrier") || strings.Contains(replyLower, "noté")
-		if taskKeywords && aiConfirmed {
-			fmt.Printf("⚠️ Fallback: AI confirmed task but forgot create_task. Extracting from message: %s\n", message)
-			fallbackTask := h.extractTaskFromMessage(message)
-			if fallbackTask != nil {
-				taskID, err := h.createCalendarTask(ctx, userID, fallbackTask)
-				if err != nil {
-					fmt.Printf("⚠️ Fallback task creation failed: %v\n", err)
-				} else {
-					response.Action = &ActionData{Type: "task_created", TaskID: &taskID}
-					fmt.Printf("✅ Fallback task created: '%s'\n", fallbackTask.Title)
-				}
-			}
 		}
 	}
 
