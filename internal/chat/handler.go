@@ -455,9 +455,10 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	// Check if this is a greeting request (first message or daily return)
 	isGreeting := req.Content == "__greeting__"
 	isDailyGreeting := req.Content == "__daily_greeting__"
+	isCompletionEvent := strings.HasPrefix(req.Content, "__task_completed__:") || strings.HasPrefix(req.Content, "__routine_completed__:")
 
-	// Only save user message if it's NOT a greeting request
-	if !isGreeting && !isDailyGreeting {
+	// Only save user message if it's NOT a system event
+	if !isGreeting && !isDailyGreeting && !isCompletionEvent {
 		userMsgID := uuid.New().String()
 		h.db.Exec(r.Context(), `
 			INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, source)
@@ -504,6 +505,27 @@ REGLES IMPORTANTES:
 - Ton naturel de SMS entre potes, pas de coach corporate
 - 1-2 phrases max, pas plus
 - Inclus le satisfaction_score dans ta reponse JSON]`
+	} else if isCompletionEvent {
+		// Extract item name from "__task_completed__:TaskTitle" or "__routine_completed__:RoutineTitle"
+		parts := strings.SplitN(req.Content, ":", 2)
+		itemName := ""
+		isTask := strings.HasPrefix(req.Content, "__task_completed__")
+		if len(parts) == 2 {
+			itemName = parts[1]
+		}
+		itemType := "tâche"
+		if !isTask {
+			itemType = "rituel"
+		}
+		messageForAI = fmt.Sprintf(`[SYSTEM: L'utilisateur vient de cocher la %s "%s" comme terminée. Félicite-le BRIÈVEMENT.
+
+RÈGLES:
+- 1 phrase MAX, comme un pote qui dit "bien joué"
+- Sois VARIÉ: ne dis pas toujours "bien joué" ou "bravo". Alterne entre félicitations, encouragements, humour, etc.
+- Mentionne le nom de la %s si c'est naturel
+- Regarde le contexte: combien de tâches restent? Si c'est la dernière → célèbre plus fort
+- Ton SMS décontracté
+- Inclus satisfaction_score dans le JSON]`, itemType, itemName, itemType)
 	}
 
 	// Get relevant memories
@@ -518,8 +540,8 @@ REGLES IMPORTANTES:
 		}
 	}
 
-	// Extract and save memories from user message (async, skip for greetings)
-	if !isGreeting && !isDailyGreeting {
+	// Extract and save memories from user message (async, skip for system events)
+	if !isGreeting && !isDailyGreeting && !isCompletionEvent {
 		go h.extractAndSaveMemories(context.Background(), userID, req.Content)
 	}
 
@@ -536,7 +558,7 @@ REGLES IMPORTANTES:
 
 	// Fallback: if user asked to add a task but AI forgot create_task in JSON
 	fmt.Printf("🔍 FALLBACK CHECK: action=%v isGreeting=%v isDailyGreeting=%v content='%s' reply='%s'\n", response.Action, isGreeting, isDailyGreeting, req.Content, response.Reply)
-	if response.Action == nil && !isGreeting && !isDailyGreeting {
+	if response.Action == nil && !isGreeting && !isDailyGreeting && !isCompletionEvent {
 		replyLower := strings.ToLower(response.Reply)
 		msgLower := strings.ToLower(req.Content)
 		taskMentioned := strings.Contains(msgLower, "tâche") || strings.Contains(msgLower, "tache") ||
