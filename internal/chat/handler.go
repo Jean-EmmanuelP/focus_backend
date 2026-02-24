@@ -881,13 +881,22 @@ func (h *Handler) getUserInfo(ctx context.Context, userID string) *UserInfo {
 	info := &UserInfo{}
 
 	// User profile + companion name + streak + satisfaction score
+	var scoreDate *time.Time
 	h.db.QueryRow(ctx, `
 		SELECT COALESCE(pseudo, first_name, 'ami'),
 		       COALESCE(companion_name, 'ton coach'),
 		       COALESCE(current_streak, 0),
-		       COALESCE(satisfaction_score, 50)
+		       COALESCE(satisfaction_score, 50),
+		       satisfaction_score_date
 		FROM users WHERE id = $1
-	`, userID).Scan(&info.Name, &info.CompanionName, &info.CurrentStreak, &info.SatisfactionScore)
+	`, userID).Scan(&info.Name, &info.CompanionName, &info.CurrentStreak, &info.SatisfactionScore, &scoreDate)
+
+	// Reset satisfaction score if it's from a previous day
+	now := time.Now()
+	if scoreDate == nil || scoreDate.Format("2006-01-02") != now.Format("2006-01-02") {
+		info.SatisfactionScore = 45
+		h.db.Exec(ctx, `UPDATE users SET satisfaction_score = 45, satisfaction_score_date = CURRENT_DATE WHERE id = $1`, userID)
+	}
 
 	// Focus stats
 	h.db.QueryRow(ctx, `
@@ -1725,9 +1734,9 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 
 	response := &SendMessageResponse{Reply: aiResp.Reply, ShowCard: aiResp.ShowCard, SatisfactionScore: aiResp.SatisfactionScore}
 
-	// Persist satisfaction score to DB
+	// Persist satisfaction score to DB (with today's date for daily reset)
 	if aiResp.SatisfactionScore != nil {
-		h.db.Exec(ctx, `UPDATE users SET satisfaction_score = $1 WHERE id = $2`, *aiResp.SatisfactionScore, userID)
+		h.db.Exec(ctx, `UPDATE users SET satisfaction_score = $1, satisfaction_score_date = CURRENT_DATE WHERE id = $2`, *aiResp.SatisfactionScore, userID)
 	}
 
 	// Handle focus intent (scheduled blocking with times)

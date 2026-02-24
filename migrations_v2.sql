@@ -98,3 +98,8 @@ CREATE INDEX IF NOT EXISTS idx_evening_checkins_user_date ON public.evening_chec
 -- 5. ONBOARDING - Add responses JSONB column
 -- ==========================================
 ALTER TABLE public.user_onboarding ADD COLUMN IF NOT EXISTS responses jsonb DEFAULT '{}'::jsonb;
+
+-- ==========================================
+-- SATISFACTION SCORE DAILY RESET
+-- ==========================================
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS satisfaction_score_date date;
