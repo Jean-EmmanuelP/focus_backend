@@ -41,6 +41,7 @@ type User struct {
 	AvatarStyle          *string    `json:"avatar_style"`           // Avatar style choice
 	CurrentStreak        *int       `json:"current_streak"`         // Current streak count
 	LongestStreak        *int       `json:"longest_streak"`         // Longest streak count
+	FreeVoiceMessagesUsed *int     `json:"free_voice_messages_used"` // Counter for free voice messages
 	CreatedAt            *string    `json:"created_at"`             // Account creation date
 }
 
@@ -96,6 +97,7 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		       companion_name, companion_gender, avatar_style,
 		       COALESCE(current_streak, 0) as current_streak,
 		       COALESCE(longest_streak, 0) as longest_streak,
+		       COALESCE(free_voice_messages_used, 0) as free_voice_messages_used,
 		       created_at
 		FROM public.users
 		WHERE id = $1
@@ -126,6 +128,7 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		&user.AvatarStyle,
 		&user.CurrentStreak,
 		&user.LongestStreak,
+		&user.FreeVoiceMessagesUsed,
 		&user.CreatedAt,
 	)
 

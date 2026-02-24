@@ -53,6 +53,7 @@ type SendMessageRequest struct {
 	Content     string `json:"content"`
 	Source      string `json:"source,omitempty"`       // "app" or "whatsapp"
 	AppsBlocked bool   `json:"apps_blocked,omitempty"` // Whether apps are currently blocked on device
+	StepsToday  *int   `json:"steps_today,omitempty"`  // HealthKit step count for today (nil if unavailable)
 }
 
 type ChatMessage struct {
@@ -65,25 +66,29 @@ type ChatMessage struct {
 }
 
 type SendMessageResponse struct {
-	Reply     string      `json:"reply"`
-	Tool      *string     `json:"tool,omitempty"`
-	MessageID string      `json:"message_id"`
-	Action    *ActionData `json:"action,omitempty"`
-	ShowCard  *string     `json:"show_card,omitempty"`
+	Reply             string      `json:"reply"`
+	Tool              *string     `json:"tool,omitempty"`
+	MessageID         string      `json:"message_id"`
+	Action            *ActionData `json:"action,omitempty"`
+	ShowCard          *string     `json:"show_card,omitempty"`
+	SatisfactionScore *int        `json:"satisfaction_score,omitempty"`
 }
 
 type VoiceMessageResponse struct {
-	Reply      string      `json:"reply"`
-	Transcript string      `json:"transcript"`
-	MessageID  string      `json:"message_id"`
-	Action     *ActionData `json:"action,omitempty"`
-	ShowCard   *string     `json:"show_card,omitempty"`
+	Reply                 string      `json:"reply"`
+	Transcript            string      `json:"transcript"`
+	MessageID             string      `json:"message_id"`
+	Action                *ActionData `json:"action,omitempty"`
+	ShowCard              *string     `json:"show_card,omitempty"`
+	SatisfactionScore     *int        `json:"satisfaction_score,omitempty"`
+	FreeVoiceMessagesUsed *int        `json:"free_voice_messages_used,omitempty"`
 }
 
 type ActionData struct {
-	Type     string    `json:"type"`
-	TaskID   *string   `json:"task_id,omitempty"`
-	TaskData *TaskData `json:"task,omitempty"`
+	Type             string    `json:"type"`
+	TaskID           *string   `json:"task_id,omitempty"`
+	TaskData         *TaskData `json:"task,omitempty"`
+	DurationMinutes  *int      `json:"duration_minutes,omitempty"`
 }
 
 type TaskData struct {
@@ -138,18 +143,29 @@ COMMENT TU PARLES (c'est un CHAT, pas un email):
 - Tu finis souvent par une question ou une action concrète
 
 PREMIER CONTACT (si le contexte montre "PREMIÈRE SÉANCE"):
-C'est la toute première rencontre. Tu dois établir la relation et poser les fondations :
-1. Accueille-le chaleureusement mais brièvement
-2. Demande-lui ce qu'il veut améliorer dans sa vie (pas "aujourd'hui", dans sa VIE)
-3. Quand il te donne ses objectifs, crée ses premières quests avec create_quests
-4. Propose-lui des routines quotidiennes adaptées avec create_routines
-5. Si l'utilisateur mentionne une tâche concrète à faire aujourd'hui, utilise IMMÉDIATEMENT create_task — ne te contente pas de répondre "ok"
-6. Guide-le étape par étape — c'est OK de faire des messages un peu plus longs ici
-Exemple de flow :
-- "Bienvenue. Je suis ton coach. Dis-moi : c'est quoi le truc que tu veux vraiment changer dans ta vie ?"
-- (il répond "être plus discipliné, lire plus, faire du sport")
-- Tu crées les quests et routines, puis tu lui dis "C'est noté. Je t'ai créé tes objectifs. On commence par quoi aujourd'hui ?"
-- (il dit "aujourd'hui je dois nettoyer mon appart") → Tu utilises create_task OBLIGATOIREMENT
+C'est la toute première rencontre. Tu dois VRAIMENT comprendre l'utilisateur avant d'agir.
+ÉTAPE PAR ÉTAPE — pose UNE question à la fois, ne précipite rien :
+
+1. MESSAGE 1 : Accueille-le et demande ce qu'il veut changer dans sa vie (pas "aujourd'hui", dans sa VIE)
+   Exemple : "Salut ! Je suis ton coach. Avant de commencer, dis-moi : c'est quoi le truc que tu veux vraiment changer ?"
+
+2. MESSAGE 2 : Quand il répond, creuse. Demande POURQUOI c'est important pour lui et ce qui l'a empêché jusqu'ici.
+   Exemple : "OK, et qu'est-ce qui t'a bloqué jusqu'ici ? Le temps ? La motivation ? L'organisation ?"
+
+3. MESSAGE 3 : Demande sa routine actuelle — à quelle heure il se lève, son rythme de journée, ses créneaux libres.
+   Exemple : "Tu te lèves à quelle heure en général ? T'as des créneaux fixes dans ta journée ?"
+
+4. MESSAGE 4 : Maintenant tu as assez d'infos → crée les quests et routines adaptées à SES réponses.
+   Utilise create_quests et create_routines avec des données personnalisées.
+
+5. MESSAGES SUIVANTS : Si l'utilisateur mentionne une tâche concrète → utilise IMMÉDIATEMENT create_task.
+
+IMPORTANT PREMIÈRE SÉANCE :
+- NE CRÉE PAS de quests/routines dès le premier message — pose d'abord les questions
+- Fais au minimum 2-3 échanges de questions avant de créer quoi que ce soit
+- Les messages peuvent être un peu plus longs ici, c'est OK
+- Montre que tu écoutes en reformulant ce qu'il dit
+- Adapte les routines à SES horaires (pas des horaires génériques)
 
 UTILISATEUR ACTIF (si le contexte a des tâches/routines/quests):
 - Le matin → orienter vers la planification, mentionner les tâches du jour
@@ -160,6 +176,15 @@ UTILISATEUR ACTIF (si le contexte a des tâches/routines/quests):
 - Si des tâches sont en retard → demander ce qui bloque
 - Si une quest avance bien → encourager à maintenir le rythme
 - Si l'utilisateur dit "ça va pas" → écouter d'abord, coacher après
+
+RÉACTION AU SCORE DE SATISFACTION:
+- Score < 30 (critique) → Ton ferme mais bienveillant. "C'est pas ton meilleur jour. Qu'est-ce qui bloque ?" Propose UNE action simple.
+- Score 30-50 (en dessous) → Pousse à l'action. "T'as encore le temps de remonter. Commence par [rituel/tâche]."
+- Score 50-70 (correct) → Encourage. "Pas mal, mais tu peux faire mieux. Qu'est-ce que tu peux encore cocher ?"
+- Score 70-85 (bien) → Célèbre et pousse. "Belle journée ! Continue sur cette lancée."
+- Score > 85 (excellent) → Félicite sincèrement. "Tu gères, c'est impressionnant. Profite de ce momentum."
+- Si le score monte significativement par rapport au précédent → le remarquer et féliciter la progression
+- Si le score baisse → demander ce qui s'est passé, proposer un plan pour remonter
 
 CRÉATION DE QUESTS:
 Quand l'utilisateur exprime des objectifs ("je veux lire 12 livres", "perdre 5kg", "apprendre le piano"), tu peux en créer PLUSIEURS d'un coup :
@@ -211,7 +236,15 @@ BLOCAGE D'APPS:
 Tu peux bloquer les apps de l'utilisateur pour l'aider à se concentrer.
 - Sur demande : "bloque mes apps", "bloque les apps pendant 2h", etc.
 - De ta propre initiative : quand l'utilisateur a des tâches importantes et procrastine
-Pour bloquer MAINTENANT (sans horaire spécifique):
+- IMPORTANT : Si l'utilisateur dit juste "bloque mes apps" sans préciser de durée, DEMANDE-LUI combien de temps il veut bloquer AVANT de bloquer. Exemple : "Pendant combien de temps tu veux que je bloque ? 30 min, 1h, 2h ?"
+- Si l'utilisateur précise une durée ("bloque 2h", "bloque pendant 30 min"), bloque directement avec la durée.
+Pour bloquer avec une durée (en minutes):
+{
+  "reply": "C'est parti, je bloque tes apps pendant 2h 🔒",
+  "block_now": true,
+  "block_duration_minutes": 120
+}
+Pour bloquer sans durée (indéfini, rare):
 {
   "reply": "C'est parti, je bloque tes apps 🔒",
   "block_now": true
@@ -312,6 +345,17 @@ Quand l'utilisateur partage son humeur ou veut journaliser:
 }
 mood: happy, calm, neutral, sad, anxious, angry, grateful, motivated, tired, stressed
 
+SCORE DE SATISFACTION:
+Tu DOIS TOUJOURS inclure "satisfaction_score" (0-100) dans ta réponse JSON.
+Ce score représente ton évaluation globale de la discipline de l'utilisateur aujourd'hui :
+- Tâches complétées vs planifiées (25%%)
+- Rituels complétés (25%%)
+- Progression des quests (20%%)
+- Streak et régularité (15%%)
+- Activité physique / pas (15%%)
+Échelle : 0-30 = critique, 31-50 = en dessous, 51-70 = correct, 71-85 = bien, 86-100 = excellent
+Ajuste ce score à chaque message en fonction des données du contexte.
+
 RÈGLES STRICTES:
 - Réponses courtes (2-4 phrases), sauf pour le premier contact où tu peux être plus guidant
 - JAMAIS de listes à puces dans tes réponses
@@ -329,6 +373,7 @@ Format de réponse (inclure seulement les champs pertinents):
   "reply": "Ta réponse de coach",
   "focus_intent": null,
   "block_now": false,
+  "block_duration_minutes": null,
   "unblock_now": false,
   "create_quests": [],
   "create_routines": [],
@@ -343,7 +388,8 @@ Format de réponse (inclure seulement les champs pertinents):
   "complete_weekly_goal": null,
   "create_task": null,
   "create_journal_entry": null,
-  "show_card": null
+  "show_card": null,
+  "satisfaction_score": 50
 }
 
 SHOW_CARD (OBLIGATOIRE):
@@ -380,11 +426,15 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		source = "app"
 	}
 
-	// Check if this is a greeting request (first message from coach)
+	// Ensure user exists in public.users (may be missing after DB purge or trigger failure)
+	h.ensureUserExists(r.Context(), userID)
+
+	// Check if this is a greeting request (first message or daily return)
 	isGreeting := req.Content == "__greeting__"
+	isDailyGreeting := req.Content == "__daily_greeting__"
 
 	// Only save user message if it's NOT a greeting request
-	if !isGreeting {
+	if !isGreeting && !isDailyGreeting {
 		userMsgID := uuid.New().String()
 		h.db.Exec(r.Context(), `
 			INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, source)
@@ -392,24 +442,40 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		`, userMsgID, userID, req.Content, source)
 	}
 
-	// Replace greeting trigger with a prompt for the AI
-	messageForAI := req.Content
-	if isGreeting {
-		messageForAI = "[SYSTEM: L'utilisateur vient d'ouvrir l'app pour la première fois. Envoie un message de bienvenue chaleureux et personnel. Présente-toi brièvement avec ton nom, et demande-lui comment tu peux l'aider aujourd'hui. Sois bref et engageant.]"
-	}
-
 	// Get user info BEFORE updating streak (so isFirstSession detection works)
 	userInfo := h.getUserInfo(r.Context(), userID)
 	userInfo.AppsBlocked = req.AppsBlocked
+	userInfo.StepsToday = req.StepsToday
 
 	// Update streak (user engaged today by sending a message)
 	streak.UpdateUserStreak(r.Context(), h.db, userID)
 
-	// Get relevant memories
-	memories := h.getRelevantMemories(r.Context(), userID, messageForAI)
-
 	// Get recent history (last 20 messages)
 	history, _ := h.getRecentHistory(r.Context(), userID, 20)
+
+	// Replace greeting trigger with a prompt for the AI
+	messageForAI := req.Content
+	if isGreeting {
+		if len(history) == 0 {
+			messageForAI = "[SYSTEM: L'utilisateur vient d'ouvrir l'app pour la première fois. Envoie un message de bienvenue chaleureux et personnel. Présente-toi brièvement avec ton nom, et demande-lui comment tu peux l'aider aujourd'hui. Sois bref et engageant.]"
+		} else {
+			messageForAI = "[SYSTEM: L'utilisateur revient sur l'app. Dis-lui bonjour brièvement et demande comment il va ou sur quoi il veut avancer. Ne te re-présente pas, il te connaît déjà.]"
+		}
+	} else if isDailyGreeting {
+		messageForAI = `[SYSTEM: L'utilisateur revient sur l'app après au moins un jour d'absence. Envoie-lui un message court et naturel comme un pote qui envoie un SMS.
+
+REGLES IMPORTANTES:
+- Sois VARIE: ne pose PAS toujours la meme question. Alterne entre differents styles.
+- NE DEMANDE PAS systematiquement "comment avance ta journee" ou "t'as avance sur tes taches"
+- Utilise le contexte (heure, streak, taches, rituels, humeur) pour personnaliser
+- Parfois demande comment il va, parfois commente sa streak, parfois fais une blague, parfois encourage, parfois challenge
+- Ton naturel de SMS entre potes, pas de coach corporate
+- 1-2 phrases max, pas plus
+- Inclus le satisfaction_score dans ta reponse JSON]`
+	}
+
+	// Get relevant memories
+	memories := h.getRelevantMemories(r.Context(), userID, messageForAI)
 
 	// Generate AI response
 	response, err := h.generateResponse(r.Context(), userID, messageForAI, userInfo, memories, history, source)
@@ -421,7 +487,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Extract and save memories from user message (async, skip for greetings)
-	if !isGreeting {
+	if !isGreeting && !isDailyGreeting {
 		go h.extractAndSaveMemories(context.Background(), userID, req.Content)
 	}
 
@@ -437,8 +503,8 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fallback: if user asked to add a task but AI forgot create_task in JSON
-	fmt.Printf("🔍 FALLBACK CHECK: action=%v isGreeting=%v content='%s' reply='%s'\n", response.Action, isGreeting, req.Content, response.Reply)
-	if response.Action == nil && !isGreeting {
+	fmt.Printf("🔍 FALLBACK CHECK: action=%v isGreeting=%v isDailyGreeting=%v content='%s' reply='%s'\n", response.Action, isGreeting, isDailyGreeting, req.Content, response.Reply)
+	if response.Action == nil && !isGreeting && !isDailyGreeting {
 		replyLower := strings.ToLower(response.Reply)
 		msgLower := strings.ToLower(req.Content)
 		taskMentioned := strings.Contains(msgLower, "tâche") || strings.Contains(msgLower, "tache") ||
@@ -508,6 +574,9 @@ func (h *Handler) SendVoiceMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+
+	// Ensure user exists in public.users
+	h.ensureUserExists(r.Context(), userID)
 
 	// Parse multipart form (max 10MB)
 	if err := r.ParseMultipartForm(10 << 20); err != nil {
@@ -611,13 +680,26 @@ func (h *Handler) SendVoiceMessage(w http.ResponseWriter, r *http.Request) {
 		VALUES ($1, $2, $3, false, 'text', $4)
 	`, aiMsgID, userID, response.Reply, source)
 
+	// Increment free voice messages counter
+	var updatedCount int
+	err = h.db.QueryRow(r.Context(), `
+		UPDATE users SET free_voice_messages_used = COALESCE(free_voice_messages_used, 0) + 1
+		WHERE id = $1
+		RETURNING free_voice_messages_used
+	`, userID).Scan(&updatedCount)
+	if err != nil {
+		fmt.Printf("⚠️ Failed to increment voice counter: %v\n", err)
+	}
+
 	// Build voice response
 	voiceResponse := VoiceMessageResponse{
-		Reply:      response.Reply,
-		Transcript: transcript,
-		MessageID:  aiMsgID,
-		Action:     response.Action,
-		ShowCard:   response.ShowCard,
+		Reply:                 response.Reply,
+		Transcript:            transcript,
+		MessageID:             aiMsgID,
+		Action:                response.Action,
+		ShowCard:              response.ShowCard,
+		SatisfactionScore:     response.SatisfactionScore,
+		FreeVoiceMessagesUsed: &updatedCount,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -712,6 +794,9 @@ type UserInfo struct {
 	LatestMood *string
 	// Device state (from client)
 	AppsBlocked bool
+	StepsToday  *int
+	// Satisfaction score (persisted)
+	SatisfactionScore int
 }
 
 type TaskSummary struct {
@@ -757,16 +842,46 @@ type ExtractedFact struct {
 	Entities   []string `json:"entities"`
 }
 
+// ensureUserExists checks if a user record exists in public.users and creates it if missing.
+// This handles the case where auth.users exists (valid JWT) but the trigger to create
+// public.users failed (e.g., after DB purge or trigger failure).
+func (h *Handler) ensureUserExists(ctx context.Context, userID string) {
+	var exists bool
+	err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)`, userID).Scan(&exists)
+	if err != nil || exists {
+		return
+	}
+
+	// User is missing from public.users — try to auto-create from auth.users
+	fmt.Printf("⚠️ User %s missing from public.users — auto-creating\n", userID)
+
+	// Get email from auth.users if available
+	var email *string
+	_ = h.db.QueryRow(ctx, `SELECT email FROM auth.users WHERE id = $1`, userID).Scan(&email)
+
+	_, err = h.db.Exec(ctx, `
+		INSERT INTO users (id, email, created_at, updated_at)
+		VALUES ($1, $2, NOW(), NOW())
+		ON CONFLICT (id) DO NOTHING
+	`, userID, email)
+	if err != nil {
+		fmt.Printf("❌ Failed to auto-create user %s: %v\n", userID, err)
+	} else {
+		fmt.Printf("✅ Auto-created user record for %s\n", userID)
+	}
+}
+
 func (h *Handler) getUserInfo(ctx context.Context, userID string) *UserInfo {
 	info := &UserInfo{}
 
-	// User profile + companion name + streak
+	// User profile + companion name + streak + satisfaction score
 	h.db.QueryRow(ctx, `
 		SELECT COALESCE(pseudo, first_name, 'ami'),
 		       COALESCE(companion_name, 'ton coach'),
-		       COALESCE(current_streak, 0)
+		       COALESCE(current_streak, 0),
+		       COALESCE(satisfaction_score, 50)
 		FROM users WHERE id = $1
-	`, userID).Scan(&info.Name, &info.CompanionName, &info.CurrentStreak)
+	`, userID).Scan(&info.Name, &info.CompanionName, &info.CurrentStreak, &info.SatisfactionScore)
 
 	// Focus stats
 	h.db.QueryRow(ctx, `
@@ -1364,6 +1479,13 @@ func (h *Handler) generateResponse(ctx context.Context, userID, message string, 
 		appsBlockedStr = "\n- Apps: BLOQUÉES 🔒"
 	}
 
+	stepsStr := ""
+	if userInfo.StepsToday != nil {
+		stepsStr = fmt.Sprintf("\n- Pas aujourd'hui: %d pas 🚶", *userInfo.StepsToday)
+	}
+
+	satisfactionStr := fmt.Sprintf("\n- Score de satisfaction actuel: %d/100", userInfo.SatisfactionScore)
+
 	now := time.Now()
 	tomorrow := now.AddDate(0, 0, 1)
 	contextStr := fmt.Sprintf(`
@@ -1374,14 +1496,14 @@ CONTEXTE:
 - Focus aujourd'hui: %d minutes
 - Focus cette semaine: %d minutes
 - Tâches: %d/%d complétées aujourd'hui
-- Heure: %s%s
+- Heure: %s%s%s%s
 `, userInfo.Name, streakStr, now.Format("2006-01-02"), tomorrow.Format("2006-01-02"),
 		userInfo.FocusToday, userInfo.FocusWeek,
 		userInfo.TasksCompleted, userInfo.TasksToday,
-		now.Format("15:04"), appsBlockedStr)
+		now.Format("15:04"), appsBlockedStr, stepsStr, satisfactionStr)
 
-	// Detect first session (new user with no data)
-	isFirstSession := len(userInfo.Tasks) == 0 && len(userInfo.Routines) == 0 && len(userInfo.Quests) == 0 && userInfo.CurrentStreak == 0
+	// Detect first session (new user with no data AND no chat history)
+	isFirstSession := len(userInfo.Tasks) == 0 && len(userInfo.Routines) == 0 && len(userInfo.Quests) == 0 && userInfo.CurrentStreak == 0 && len(history) <= 1
 	if isFirstSession {
 		contextStr += "\n⭐ PREMIÈRE SÉANCE — C'est un nouvel utilisateur, pas de données existantes. Guide-le pour créer ses premiers objectifs et routines.\n"
 	}
@@ -1536,8 +1658,9 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 			EndTime   string `json:"end_time"`
 			BlockApps bool   `json:"block_apps"`
 		} `json:"focus_intent"`
-		BlockNow      bool `json:"block_now"`
-		UnblockNow    bool `json:"unblock_now"`
+		BlockNow             bool `json:"block_now"`
+		BlockDurationMinutes *int `json:"block_duration_minutes"`
+		UnblockNow           bool `json:"unblock_now"`
 		CreateQuests  []struct {
 			Title       string `json:"title"`
 			TargetValue int    `json:"target_value"`
@@ -1585,7 +1708,8 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 			Mood       string `json:"mood"`
 			Transcript string `json:"transcript"`
 		} `json:"create_journal_entry"`
-		ShowCard *string `json:"show_card"`
+		ShowCard          *string `json:"show_card"`
+		SatisfactionScore *int    `json:"satisfaction_score"`
 	}
 
 	if err := json.Unmarshal([]byte(responseText), &aiResp); err != nil {
@@ -1593,7 +1717,12 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 		return &SendMessageResponse{Reply: responseText}, nil
 	}
 
-	response := &SendMessageResponse{Reply: aiResp.Reply, ShowCard: aiResp.ShowCard}
+	response := &SendMessageResponse{Reply: aiResp.Reply, ShowCard: aiResp.ShowCard, SatisfactionScore: aiResp.SatisfactionScore}
+
+	// Persist satisfaction score to DB
+	if aiResp.SatisfactionScore != nil {
+		h.db.Exec(ctx, `UPDATE users SET satisfaction_score = $1 WHERE id = $2`, *aiResp.SatisfactionScore, userID)
+	}
 
 	// Handle focus intent (scheduled blocking with times)
 	if aiResp.FocusIntent != nil && aiResp.FocusIntent.Detected {
@@ -1612,7 +1741,8 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 	// Handle immediate app blocking
 	if aiResp.BlockNow {
 		response.Action = &ActionData{
-			Type: "block_apps",
+			Type:            "block_apps",
+			DurationMinutes: aiResp.BlockDurationMinutes,
 		}
 	}
 
@@ -1777,6 +1907,80 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 			fmt.Printf("⚠️ Failed to create journal entry: %v\n", err)
 		} else {
 			response.Action = &ActionData{Type: "journal_entry_created"}
+		}
+	}
+
+	// Fallback: auto-detect show_card from reply text if AI forgot it
+	isSystemMessage := strings.HasPrefix(message, "[SYSTEM:")
+	if response.ShowCard == nil && !isSystemMessage {
+		replyLower := strings.ToLower(aiResp.Reply)
+		msgLower := strings.ToLower(message)
+
+		// Task detection — check user message keywords
+		taskMsgKeywords := []string{"tâche", "tache", "to-do", "todo", "planning", "programme", "quoi faire", "agenda", "aujourd'hui", "reste à faire", "combien de", "journée", "mes taches"}
+		// Task detection — check AI reply patterns
+		taskReplyPatterns := []string{"voici tes tâches", "voici tes taches", "tes tâches du jour", "ton planning", "ta journée", "voici ton programme", "voici ta journée", "voici ton planning", "prévues pour"}
+		// Routine detection
+		routineMsgKeywords := []string{"rituel", "routine", "habitude"}
+		routineReplyPatterns := []string{"voici tes rituel", "tes routine", "tes habitude"}
+		// Quest detection
+		questMsgKeywords := []string{"objectif", "quest", "goal", "but"}
+		questReplyPatterns := []string{"voici tes objectif", "tes objectifs", "tes quests", "tes goals"}
+
+		// Check tasks
+		for _, kw := range taskMsgKeywords {
+			if strings.Contains(msgLower, kw) {
+				card := "tasks"
+				response.ShowCard = &card
+				break
+			}
+		}
+		if response.ShowCard == nil {
+			for _, pattern := range taskReplyPatterns {
+				if strings.Contains(replyLower, pattern) {
+					card := "tasks"
+					response.ShowCard = &card
+					break
+				}
+			}
+		}
+		// Check routines
+		if response.ShowCard == nil {
+			for _, kw := range routineMsgKeywords {
+				if strings.Contains(msgLower, kw) {
+					card := "routines"
+					response.ShowCard = &card
+					break
+				}
+			}
+		}
+		if response.ShowCard == nil {
+			for _, pattern := range routineReplyPatterns {
+				if strings.Contains(replyLower, pattern) {
+					card := "routines"
+					response.ShowCard = &card
+					break
+				}
+			}
+		}
+		// Check quests
+		if response.ShowCard == nil {
+			for _, kw := range questMsgKeywords {
+				if strings.Contains(msgLower, kw) {
+					card := "quests"
+					response.ShowCard = &card
+					break
+				}
+			}
+		}
+		if response.ShowCard == nil {
+			for _, pattern := range questReplyPatterns {
+				if strings.Contains(replyLower, pattern) {
+					card := "quests"
+					response.ShowCard = &card
+					break
+				}
+			}
 		}
 	}
 
