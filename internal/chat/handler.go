@@ -517,15 +517,16 @@ REGLES IMPORTANTES:
 		if !isTask {
 			itemType = "rituel"
 		}
-		messageForAI = fmt.Sprintf(`[SYSTEM: L'utilisateur vient de cocher la %s "%s" comme terminée. Félicite-le BRIÈVEMENT.
+		messageForAI = fmt.Sprintf(`[SYSTEM: L'utilisateur vient de cocher la %s "%s" comme terminée. Félicite-le et enchaîne sur la suite.
 
 RÈGLES:
-- 1 phrase MAX, comme un pote qui dit "bien joué"
-- Sois VARIÉ: ne dis pas toujours "bien joué" ou "bravo". Alterne entre félicitations, encouragements, humour, etc.
-- Mentionne le nom de la %s si c'est naturel
-- Regarde le contexte: combien de tâches restent? Si c'est la dernière → célèbre plus fort
+- 2 phrases MAX. Phrase 1: félicitation courte. Phrase 2: enchaîne sur la prochaine tâche/rituel non complété(e) du contexte.
+- Exemples: "Nickel ! Allez maintenant attaque [prochaine tâche]", "Ça c'est fait 💪 Et [routine] t'as prévu de le faire quand ?", "Top. Il te reste [tâche], tu t'y mets ?"
+- Si c'est la DERNIÈRE tâche/rituel → célèbre plus fort, pas besoin d'enchaîner. Ex: "Tout est coché, t'as tout déchiré aujourd'hui 🔥"
+- Sois VARIÉ: ne dis pas toujours la même félicitation
+- Regarde les TÂCHES et ROUTINES du contexte pour savoir quoi proposer ensuite
 - Ton SMS décontracté
-- Inclus satisfaction_score dans le JSON]`, itemType, itemName, itemType)
+- Inclus satisfaction_score dans le JSON]`, itemType, itemName)
 	}
 
 	// Get relevant memories
