@@ -50,10 +50,11 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 // ============================================
 
 type SendMessageRequest struct {
-	Content     string `json:"content"`
-	Source      string `json:"source,omitempty"`       // "app" or "whatsapp"
-	AppsBlocked bool   `json:"apps_blocked,omitempty"` // Whether apps are currently blocked on device
-	StepsToday  *int   `json:"steps_today,omitempty"`  // HealthKit step count for today (nil if unavailable)
+	Content          string `json:"content"`
+	Source           string `json:"source,omitempty"`            // "app" or "whatsapp"
+	AppsBlocked      bool   `json:"apps_blocked,omitempty"`      // Whether apps are currently blocked on device
+	StepsToday       *int   `json:"steps_today,omitempty"`       // HealthKit step count for today (nil if unavailable)
+	DistractionCount *int   `json:"distraction_count,omitempty"` // Number of distraction events triggered today
 }
 
 type ChatMessage struct {
@@ -354,6 +355,11 @@ RÈGLES DE CALCUL:
 - Tâches complétées vs planifiées : poids principal
 - Rituels complétés (si configurés)
 - Engagement général : streak, messages, quests, activité physique
+- DISTRACTIONS: facteur important
+  - 0 distraction aujourd'hui → BONUS +10 points (discipline exemplaire)
+  - 1 distraction → -5 points
+  - 2+ distractions → -5 points par alerte supplémentaire
+  - Apps bloquées activement → BONUS +5 points
 - BASE: Un utilisateur qui ouvre l'app et interagit commence à 45 minimum
 - Si la majorité des tâches du jour sont complétées → minimum 55
 - Si toutes les tâches ET rituels sont complétés → minimum 75
@@ -452,6 +458,7 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	userInfo := h.getUserInfo(r.Context(), userID)
 	userInfo.AppsBlocked = req.AppsBlocked
 	userInfo.StepsToday = req.StepsToday
+	userInfo.DistractionCount = req.DistractionCount
 
 	// Update streak (user engaged today by sending a message)
 	streak.UpdateUserStreak(r.Context(), h.db, userID)
@@ -799,8 +806,9 @@ type UserInfo struct {
 	// Latest mood
 	LatestMood *string
 	// Device state (from client)
-	AppsBlocked bool
-	StepsToday  *int
+	AppsBlocked      bool
+	StepsToday       *int
+	DistractionCount *int
 	// Satisfaction score (persisted)
 	SatisfactionScore int
 }
@@ -1499,6 +1507,16 @@ func (h *Handler) generateResponse(ctx context.Context, userID, message string, 
 		stepsStr = fmt.Sprintf("\n- Pas aujourd'hui: %d pas 🚶", *userInfo.StepsToday)
 	}
 
+	distractionStr := ""
+	if userInfo.DistractionCount != nil {
+		count := *userInfo.DistractionCount
+		if count == 0 {
+			distractionStr = "\n- Distractions: AUCUNE aujourd'hui ✅ (bonus +10 au score)"
+		} else {
+			distractionStr = fmt.Sprintf("\n- Distractions: %d alerte(s) aujourd'hui 📱 (malus -%d au score)", count, count*5)
+		}
+	}
+
 	satisfactionStr := fmt.Sprintf("\n- Score de satisfaction actuel: %d/100", userInfo.SatisfactionScore)
 
 	now := time.Now()
@@ -1511,11 +1529,11 @@ CONTEXTE:
 - Focus aujourd'hui: %d minutes
 - Focus cette semaine: %d minutes
 - Tâches: %d/%d complétées aujourd'hui
-- Heure: %s%s%s%s
+- Heure: %s%s%s%s%s
 `, userInfo.Name, streakStr, now.Format("2006-01-02"), tomorrow.Format("2006-01-02"),
 		userInfo.FocusToday, userInfo.FocusWeek,
 		userInfo.TasksCompleted, userInfo.TasksToday,
-		now.Format("15:04"), appsBlockedStr, stepsStr, satisfactionStr)
+		now.Format("15:04"), appsBlockedStr, stepsStr, distractionStr, satisfactionStr)
 
 	// Detect first session (new user with no data AND no chat history)
 	isFirstSession := len(userInfo.Tasks) == 0 && len(userInfo.Routines) == 0 && len(userInfo.Quests) == 0 && userInfo.CurrentStreak == 0 && len(history) <= 1
