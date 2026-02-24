@@ -177,6 +177,7 @@ UTILISATEUR ACTIF (si le contexte a des tâches/routines/quests):
 - Si des tâches sont en retard → demander ce qui bloque
 - Si une quest avance bien → encourager à maintenir le rythme
 - Si l'utilisateur dit "ça va pas" → écouter d'abord, coacher après
+- IMPORTANT: Sois SPÉCIFIQUE. Au lieu de "t'as avancé sur tes tâches ?", demande sur UNE tâche précise: "T'as avancé sur [nom de la tâche] ?" ou "Le [routine] c'est fait ?"
 
 RÉACTION AU SCORE DE SATISFACTION:
 - Score < 30 (critique) → Ton ferme mais bienveillant. "C'est pas ton meilleur jour. Qu'est-ce qui bloque ?" Propose UNE action simple.
@@ -408,8 +409,18 @@ SHOW_CARD (OBLIGATOIRE):
 Dès que l'utilisateur mentionne ses tâches, sa to-do, son planning, ses choses à faire, ou ses rituels/routines → tu DOIS ajouter "show_card" dans le JSON.
 - Mots-clés tâches: "tâches", "taches", "to-do", "todo", "planning", "programme", "quoi faire", "journée", "agenda", "mes tâches du jour", "c'est quoi aujourd'hui", "montre", "voir" → "show_card": "tasks"
 - Mots-clés routines: "rituels", "routines", "habitudes", "mes rituels" → "show_card": "routines"
-- IMPORTANT: NE PAS lister les tâches dans le texte "reply". Dis juste "Voici tes tâches du jour" ou similaire et mets "show_card": "tasks". L'app affichera la carte interactive.
-- Si tu listes les tâches dans reply ET que tu oublies show_card, l'utilisateur ne verra PAS la carte interactive. C'est un bug.`
+- IMPORTANT: NE PAS lister les tâches dans le texte "reply". Mets juste "show_card": "tasks" et l'app affichera la carte interactive.
+- VARIE TA FORMULATION dans le reply. NE DIS PAS "Voici tes tâches du jour" à chaque fois. Exemples variés:
+  "Tiens, regarde ton programme", "Allez voyons ça", "Check ce que t'as prévu", "Regarde", "Ton planning du jour", "Tes tâches du jour ⬇️", etc.
+  REGARDE la conversation récente et utilise une formulation DIFFÉRENTE de tes messages précédents.
+- Si tu listes les tâches dans reply ET que tu oublies show_card, l'utilisateur ne verra PAS la carte interactive. C'est un bug.
+
+ANTI-RÉPÉTITION (CRITIQUE):
+- RELIS la conversation récente avant de répondre. NE RÉPÈTE JAMAIS une phrase que tu as déjà dite.
+- Si tu as déjà dit "Voici tes tâches du jour" → utilise une autre formulation
+- Si tu as déjà dit "Comment avance ta journée ?" → pose une question différente
+- Chaque message doit apporter quelque chose de nouveau ou une perspective différente
+- Quand tu mentionnes les tâches/routines, varie: parfois commente la progression, parfois challenge, parfois félicite, parfois pose une question ciblée sur UNE tâche spécifique`
 
 // ===========================================
 // HANDLERS
@@ -472,7 +483,15 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 		if len(history) == 0 {
 			messageForAI = "[SYSTEM: L'utilisateur vient d'ouvrir l'app pour la première fois. Envoie un message de bienvenue chaleureux et personnel. Présente-toi brièvement avec ton nom, et demande-lui comment tu peux l'aider aujourd'hui. Sois bref et engageant.]"
 		} else {
-			messageForAI = "[SYSTEM: L'utilisateur revient sur l'app. Dis-lui bonjour brièvement et demande comment il va ou sur quoi il veut avancer. Ne te re-présente pas, il te connaît déjà.]"
+			messageForAI = `[SYSTEM: L'utilisateur revient sur l'app. Envoie un message COURT et VARIÉ.
+
+IMPORTANT — VARIE À CHAQUE FOIS:
+- RELIS les derniers messages de la conversation et NE RÉPÈTE PAS la même accroche
+- NE DIS PAS systématiquement "Comment avance ta journée ?" ou "T'as avancé sur tes tâches ?"
+- Utilise le CONTEXTE pour personnaliser: commente une tâche spécifique, la streak, l'heure, les routines
+- Styles à alterner: question sur son état, commentaire sur sa progression, encouragement, défi, blague, référence à un objectif précis
+- 1-2 phrases max, ton SMS
+- Ne te re-présente pas, il te connaît déjà]`
 		}
 	} else if isDailyGreeting {
 		messageForAI = `[SYSTEM: L'utilisateur revient sur l'app après au moins un jour d'absence. Envoie-lui un message court et naturel comme un pote qui envoie un SMS.
