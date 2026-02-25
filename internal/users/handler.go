@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -133,7 +134,7 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err != nil {
-		fmt.Println("❌ Database Error:", err)
+		log.Println("Database Error:", err)
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
@@ -156,7 +157,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 
 	// Debug log for productivity peak
 	if req.ProductivityPeak != nil {
-		fmt.Println("📊 Updating ProductivityPeak to:", *req.ProductivityPeak)
+		log.Println("Updating ProductivityPeak to:", *req.ProductivityPeak)
 	}
 
 	// Dynamic SQL Builder - only update fields that were sent
@@ -322,7 +323,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err != nil {
-		fmt.Println("❌ Update Error:", err)
+		log.Println("Update Error:", err)
 		http.Error(w, "Failed to update profile", http.StatusInternalServerError)
 		return
 	}
@@ -437,7 +438,7 @@ func (h *Handler) UploadAvatar(w http.ResponseWriter, r *http.Request) {
 	// Upload to Supabase Storage
 	avatarURL, err := uploadToSupabaseStorage(filename, imageData, contentType)
 	if err != nil {
-		fmt.Println("❌ Storage upload error:", err)
+		log.Println("Storage upload error:", err)
 		http.Error(w, "Failed to upload image", http.StatusInternalServerError)
 		return
 	}
@@ -447,7 +448,7 @@ func (h *Handler) UploadAvatar(w http.ResponseWriter, r *http.Request) {
 	var updatedAvatarURL *string
 	err = h.db.QueryRow(r.Context(), query, avatarURL, userID).Scan(&updatedAvatarURL)
 	if err != nil {
-		fmt.Println("❌ Database update error:", err)
+		log.Println("Database update error:", err)
 		http.Error(w, "Failed to update profile", http.StatusInternalServerError)
 		return
 	}
@@ -506,7 +507,7 @@ func (h *Handler) DeleteAvatar(w http.ResponseWriter, r *http.Request) {
 	query := `UPDATE public.users SET avatar_url = NULL WHERE id = $1`
 	_, err := h.db.Exec(r.Context(), query, userID)
 	if err != nil {
-		fmt.Println("❌ Delete avatar error:", err)
+		log.Println("Delete avatar error:", err)
 		http.Error(w, "Failed to remove avatar", http.StatusInternalServerError)
 		return
 	}
@@ -522,7 +523,7 @@ func (h *Handler) DeleteAvatar(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------
 func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
-	fmt.Printf("🗑️ Starting account deletion for user: %s\n", userID)
+	log.Printf("Starting account deletion for user: %s", userID)
 
 	type deletion struct {
 		query string
@@ -595,20 +596,20 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 	for _, d := range deletions {
 		_, err := h.db.Exec(r.Context(), d.query, userID)
 		if err != nil {
-			fmt.Printf("⚠️ Failed to delete from %s: %v\n", d.table, err)
+			log.Printf("Failed to delete from %s: %v", d.table, err)
 			failedTables = append(failedTables, d.table)
 		} else {
-			fmt.Printf("✅ Deleted from %s\n", d.table)
+			log.Printf("Deleted from %s", d.table)
 		}
 	}
 
 	// Delete from public.users
 	_, err := h.db.Exec(r.Context(), `DELETE FROM public.users WHERE id = $1`, userID)
 	if err != nil {
-		fmt.Printf("⚠️ Failed to delete from public.users: %v\n", err)
+		log.Printf("Failed to delete from public.users: %v", err)
 		failedTables = append(failedTables, "public.users")
 	} else {
-		fmt.Printf("✅ Deleted from public.users\n")
+		log.Printf("Deleted from public.users")
 	}
 
 	// Delete from auth.users via Supabase Admin API
@@ -624,38 +625,38 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 			client := &http.Client{Timeout: 10 * time.Second}
 			resp, apiErr := client.Do(req)
 			if apiErr != nil {
-				fmt.Printf("⚠️ Failed to delete auth.users via API: %v\n", apiErr)
+				log.Printf("Failed to delete auth.users via API: %v", apiErr)
 			} else {
 				resp.Body.Close()
 				if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-					fmt.Printf("✅ Deleted from auth.users via Supabase Admin API\n")
+					log.Printf("Deleted from auth.users via Supabase Admin API")
 				} else {
-					fmt.Printf("⚠️ Supabase Admin API returned %d for auth user deletion\n", resp.StatusCode)
+					log.Printf("Supabase Admin API returned %d for auth user deletion", resp.StatusCode)
 					// Fallback: try direct SQL deletion from auth.users
 					_, sqlErr := h.db.Exec(r.Context(), `DELETE FROM auth.users WHERE id = $1`, userID)
 					if sqlErr != nil {
-						fmt.Printf("⚠️ Fallback auth.users SQL delete also failed: %v\n", sqlErr)
+						log.Printf("Fallback auth.users SQL delete also failed: %v", sqlErr)
 					} else {
-						fmt.Printf("✅ Deleted from auth.users via direct SQL\n")
+						log.Printf("Deleted from auth.users via direct SQL")
 					}
 				}
 			}
 		}
 	} else {
 		// No Supabase config: try direct SQL
-		fmt.Printf("ℹ️ No SUPABASE_URL/KEY, trying direct SQL delete from auth.users\n")
+		log.Printf("No SUPABASE_URL/KEY, trying direct SQL delete from auth.users")
 		_, sqlErr := h.db.Exec(r.Context(), `DELETE FROM auth.users WHERE id = $1`, userID)
 		if sqlErr != nil {
-			fmt.Printf("⚠️ Direct auth.users delete failed: %v\n", sqlErr)
+			log.Printf("Direct auth.users delete failed: %v", sqlErr)
 		} else {
-			fmt.Printf("✅ Deleted from auth.users via direct SQL\n")
+			log.Printf("Deleted from auth.users via direct SQL")
 		}
 	}
 
 	if len(failedTables) > 0 {
-		fmt.Printf("⚠️ Account deleted with some table errors for %s: %v\n", userID, failedTables)
+		log.Printf("Account deleted with some table errors for %s: %v", userID, failedTables)
 	} else {
-		fmt.Printf("✅ Account fully deleted: %s (all %d tables + auth cleaned)\n", userID, len(deletions)+1)
+		log.Printf("Account fully deleted: %s (all %d tables + auth cleaned)", userID, len(deletions)+1)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -706,12 +707,12 @@ func (h *Handler) UpdateLocation(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err != nil {
-		fmt.Printf("❌ Failed to update location: %v\n", err)
+		log.Printf("Failed to update location: %v", err)
 		http.Error(w, "Failed to update location", http.StatusInternalServerError)
 		return
 	}
 
-	fmt.Printf("📍 Location updated for user %s: %s, %s\n", userID, stringValue(req.City), stringValue(req.Country))
+	log.Printf("Location updated for user %s: %s, %s", userID, stringValue(req.City), stringValue(req.Country))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -773,7 +774,7 @@ func (h *Handler) ChangeEmail(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		fmt.Printf("❌ Supabase auth error: %v\n", err)
+		log.Printf("Supabase auth error: %v", err)
 		http.Error(w, "Failed to update email", http.StatusInternalServerError)
 		return
 	}
@@ -781,12 +782,12 @@ func (h *Handler) ChangeEmail(w http.ResponseWriter, r *http.Request) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		fmt.Printf("❌ Supabase auth error: %s - %s\n", resp.Status, string(body))
+		log.Printf("Supabase auth error: %s - %s", resp.Status, string(body))
 		http.Error(w, "Failed to update email: "+string(body), resp.StatusCode)
 		return
 	}
 
-	fmt.Printf("✅ Email change initiated for user %s to %s\n", userID, req.NewEmail)
+	log.Printf("Email change initiated for user %s to %s", userID, req.NewEmail)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":  "ok",
@@ -843,7 +844,7 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		fmt.Printf("❌ Supabase auth error: %v\n", err)
+		log.Printf("Supabase auth error: %v", err)
 		http.Error(w, "Failed to update password", http.StatusInternalServerError)
 		return
 	}
@@ -851,12 +852,12 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		fmt.Printf("❌ Supabase auth error: %s - %s\n", resp.Status, string(body))
+		log.Printf("Supabase auth error: %s - %s", resp.Status, string(body))
 		http.Error(w, "Failed to update password: "+string(body), resp.StatusCode)
 		return
 	}
 
-	fmt.Printf("✅ Password changed for user %s\n", userID)
+	log.Printf("Password changed for user %s", userID)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":  "ok",

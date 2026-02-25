@@ -3,6 +3,7 @@ package routines
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -75,7 +76,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		var rt Routine
 		var icon *string
 		if err := rows.Scan(&rt.ID, &rt.AreaID, &rt.Title, &rt.Frequency, &icon, &rt.ScheduledTime); err != nil {
-			fmt.Println("Scan error:", err)
+			log.Println("Scan error:", err)
 			continue
 		}
 		if icon != nil {
@@ -117,7 +118,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		&rt.ID, &rt.AreaID, &rt.Title, &rt.Frequency, &icon, &rt.ScheduledTime,
 	)
 	if err != nil {
-		fmt.Println("Create error:", err)
+		log.Println("Create error:", err)
 		http.Error(w, "Failed to create routine", http.StatusInternalServerError)
 		return
 	}
@@ -239,7 +240,7 @@ func (h *Handler) Complete(w http.ResponseWriter, r *http.Request) {
 		completionDate = time.Now().Format("2006-01-02")
 	}
 
-	fmt.Printf("📅 Completing routine %s for user %s on date %s\n", routineID, userID, completionDate)
+	log.Printf("Completing routine %s for user %s on date %s", routineID, userID, completionDate)
 
 	// Insert with completion_date for unique per-day constraint
 	query := `
@@ -250,16 +251,16 @@ func (h *Handler) Complete(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.db.Exec(r.Context(), query, userID, routineID, completionDate)
 	if err != nil {
-		fmt.Printf("❌ Failed to complete routine: %v\n", err)
+		log.Printf("Failed to complete routine: %v", err)
 		http.Error(w, "Failed to complete routine", http.StatusInternalServerError)
 		return
 	}
 
 	rowsAffected := result.RowsAffected()
 	if rowsAffected == 0 {
-		fmt.Printf("⚠️ Routine completion already exists for %s (no rows inserted)\n", completionDate)
+		log.Printf("Routine completion already exists for %s (no rows inserted)", completionDate)
 	} else {
-		fmt.Printf("✅ Routine completion created successfully for %s\n", completionDate)
+		log.Printf("Routine completion created successfully for %s", completionDate)
 		// Update streak when a routine is completed
 		streak.UpdateUserStreak(r.Context(), h.db, userID)
 	}
@@ -358,7 +359,7 @@ func (h *Handler) Uncomplete(w http.ResponseWriter, r *http.Request) {
 			WHERE user_id = $1 AND routine_id = $2 AND completion_date = $3::date
 		`
 		args = []interface{}{userID, routineID, req.Date}
-		fmt.Printf("📅 Uncompleting routine %s for user %s on date %s\n", routineID, userID, req.Date)
+		log.Printf("Uncompleting routine %s for user %s on date %s", routineID, userID, req.Date)
 	} else {
 		// Delete the most recent completion (backwards compatibility)
 		query = `
@@ -371,18 +372,18 @@ func (h *Handler) Uncomplete(w http.ResponseWriter, r *http.Request) {
 			)
 		`
 		args = []interface{}{userID, routineID}
-		fmt.Printf("📅 Uncompleting most recent completion for routine %s, user %s\n", routineID, userID)
+		log.Printf("Uncompleting most recent completion for routine %s, user %s", routineID, userID)
 	}
 
 	result, err := h.db.Exec(r.Context(), query, args...)
 	if err != nil {
-		fmt.Printf("❌ Failed to uncomplete routine: %v\n", err)
+		log.Printf("Failed to uncomplete routine: %v", err)
 		http.Error(w, "Failed to undo completion", http.StatusInternalServerError)
 		return
 	}
 
 	rowsAffected := result.RowsAffected()
-	fmt.Printf("✅ Uncomplete: %d rows deleted\n", rowsAffected)
+	log.Printf("Uncomplete: %d rows deleted", rowsAffected)
 
 	w.WriteHeader(http.StatusOK)
 }

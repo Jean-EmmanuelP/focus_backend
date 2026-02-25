@@ -2,7 +2,7 @@ package notifications
 
 import (
 	"encoding/json"
-	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -81,13 +81,13 @@ func (h *Handler) RegisterToken(w http.ResponseWriter, r *http.Request) {
 	).Scan(&dt.ID, &dt.Token, &dt.Platform, &dt.AppVersion, &dt.CreatedAt, &dt.UpdatedAt)
 
 	if err != nil {
-		fmt.Printf("❌ Device token register error: %v\n", err)
+		log.Printf("Device token register error: %v", err)
 		http.Error(w, "Failed to register device token", http.StatusInternalServerError)
 		return
 	}
 
 	dt.UserID = userID
-	fmt.Printf("📱 Device token registered for user %s (platform: %s)\n", userID, platform)
+	log.Printf("Device token registered for user %s (platform: %s)", userID, platform)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(dt)
@@ -108,7 +108,7 @@ func (h *Handler) DeleteToken(w http.ResponseWriter, r *http.Request) {
 		h.db.Exec(r.Context(), `DELETE FROM public.device_tokens WHERE user_id = $1 AND token = $2`, userID, req.Token)
 	}
 
-	fmt.Printf("🗑️ Device token deleted for user %s\n", userID)
+	log.Printf("Device token deleted for user %s", userID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -164,7 +164,7 @@ func (h *Handler) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var updatedJSON []byte
 	err := h.db.QueryRow(r.Context(), query, string(settings), userID).Scan(&updatedJSON)
 	if err != nil {
-		fmt.Printf("❌ Notification settings update error: %v\n", err)
+		log.Printf("Notification settings update error: %v", err)
 		http.Error(w, "Failed to update settings", http.StatusInternalServerError)
 		return
 	}

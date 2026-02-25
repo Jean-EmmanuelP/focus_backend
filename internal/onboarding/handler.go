@@ -2,7 +2,7 @@ package onboarding
 
 import (
 	"encoding/json"
-	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -122,7 +122,7 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 // GET /onboarding/status
 func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
-	fmt.Printf("📋 GetStatus called - userID: %s\n", userID)
+	log.Printf("GetStatus called - userID: %s", userID)
 
 	query := `
 		SELECT
@@ -154,7 +154,7 @@ func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		// No onboarding record exists yet - user hasn't started
-		fmt.Printf("📋 GetStatus - No record found for user %s, starting onboarding\n", userID)
+		log.Printf("GetStatus - No record found for user %s, starting onboarding", userID)
 		status.IsCompleted = false
 		status.CurrentStep = 0
 		w.Header().Set("Content-Type", "application/json")
@@ -176,7 +176,7 @@ func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status.IsCompleted = status.CompletedAt != nil
-	fmt.Printf("📋 GetStatus - Found record for user %s: step=%d, isCompleted=%v\n",
+	log.Printf("GetStatus - Found record for user %s: step=%d, isCompleted=%v",
 		userID, status.CurrentStep, status.IsCompleted)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -187,15 +187,15 @@ func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 // PUT /onboarding/progress
 func (h *Handler) SaveProgress(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
-	fmt.Printf("📝 SaveProgress called - userID: %s\n", userID)
+	log.Printf("SaveProgress called - userID: %s", userID)
 
 	var req SaveOnboardingRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		fmt.Printf("❌ SaveProgress decode error: %v\n", err)
+		log.Printf("SaveProgress decode error: %v", err)
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	fmt.Printf("📝 SaveProgress request - step: %d\n", req.CurrentStep)
+	log.Printf("SaveProgress request - step: %d", req.CurrentStep)
 
 	// Build the responses JSON from step-specific data
 	responses := h.buildResponsesJSON(req)
@@ -267,11 +267,11 @@ func (h *Handler) SaveProgress(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err != nil {
-		fmt.Printf("❌ Onboarding save error for user %s: %v\n", userID, err)
+		log.Printf("Onboarding save error for user %s: %v", userID, err)
 		http.Error(w, "Failed to save onboarding progress", http.StatusInternalServerError)
 		return
 	}
-	fmt.Printf("✅ Onboarding saved for user %s - id: %s, step: %d\n", userID, data.ID, data.CurrentStep)
+	log.Printf("Onboarding saved for user %s - id: %s, step: %d", userID, data.ID, data.CurrentStep)
 
 	// Also update user profile with collected data (name, pronouns, etc.)
 	h.updateUserProfile(r, userID, req)
@@ -428,7 +428,7 @@ func (h *Handler) updateUserProfile(r *http.Request, userID string, req SaveOnbo
 		h.db.Exec(r.Context(),
 			`UPDATE public.users SET companion_name = $1 WHERE id = $2`,
 			*req.CompanionName, userID)
-		fmt.Printf("✅ Saved companion name '%s' for user %s\n", *req.CompanionName, userID)
+		log.Printf("Saved companion name '%s' for user %s", *req.CompanionName, userID)
 	}
 
 	// Update companion gender (step 8 - "Personnalisez votre Focus")
@@ -452,7 +452,7 @@ func (h *Handler) updateUserProfile(r *http.Request, userID string, req SaveOnbo
 		h.db.Exec(r.Context(),
 			`UPDATE public.users SET work_place = $1 WHERE id = $2`,
 			workPlace, userID)
-		fmt.Printf("✅ Saved work place '%s' for user %s\n", workPlace, userID)
+		log.Printf("Saved work place '%s' for user %s", workPlace, userID)
 	}
 }
 
@@ -467,7 +467,7 @@ type CompleteOnboardingRequest struct {
 // POST /onboarding/complete
 func (h *Handler) Complete(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
-	fmt.Printf("🏁 Complete called - userID: %s\n", userID)
+	log.Printf("Complete called - userID: %s", userID)
 
 	// Parse optional request body
 	var req CompleteOnboardingRequest
@@ -519,11 +519,11 @@ func (h *Handler) Complete(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err != nil {
-		fmt.Printf("❌ Onboarding complete error for user %s: %v\n", userID, err)
+		log.Printf("Onboarding complete error for user %s: %v", userID, err)
 		http.Error(w, "Failed to complete onboarding", http.StatusInternalServerError)
 		return
 	}
-	fmt.Printf("✅ Onboarding completed for user %s\n", userID)
+	log.Printf("Onboarding completed for user %s", userID)
 
 	// Also update user productivity_peak
 	if req.ProductivityPeak != "" {
@@ -562,7 +562,7 @@ func (h *Handler) Reset(w http.ResponseWriter, r *http.Request) {
 	query := `DELETE FROM public.user_onboarding WHERE user_id = $1`
 	_, err := h.db.Exec(r.Context(), query, userID)
 	if err != nil {
-		fmt.Println("Onboarding reset error:", err)
+		log.Println("Onboarding reset error:", err)
 		http.Error(w, "Failed to reset onboarding", http.StatusInternalServerError)
 		return
 	}

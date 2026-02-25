@@ -121,29 +121,6 @@ type UpdateDayPlanRequest struct {
 	Status         *string `json:"status,omitempty"`
 }
 
-type CreateTimeBlockRequest struct {
-	DayPlanID   *string   `json:"dayPlanId,omitempty"`
-	QuestID     *string   `json:"questId,omitempty"`
-	AreaID      *string   `json:"areaId,omitempty"`
-	Title       string    `json:"title"`
-	Description *string   `json:"description,omitempty"`
-	StartTime   time.Time `json:"startTime"`
-	EndTime     time.Time `json:"endTime"`
-	BlockType   string    `json:"blockType"`
-	Color       *string   `json:"color,omitempty"`
-}
-
-type UpdateTimeBlockRequest struct {
-	Title       *string    `json:"title,omitempty"`
-	Description *string    `json:"description,omitempty"`
-	StartTime   *time.Time `json:"startTime,omitempty"`
-	EndTime     *time.Time `json:"endTime,omitempty"`
-	Status      *string    `json:"status,omitempty"`
-	Progress    *int       `json:"progress,omitempty"`
-	QuestID     *string    `json:"questId,omitempty"`
-	AreaID      *string    `json:"areaId,omitempty"`
-}
-
 type CreateTaskRequest struct {
 	QuestID          *string    `json:"quest_id,omitempty"`
 	AreaID           *string    `json:"area_id,omitempty"`
@@ -318,115 +295,6 @@ func (h *Handler) UpdateDayPlan(w http.ResponseWriter, r *http.Request) {
 // TIME BLOCK HANDLERS
 // ==========================================
 
-func (h *Handler) ListTimeBlocks(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(auth.UserContextKey).(string)
-	date := r.URL.Query().Get("date")
-	if date == "" {
-		date = time.Now().Format("2006-01-02")
-	}
-
-	blocks, err := h.getTimeBlocksForDay(r.Context(), userID, date)
-	if err != nil {
-		http.Error(w, "Failed to fetch time blocks", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(blocks)
-}
-
-func (h *Handler) CreateTimeBlock(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(auth.UserContextKey).(string)
-
-	var req CreateTimeBlockRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	if req.BlockType == "" {
-		req.BlockType = "focus"
-	}
-
-	var block TimeBlock
-	err := h.db.QueryRow(r.Context(), `
-		INSERT INTO time_blocks (user_id, day_plan_id, quest_id, area_id, title, description, start_time, end_time, block_type, color)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		RETURNING id, user_id, day_plan_id, quest_id, area_id, title, description, start_time, end_time, block_type, status, progress, is_ai_generated, color, created_at, updated_at
-	`, userID, req.DayPlanID, req.QuestID, req.AreaID, req.Title, req.Description, req.StartTime, req.EndTime, req.BlockType, req.Color).Scan(
-		&block.ID, &block.UserID, &block.DayPlanID, &block.QuestID, &block.AreaID,
-		&block.Title, &block.Description, &block.StartTime, &block.EndTime,
-		&block.BlockType, &block.Status, &block.Progress, &block.IsAIGenerated,
-		&block.Color, &block.CreatedAt, &block.UpdatedAt,
-	)
-
-	if err != nil {
-		http.Error(w, "Failed to create time block: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(block)
-}
-
-func (h *Handler) UpdateTimeBlock(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(auth.UserContextKey).(string)
-	blockID := chi.URLParam(r, "id")
-
-	var req UpdateTimeBlockRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	var block TimeBlock
-	err := h.db.QueryRow(r.Context(), `
-		UPDATE time_blocks
-		SET
-			title = COALESCE($3, title),
-			description = COALESCE($4, description),
-			start_time = COALESCE($5, start_time),
-			end_time = COALESCE($6, end_time),
-			status = COALESCE($7, status),
-			progress = COALESCE($8, progress),
-			quest_id = COALESCE($9, quest_id),
-			area_id = COALESCE($10, area_id),
-			updated_at = now()
-		WHERE id = $1 AND user_id = $2
-		RETURNING id, user_id, day_plan_id, quest_id, area_id, title, description, start_time, end_time, block_type, status, progress, is_ai_generated, color, created_at, updated_at
-	`, blockID, userID, req.Title, req.Description, req.StartTime, req.EndTime, req.Status, req.Progress, req.QuestID, req.AreaID).Scan(
-		&block.ID, &block.UserID, &block.DayPlanID, &block.QuestID, &block.AreaID,
-		&block.Title, &block.Description, &block.StartTime, &block.EndTime,
-		&block.BlockType, &block.Status, &block.Progress, &block.IsAIGenerated,
-		&block.Color, &block.CreatedAt, &block.UpdatedAt,
-	)
-
-	if err != nil {
-		http.Error(w, "Time block not found", http.StatusNotFound)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(block)
-}
-
-func (h *Handler) DeleteTimeBlock(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(auth.UserContextKey).(string)
-	blockID := chi.URLParam(r, "id")
-
-	result, err := h.db.Exec(r.Context(), `
-		DELETE FROM time_blocks WHERE id = $1 AND user_id = $2
-	`, blockID, userID)
-
-	if err != nil || result.RowsAffected() == 0 {
-		http.Error(w, "Time block not found", http.StatusNotFound)
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // ==========================================
 // TASK HANDLERS
 // ==========================================
@@ -434,14 +302,11 @@ func (h *Handler) DeleteTimeBlock(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListTasks(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 	date := r.URL.Query().Get("date")
-	timeBlockID := r.URL.Query().Get("timeBlockId")
 
 	var tasks []Task
 	var err error
 
-	if timeBlockID != "" {
-		tasks, err = h.getTasksForTimeBlock(r.Context(), userID, timeBlockID)
-	} else if date != "" {
+	if date != "" {
 		tasks, err = h.getTasksForDay(r.Context(), userID, date, nil)
 	} else {
 		// Return today's tasks
@@ -873,11 +738,6 @@ func (h *Handler) getTasksForDay(ctx context.Context, userID, date string, dayPl
 	return tasks, nil
 }
 
-// getTasksForTimeBlock is deprecated - time_blocks no longer exist
-func (h *Handler) getTasksForTimeBlock(ctx context.Context, userID, timeBlockID string) ([]Task, error) {
-	return []Task{}, nil
-}
-
 func (h *Handler) updateQuestProgress(ctx context.Context, userID, questID, taskID string, minutesSpent int) {
 	// Log the progress
 	h.db.Exec(ctx, `
@@ -950,49 +810,6 @@ func (h *Handler) GetWeekView(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
-}
-
-func (h *Handler) getTimeBlocksForWeek(ctx context.Context, userID, startDate, endDate string) ([]TimeBlock, error) {
-	rows, err := h.db.Query(ctx, `
-		SELECT
-			tb.id, tb.user_id, tb.day_plan_id, tb.quest_id, tb.area_id,
-			tb.title, tb.description, tb.start_time, tb.end_time,
-			tb.block_type, tb.status, tb.progress, tb.is_ai_generated,
-			tb.color, tb.created_at, tb.updated_at,
-			q.title as quest_title, a.name as area_name, a.icon as area_icon
-		FROM time_blocks tb
-		LEFT JOIN quests q ON tb.quest_id = q.id
-		LEFT JOIN areas a ON tb.area_id = a.id
-		WHERE tb.user_id = $1 AND DATE(tb.start_time) BETWEEN $2 AND $3
-		ORDER BY tb.start_time
-	`, userID, startDate, endDate)
-
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var blocks []TimeBlock
-	for rows.Next() {
-		var b TimeBlock
-		err := rows.Scan(
-			&b.ID, &b.UserID, &b.DayPlanID, &b.QuestID, &b.AreaID,
-			&b.Title, &b.Description, &b.StartTime, &b.EndTime,
-			&b.BlockType, &b.Status, &b.Progress, &b.IsAIGenerated,
-			&b.Color, &b.CreatedAt, &b.UpdatedAt,
-			&b.QuestTitle, &b.AreaName, &b.AreaIcon,
-		)
-		if err != nil {
-			continue
-		}
-		blocks = append(blocks, b)
-	}
-
-	if blocks == nil {
-		blocks = []TimeBlock{}
-	}
-
-	return blocks, nil
 }
 
 // getDefaultStartTime returns default start time based on time_block
@@ -1157,9 +974,3 @@ func (h *Handler) RescheduleTask(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(task)
 }
 
-// RescheduleGoal is deprecated - use RescheduleTask instead
-// PATCH /calendar/goals/{id}/reschedule (kept for backwards compatibility)
-func (h *Handler) RescheduleGoal(w http.ResponseWriter, r *http.Request) {
-	// Redirect to RescheduleTask
-	h.RescheduleTask(w, r)
-}

@@ -3,6 +3,7 @@ package routines
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -56,7 +57,7 @@ func (h *CompletionHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(r.Context(), query, args...)
 	if err != nil {
-		fmt.Println("List completions error:", err)
+		log.Println("List completions error:", err)
 		http.Error(w, "Failed to list completions", http.StatusInternalServerError)
 		return
 	}
@@ -66,7 +67,7 @@ func (h *CompletionHandler) List(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var c Completion
 		if err := rows.Scan(&c.ID, &c.RoutineID, &c.CompletedAt); err != nil {
-			fmt.Println("Scan completion error:", err)
+			log.Println("Scan completion error:", err)
 			continue
 		}
 		completions = append(completions, c)
