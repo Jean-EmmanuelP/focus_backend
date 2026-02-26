@@ -21,6 +21,7 @@ import (
 	"firelevel-backend/internal/onboarding"
 	"firelevel-backend/internal/routines"
 	"firelevel-backend/internal/users"
+	"firelevel-backend/internal/voice"
 )
 
 // ===========================================
@@ -70,6 +71,7 @@ func main() {
 	journalHandler := journal.NewHandler(pool)
 	notificationsHandler := notifications.NewHandler(pool)
 	gmailHandler := gmail.NewHandler(pool)
+	voiceHandler := voice.NewHandler()
 
 	// 4. Setup Router
 	r := chi.NewRouter()
@@ -176,6 +178,11 @@ func main() {
 		r.Delete("/notifications/device-token", notificationsHandler.DeleteToken)
 		r.Get("/notifications/settings", notificationsHandler.GetSettings)
 		r.Patch("/notifications/settings", notificationsHandler.UpdateSettings)
+
+		// =====================
+		// VOICE (LiveKit Token)
+		// =====================
+		r.Post("/voice/livekit-token", voiceHandler.GenerateToken)
 
 		// =====================
 		// GMAIL INTEGRATION
