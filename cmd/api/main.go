@@ -97,7 +97,7 @@ func main() {
 		w.Write([]byte("OK"))
 	})
 	r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("v2.2-debug"))
+		w.Write([]byte("v2.3-backboard"))
 	})
 
 	// Protected Routes
