@@ -17,10 +17,12 @@ import (
 // Generates signed tokens for iOS <-> LiveKit Agent
 // ===========================================
 
-type Handler struct{}
+type Handler struct {
+	jwtSecret string
+}
 
-func NewHandler() *Handler {
-	return &Handler{}
+func NewHandler(jwtSecret string) *Handler {
+	return &Handler{jwtSecret: jwtSecret}
 }
 
 // tokenRequest from iOS client
@@ -31,8 +33,9 @@ type tokenRequest struct {
 
 // tokenResponse sent back to iOS
 type tokenResponse struct {
-	Token string `json:"token"`
-	URL   string `json:"url"`
+	Token      string `json:"token"`
+	URL        string `json:"url"`
+	AgentToken string `json:"agent_token"`
 }
 
 // videoGrant encodes LiveKit room permissions
@@ -76,10 +79,31 @@ func (h *Handler) GenerateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build participant metadata (mode + user context for the agent)
-	participantMeta := req.Metadata
-
 	now := time.Now()
+
+	// Generate a short agent token (signed with Supabase JWT secret)
+	// so the LiveKit agent can authenticate with our API on behalf of this user
+	agentClaims := jwt.RegisteredClaims{
+		Subject:   userID,
+		ExpiresAt: jwt.NewNumericDate(now.Add(1 * time.Hour)),
+		IssuedAt:  jwt.NewNumericDate(now),
+	}
+	agentJwt := jwt.NewWithClaims(jwt.SigningMethodHS256, agentClaims)
+	agentTokenStr, err := agentJwt.SignedString([]byte(h.jwtSecret))
+	if err != nil {
+		http.Error(w, "Failed to generate agent token", http.StatusInternalServerError)
+		return
+	}
+
+	// Build participant metadata: mode + short agent token (~200 bytes)
+	// The agent reads this to authenticate with the Focus backend API
+	metaObj := map[string]string{
+		"mode": req.Metadata,
+		"at":   agentTokenStr,
+	}
+	metaBytes, _ := json.Marshal(metaObj)
+	participantMeta := string(metaBytes)
+
 	claims := livekitClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    apiKey,
@@ -107,8 +131,9 @@ func (h *Handler) GenerateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := tokenResponse{
-		Token: signedToken,
-		URL:   livekitURL,
+		Token:      signedToken,
+		URL:        livekitURL,
+		AgentToken: agentTokenStr,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

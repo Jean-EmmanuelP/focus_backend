@@ -71,7 +71,7 @@ func main() {
 	journalHandler := journal.NewHandler(pool)
 	notificationsHandler := notifications.NewHandler(pool)
 	gmailHandler := gmail.NewHandler(pool)
-	voiceHandler := voice.NewHandler()
+	voiceHandler := voice.NewHandler(jwtSecret)
 
 	// 4. Setup Router
 	r := chi.NewRouter()
