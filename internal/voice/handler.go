@@ -95,12 +95,13 @@ func (h *Handler) GenerateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build participant metadata: mode + short agent token (~200 bytes)
-	// The agent reads this to authenticate with the Focus backend API
-	metaObj := map[string]string{
-		"mode": req.Metadata,
-		"at":   agentTokenStr,
+	// Build participant metadata: merge iOS fields + agent auth token
+	// iOS may send JSON ({"mode":"...","bid":"..."}) or plain string
+	metaObj := map[string]string{}
+	if err := json.Unmarshal([]byte(req.Metadata), &metaObj); err != nil {
+		metaObj["mode"] = req.Metadata
 	}
+	metaObj["at"] = agentTokenStr
 	metaBytes, _ := json.Marshal(metaObj)
 	participantMeta := string(metaBytes)
 
