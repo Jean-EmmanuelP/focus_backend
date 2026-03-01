@@ -46,8 +46,9 @@ type GmailConfig struct {
 
 // SaveTokensRequest for saving OAuth tokens
 type SaveTokensRequest struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
+	AuthCode     string `json:"auth_code"`      // Server auth code from iOS (exchanged for tokens)
+	AccessToken  string `json:"access_token"`   // Direct access token from GIDSignIn
+	RefreshToken string `json:"refresh_token"`  // Direct refresh token (if available)
 	ExpiresIn    int    `json:"expires_in"`
 	GoogleEmail  string `json:"google_email"`
 }
@@ -142,10 +143,36 @@ func (h *Handler) SaveTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Calculate token expiry
-	expiry := time.Now().Add(time.Duration(req.ExpiresIn) * time.Second)
+	var accessToken, refreshToken string
+	var expiry time.Time
+
+	// Prefer auth code exchange (gives a proper refresh token)
+	if req.AuthCode != "" && h.oauthConfig.ClientSecret != "" {
+		token, err := h.oauthConfig.Exchange(r.Context(), req.AuthCode)
+		if err != nil {
+			fmt.Printf("⚠️ Auth code exchange failed (falling back to direct token): %v\n", err)
+			accessToken = req.AccessToken
+			refreshToken = req.RefreshToken
+			expiry = time.Now().Add(time.Duration(req.ExpiresIn) * time.Second)
+		} else {
+			accessToken = token.AccessToken
+			refreshToken = token.RefreshToken
+			expiry = token.Expiry
+			fmt.Printf("✅ Auth code exchanged — refresh_token present: %v\n", refreshToken != "")
+		}
+	} else {
+		// Direct token from GIDSignIn (valid ~1h, iOS refreshes via SDK)
+		accessToken = req.AccessToken
+		refreshToken = req.RefreshToken
+		if req.ExpiresIn > 0 {
+			expiry = time.Now().Add(time.Duration(req.ExpiresIn) * time.Second)
+		} else {
+			expiry = time.Now().Add(1 * time.Hour)
+		}
+	}
 
 	// Upsert Gmail config
+	// NULLIF ensures empty refresh_token doesn't overwrite an existing one
 	query := `
 		INSERT INTO public.gmail_config (
 			user_id, is_connected, google_email, access_token,
@@ -157,7 +184,7 @@ func (h *Handler) SaveTokens(w http.ResponseWriter, r *http.Request) {
 			is_connected = true,
 			google_email = EXCLUDED.google_email,
 			access_token = EXCLUDED.access_token,
-			refresh_token = COALESCE(EXCLUDED.refresh_token, gmail_config.refresh_token),
+			refresh_token = COALESCE(NULLIF(EXCLUDED.refresh_token, ''), gmail_config.refresh_token),
 			token_expiry = EXCLUDED.token_expiry,
 			updated_at = NOW()
 		RETURNING id, is_connected, google_email, last_analyzed_at, persona_generated, messages_analyzed
@@ -165,7 +192,7 @@ func (h *Handler) SaveTokens(w http.ResponseWriter, r *http.Request) {
 
 	var config GmailConfig
 	err := h.db.QueryRow(r.Context(), query,
-		userID, req.GoogleEmail, req.AccessToken, req.RefreshToken, expiry,
+		userID, req.GoogleEmail, accessToken, refreshToken, expiry,
 	).Scan(
 		&config.ID,
 		&config.IsConnected,
