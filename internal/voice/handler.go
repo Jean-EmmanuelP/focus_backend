@@ -15,8 +15,9 @@ import (
 )
 
 // ===========================================
-// VOICE - Daily + Pipecat Bot Orchestration
-// Creates Daily room, spawns Pipecat bot, returns token to iOS
+// VOICE - Pipecat Cloud Orchestration
+// Calls Pipecat Cloud API to spawn bot + create Daily room,
+// returns room URL + token to iOS.
 // ===========================================
 
 type Handler struct {
@@ -25,39 +26,6 @@ type Handler struct {
 
 func NewHandler(jwtSecret string) *Handler {
 	return &Handler{jwtSecret: jwtSecret}
-}
-
-// --- Daily API types ---
-
-type dailyRoomRequest struct {
-	Properties dailyRoomProperties `json:"properties"`
-}
-
-type dailyRoomProperties struct {
-	MaxParticipants int  `json:"max_participants"`
-	ExpInSeconds    int  `json:"exp"`
-	EnableChat      bool `json:"enable_chat"`
-}
-
-type dailyRoomResponse struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	URL  string `json:"url"`
-}
-
-type dailyTokenRequest struct {
-	Properties dailyTokenProperties `json:"properties"`
-}
-
-type dailyTokenProperties struct {
-	RoomName string `json:"room_name"`
-	IsOwner  bool   `json:"is_owner"`
-	ExpInSec int    `json:"exp"`
-	UserName string `json:"user_name,omitempty"`
-}
-
-type dailyTokenResponse struct {
-	Token string `json:"token"`
 }
 
 // --- Request/Response for iOS ---
@@ -73,29 +41,34 @@ type tokenResponse struct {
 	Token   string `json:"token"`
 }
 
-// --- Bot spawn request ---
+// --- Pipecat Cloud API types ---
 
-type botStartRequest struct {
-	RoomURL string         `json:"room_url"`
-	Token   string         `json:"token"`
-	Config  map[string]any `json:"config"`
+type pipecatStartRequest struct {
+	CreateDailyRoom bool           `json:"createDailyRoom"`
+	Body            map[string]any `json:"body"`
 }
 
-// GenerateDailyToken creates a Daily room, spawns a Pipecat bot, and returns
-// a user meeting token for the iOS client.
+type pipecatStartResponse struct {
+	DailyRoom  string `json:"dailyRoom"`
+	DailyToken string `json:"dailyToken"`
+	SessionID  string `json:"sessionId"`
+}
+
+// GenerateDailyToken calls Pipecat Cloud to spawn a bot with a Daily room,
+// and returns the room URL + user token to iOS.
 // POST /voice/daily-token
 func (h *Handler) GenerateDailyToken(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 
-	dailyAPIKey := os.Getenv("DAILY_API_KEY")
-	pipecatBotURL := os.Getenv("PIPECAT_BOT_URL")
+	pipecatAPIKey := os.Getenv("PIPECAT_CLOUD_API_KEY")
+	pipecatAgent := os.Getenv("PIPECAT_AGENT_NAME")
 
-	if dailyAPIKey == "" {
-		http.Error(w, "Daily not configured", http.StatusInternalServerError)
+	if pipecatAPIKey == "" {
+		http.Error(w, "Pipecat Cloud not configured", http.StatusInternalServerError)
 		return
 	}
-	if pipecatBotURL == "" {
-		pipecatBotURL = "http://localhost:7860"
+	if pipecatAgent == "" {
+		pipecatAgent = "focus-voice"
 	}
 
 	var req tokenRequest
@@ -127,40 +100,7 @@ func (h *Handler) GenerateDailyToken(w http.ResponseWriter, r *http.Request) {
 		lang = "fr"
 	}
 
-	// 1. Create Daily room
-	roomReq := dailyRoomRequest{
-		Properties: dailyRoomProperties{
-			MaxParticipants: 2,
-			ExpInSeconds:    3600,
-			EnableChat:      true,
-		},
-	}
-	roomBody, _ := json.Marshal(roomReq)
-
-	httpReq, _ := http.NewRequest("POST", "https://api.daily.co/v1/rooms", bytes.NewReader(roomBody))
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+dailyAPIKey)
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create Daily room: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		http.Error(w, fmt.Sprintf("Daily API error: %d", resp.StatusCode), http.StatusInternalServerError)
-		return
-	}
-
-	var room dailyRoomResponse
-	if err := json.NewDecoder(resp.Body).Decode(&room); err != nil {
-		http.Error(w, "Failed to parse Daily room response", http.StatusInternalServerError)
-		return
-	}
-
-	// 2. Generate agent auth token (JWT signed with our secret for bot→backend API calls)
+	// 1. Generate agent auth token (JWT signed with our secret for bot→backend API calls)
 	now := time.Now()
 	agentClaims := jwt.RegisteredClaims{
 		Subject:   userID,
@@ -175,90 +115,45 @@ func (h *Handler) GenerateDailyToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Create bot meeting token (for the Pipecat bot to join the room)
-	botTokenReq := dailyTokenRequest{
-		Properties: dailyTokenProperties{
-			RoomName: room.Name,
-			IsOwner:  true,
-			ExpInSec: 3600,
-			UserName: "Volta",
-		},
-	}
-	botTokenBody, _ := json.Marshal(botTokenReq)
-
-	httpReq2, _ := http.NewRequest("POST", "https://api.daily.co/v1/meeting-tokens", bytes.NewReader(botTokenBody))
-	httpReq2.Header.Set("Content-Type", "application/json")
-	httpReq2.Header.Set("Authorization", "Bearer "+dailyAPIKey)
-
-	resp2, err := client.Do(httpReq2)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create bot token: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer resp2.Body.Close()
-
-	var botToken dailyTokenResponse
-	if err := json.NewDecoder(resp2.Body).Decode(&botToken); err != nil {
-		http.Error(w, "Failed to parse bot token response", http.StatusInternalServerError)
-		return
-	}
-
-	// 4. Spawn the Pipecat bot
-	botReq := botStartRequest{
-		RoomURL: room.URL,
-		Token:   botToken.Token,
-		Config: map[string]any{
+	// 2. Call Pipecat Cloud API to spawn bot + create Daily room
+	pcReq := pipecatStartRequest{
+		CreateDailyRoom: true,
+		Body: map[string]any{
 			"mode":       mode,
 			"lang":       lang,
 			"auth_token": agentTokenStr,
 		},
 	}
-	botReqBody, _ := json.Marshal(botReq)
+	pcBody, _ := json.Marshal(pcReq)
 
-	httpReq3, _ := http.NewRequest("POST", pipecatBotURL+"/start_bot", bytes.NewReader(botReqBody))
-	httpReq3.Header.Set("Content-Type", "application/json")
+	apiURL := fmt.Sprintf("https://api.pipecat.daily.co/v1/public/%s/start", pipecatAgent)
+	httpReq, _ := http.NewRequest("POST", apiURL, bytes.NewReader(pcBody))
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+pipecatAPIKey)
 
-	resp3, err := client.Do(httpReq3)
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(httpReq)
 	if err != nil {
-		// Bot spawn failed but room is created — still return token so iOS can connect
-		// (bot may join later or user gets an error)
-		fmt.Printf("WARNING: Failed to spawn bot: %v\n", err)
-	} else {
-		resp3.Body.Close()
-	}
-
-	// 5. Create user meeting token
-	userTokenReq := dailyTokenRequest{
-		Properties: dailyTokenProperties{
-			RoomName: room.Name,
-			IsOwner:  false,
-			ExpInSec: 3600,
-			UserName: userID,
-		},
-	}
-	userTokenBody, _ := json.Marshal(userTokenReq)
-
-	httpReq4, _ := http.NewRequest("POST", "https://api.daily.co/v1/meeting-tokens", bytes.NewReader(userTokenBody))
-	httpReq4.Header.Set("Content-Type", "application/json")
-	httpReq4.Header.Set("Authorization", "Bearer "+dailyAPIKey)
-
-	resp4, err := client.Do(httpReq4)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create user token: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Failed to start Pipecat session: %v", err), http.StatusInternalServerError)
 		return
 	}
-	defer resp4.Body.Close()
+	defer resp.Body.Close()
 
-	var userToken dailyTokenResponse
-	if err := json.NewDecoder(resp4.Body).Decode(&userToken); err != nil {
-		http.Error(w, "Failed to parse user token response", http.StatusInternalServerError)
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, fmt.Sprintf("Pipecat Cloud API error: %d", resp.StatusCode), http.StatusBadGateway)
 		return
 	}
 
-	// 6. Return room URL + user token to iOS
+	var pcResp pipecatStartResponse
+	if err := json.NewDecoder(resp.Body).Decode(&pcResp); err != nil {
+		http.Error(w, "Failed to parse Pipecat response", http.StatusInternalServerError)
+		return
+	}
+
+	// 3. Return room URL + token to iOS
 	result := tokenResponse{
-		RoomURL: room.URL,
-		Token:   userToken.Token,
+		RoomURL: pcResp.DailyRoom,
+		Token:   pcResp.DailyToken,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
