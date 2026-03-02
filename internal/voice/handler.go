@@ -1,6 +1,7 @@
 package voice
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,13 +13,14 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	lkauth "github.com/livekit/protocol/auth"
+	"github.com/livekit/protocol/livekit"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 )
 
 // ===========================================
-// VOICE — LiveKit Token Generation
-// Creates a LiveKit access token + room for iOS client,
-// embedding auth_token in room metadata so the agent
-// can fetch user context from the Focus API.
+// VOICE — LiveKit Token + Agent Dispatch
+// Creates a LiveKit room, dispatches the voice agent,
+// and returns an access token to iOS.
 // ===========================================
 
 type Handler struct {
@@ -41,8 +43,8 @@ type livekitTokenResponse struct {
 	Token string `json:"token"`
 }
 
-// GenerateLiveKitToken creates a LiveKit room and returns a participant token.
-// The agent (running on LiveKit Cloud) auto-joins the same room.
+// GenerateLiveKitToken creates a LiveKit room, dispatches the voice agent,
+// and returns a participant token for iOS.
 // POST /voice/livekit-token
 func (h *Handler) GenerateLiveKitToken(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
@@ -97,7 +99,32 @@ func (h *Handler) GenerateLiveKitToken(w http.ResponseWriter, r *http.Request) {
 	}
 	metadataJSON, _ := json.Marshal(metadata)
 
-	// Create LiveKit access token for the iOS participant
+	// 1. Create the room explicitly with metadata
+	roomClient := lksdk.NewRoomServiceClient(lkURL, lkAPIKey, lkAPISecret)
+	_, err = roomClient.CreateRoom(context.Background(), &livekit.CreateRoomRequest{
+		Name:            roomName,
+		Metadata:        string(metadataJSON),
+		EmptyTimeout:    60,  // close room after 60s if empty
+		MaxParticipants: 2,   // user + agent
+	})
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to create room: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// 2. Dispatch the voice agent to the room
+	agentClient := lksdk.NewAgentDispatchServiceClient(lkURL, lkAPIKey, lkAPISecret)
+	_, err = agentClient.CreateDispatch(context.Background(), &livekit.CreateAgentDispatchRequest{
+		AgentName: "agent",
+		Room:      roomName,
+		Metadata:  string(metadataJSON),
+	})
+	if err != nil {
+		// Log but don't fail — agent may auto-dispatch
+		fmt.Printf("Warning: agent dispatch failed: %v\n", err)
+	}
+
+	// 3. Create LiveKit access token for the iOS participant
 	at := lkauth.NewAccessToken(lkAPIKey, lkAPISecret)
 	grant := &lkauth.VideoGrant{
 		RoomJoin: true,
