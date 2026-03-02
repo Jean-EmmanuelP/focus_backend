@@ -1,7 +1,6 @@
 package voice
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,12 +11,14 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	lkauth "github.com/livekit/protocol/auth"
 )
 
 // ===========================================
-// VOICE - Pipecat Cloud Orchestration
-// Calls Pipecat Cloud API to spawn bot + create Daily room,
-// returns room URL + token to iOS.
+// VOICE — LiveKit Token Generation
+// Creates a LiveKit access token + room for iOS client,
+// embedding auth_token in room metadata so the agent
+// can fetch user context from the Focus API.
 // ===========================================
 
 type Handler struct {
@@ -30,77 +31,50 @@ func NewHandler(jwtSecret string) *Handler {
 
 // --- Request/Response for iOS ---
 
-type tokenRequest struct {
-	Mode     string `json:"mode,omitempty"`
-	Lang     string `json:"lang,omitempty"`
-	Metadata string `json:"metadata,omitempty"`
+type livekitTokenRequest struct {
+	Mode string `json:"mode,omitempty"`
+	Lang string `json:"lang,omitempty"`
 }
 
-type tokenResponse struct {
-	RoomURL string `json:"room_url"`
-	Token   string `json:"token"`
+type livekitTokenResponse struct {
+	URL   string `json:"url"`
+	Token string `json:"token"`
 }
 
-// --- Pipecat Cloud API types ---
-
-type pipecatStartRequest struct {
-	CreateDailyRoom bool           `json:"createDailyRoom"`
-	Body            map[string]any `json:"body"`
-}
-
-type pipecatStartResponse struct {
-	DailyRoom  string `json:"dailyRoom"`
-	DailyToken string `json:"dailyToken"`
-	SessionID  string `json:"sessionId"`
-}
-
-// GenerateDailyToken calls Pipecat Cloud to spawn a bot with a Daily room,
-// and returns the room URL + user token to iOS.
-// POST /voice/daily-token
-func (h *Handler) GenerateDailyToken(w http.ResponseWriter, r *http.Request) {
+// GenerateLiveKitToken creates a LiveKit room and returns a participant token.
+// The agent (running on LiveKit Cloud) auto-joins the same room.
+// POST /voice/livekit-token
+func (h *Handler) GenerateLiveKitToken(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 
-	pipecatAPIKey := os.Getenv("PIPECAT_CLOUD_API_KEY")
-	pipecatAgent := os.Getenv("PIPECAT_AGENT_NAME")
+	lkAPIKey := os.Getenv("LIVEKIT_API_KEY")
+	lkAPISecret := os.Getenv("LIVEKIT_API_SECRET")
+	lkURL := os.Getenv("LIVEKIT_URL")
 
-	if pipecatAPIKey == "" {
-		http.Error(w, "Pipecat Cloud not configured", http.StatusInternalServerError)
+	if lkAPIKey == "" || lkAPISecret == "" || lkURL == "" {
+		http.Error(w, "LiveKit not configured", http.StatusInternalServerError)
 		return
 	}
-	if pipecatAgent == "" {
-		pipecatAgent = "focus-voice"
-	}
 
-	var req tokenRequest
+	var req livekitTokenRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	// Parse metadata if present (backwards compat with iOS sending JSON metadata)
-	mode := req.Mode
 	lang := req.Lang
-	if mode == "" || lang == "" {
-		if req.Metadata != "" {
-			var metaObj map[string]string
-			if err := json.Unmarshal([]byte(req.Metadata), &metaObj); err == nil {
-				if mode == "" {
-					mode = metaObj["mode"]
-				}
-				if lang == "" {
-					lang = metaObj["lang"]
-				}
-			}
-		}
-	}
-	if mode == "" {
-		mode = "voice_call"
-	}
 	if lang == "" {
 		lang = "fr"
 	}
+	mode := req.Mode
+	if mode == "" {
+		mode = "voice_call"
+	}
 
-	// 1. Generate agent auth token (JWT signed with our secret for bot→backend API calls)
+	// Generate a unique room name
+	roomName := fmt.Sprintf("volta-%s-%s", userID[:8], uuid.New().String()[:8])
+
+	// Create an agent auth token (JWT) so the bot can call Focus API as this user
 	now := time.Now()
 	agentClaims := jwt.RegisteredClaims{
 		Subject:   userID,
@@ -115,45 +89,35 @@ func (h *Handler) GenerateDailyToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Call Pipecat Cloud API to spawn bot + create Daily room
-	pcReq := pipecatStartRequest{
-		CreateDailyRoom: true,
-		Body: map[string]any{
-			"mode":       mode,
-			"lang":       lang,
-			"auth_token": agentTokenStr,
-		},
+	// Build room metadata (the agent reads this on room join)
+	metadata := map[string]string{
+		"lang":       lang,
+		"mode":       mode,
+		"auth_token": agentTokenStr,
 	}
-	pcBody, _ := json.Marshal(pcReq)
+	metadataJSON, _ := json.Marshal(metadata)
 
-	apiURL := fmt.Sprintf("https://api.pipecat.daily.co/v1/public/%s/start", pipecatAgent)
-	httpReq, _ := http.NewRequest("POST", apiURL, bytes.NewReader(pcBody))
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+pipecatAPIKey)
+	// Create LiveKit access token for the iOS participant
+	at := lkauth.NewAccessToken(lkAPIKey, lkAPISecret)
+	grant := &lkauth.VideoGrant{
+		RoomJoin: true,
+		Room:     roomName,
+	}
+	at.AddGrant(grant).
+		SetIdentity(userID).
+		SetName("user").
+		SetValidFor(1 * time.Hour).
+		SetMetadata(string(metadataJSON))
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(httpReq)
+	token, err := at.ToJWT()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to start Pipecat session: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		http.Error(w, fmt.Sprintf("Pipecat Cloud API error: %d", resp.StatusCode), http.StatusBadGateway)
+		http.Error(w, "Failed to generate LiveKit token", http.StatusInternalServerError)
 		return
 	}
 
-	var pcResp pipecatStartResponse
-	if err := json.NewDecoder(resp.Body).Decode(&pcResp); err != nil {
-		http.Error(w, "Failed to parse Pipecat response", http.StatusInternalServerError)
-		return
-	}
-
-	// 3. Return room URL + token to iOS
-	result := tokenResponse{
-		RoomURL: pcResp.DailyRoom,
-		Token:   pcResp.DailyToken,
+	result := livekitTokenResponse{
+		URL:   lkURL,
+		Token: token,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

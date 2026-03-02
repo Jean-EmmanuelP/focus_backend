@@ -180,9 +180,9 @@ func main() {
 		r.Patch("/notifications/settings", notificationsHandler.UpdateSettings)
 
 		// =====================
-		// VOICE (Daily + Pipecat)
+		// VOICE (LiveKit)
 		// =====================
-		r.Post("/voice/daily-token", voiceHandler.GenerateDailyToken)
+		r.Post("/voice/livekit-token", voiceHandler.GenerateLiveKitToken)
 
 		// =====================
 		// GMAIL INTEGRATION
