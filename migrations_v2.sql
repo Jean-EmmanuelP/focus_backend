@@ -103,3 +103,8 @@ ALTER TABLE public.user_onboarding ADD COLUMN IF NOT EXISTS responses jsonb DEFA
 -- SATISFACTION SCORE DAILY RESET
 -- ==========================================
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS satisfaction_score_date date;
+
+-- ==========================================
+-- VOICE PREFERENCE (Gradium voice_id)
+-- ==========================================
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS voice_id text;

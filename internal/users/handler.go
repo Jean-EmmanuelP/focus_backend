@@ -45,6 +45,7 @@ type User struct {
 	FreeVoiceMessagesUsed *int     `json:"free_voice_messages_used"` // Counter for free voice messages
 	CreatedAt            *string    `json:"created_at"`             // Account creation date
 	BackboardAssistantID *string   `json:"backboard_assistant_id"` // Per-user Backboard assistant for isolated memory
+	VoiceID              *string   `json:"voice_id"`               // Gradium TTS voice preference
 }
 
 // 2. The DTO: Represents what a user is ALLOWED to update
@@ -69,6 +70,7 @@ type UpdateUserRequest struct {
 	CompanionGender      *string `json:"companion_gender"`
 	AvatarStyle          *string `json:"avatar_style"`
 	BackboardAssistantID *string `json:"backboard_assistant_id"`
+	VoiceID              *string `json:"voice_id"`
 }
 
 // 3. The Handler: Holds dependencies (the database client)
@@ -102,7 +104,8 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(longest_streak, 0) as longest_streak,
 		       COALESCE(free_voice_messages_used, 0) as free_voice_messages_used,
 		       created_at,
-		       backboard_assistant_id
+		       backboard_assistant_id,
+		       voice_id
 		FROM public.users
 		WHERE id = $1
 	`
@@ -135,6 +138,7 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		&user.FreeVoiceMessagesUsed,
 		&user.CreatedAt,
 		&user.BackboardAssistantID,
+		&user.VoiceID,
 	)
 
 	if err != nil {
@@ -283,6 +287,12 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		argId++
 	}
 
+	if req.VoiceID != nil {
+		setParts = append(setParts, fmt.Sprintf("voice_id = $%d", argId))
+		args = append(args, *req.VoiceID)
+		argId++
+	}
+
 	if len(setParts) == 0 {
 		http.Error(w, "No fields to update", http.StatusBadRequest)
 		return
@@ -300,7 +310,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		           companion_name, companion_gender, avatar_style,
 		           COALESCE(current_streak, 0), COALESCE(longest_streak, 0),
 		           COALESCE(free_voice_messages_used, 0), created_at,
-		           backboard_assistant_id`,
+		           backboard_assistant_id, voice_id`,
 		strings.Join(setParts, ", "),
 		argId,
 	)
@@ -334,6 +344,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		&updatedUser.FreeVoiceMessagesUsed,
 		&updatedUser.CreatedAt,
 		&updatedUser.BackboardAssistantID,
+		&updatedUser.VoiceID,
 	)
 
 	if err != nil {

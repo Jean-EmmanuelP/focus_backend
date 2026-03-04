@@ -21,6 +21,7 @@ import (
 	"firelevel-backend/internal/onboarding"
 	"firelevel-backend/internal/routines"
 	"firelevel-backend/internal/users"
+	"firelevel-backend/internal/quests"
 	"firelevel-backend/internal/voice"
 )
 
@@ -71,6 +72,7 @@ func main() {
 	journalHandler := journal.NewHandler(pool)
 	notificationsHandler := notifications.NewHandler(pool)
 	gmailHandler := gmail.NewHandler(pool)
+	questsHandler := quests.NewHandler(pool)
 	voiceHandler := voice.NewHandler(jwtSecret)
 
 	// 4. Setup Router
@@ -178,6 +180,12 @@ func main() {
 		r.Delete("/notifications/device-token", notificationsHandler.DeleteToken)
 		r.Get("/notifications/settings", notificationsHandler.GetSettings)
 		r.Patch("/notifications/settings", notificationsHandler.UpdateSettings)
+
+		// =====================
+		// QUESTS
+		// =====================
+		r.Get("/quests", questsHandler.List)
+		r.Post("/quests", questsHandler.Create)
 
 		// =====================
 		// VOICE (LiveKit)

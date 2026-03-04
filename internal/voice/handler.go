@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"time"
@@ -34,8 +35,9 @@ func NewHandler(jwtSecret string) *Handler {
 // --- Request/Response for iOS ---
 
 type livekitTokenRequest struct {
-	Mode string `json:"mode,omitempty"`
-	Lang string `json:"lang,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+	Lang    string `json:"lang,omitempty"`
+	VoiceID string `json:"voice_id,omitempty"`
 }
 
 type livekitTokenResponse struct {
@@ -91,13 +93,20 @@ func (h *Handler) GenerateLiveKitToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	voiceID := req.VoiceID
+
 	// Build room metadata (the agent reads this on room join)
 	metadata := map[string]string{
 		"lang":       lang,
 		"mode":       mode,
 		"auth_token": agentTokenStr,
+		"voice_id":   voiceID,
 	}
-	metadataJSON, _ := json.Marshal(metadata)
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		http.Error(w, "Failed to marshal metadata", http.StatusInternalServerError)
+		return
+	}
 
 	// 1. Create the room explicitly with metadata
 	roomClient := lksdk.NewRoomServiceClient(lkURL, lkAPIKey, lkAPISecret)
@@ -112,17 +121,18 @@ func (h *Handler) GenerateLiveKitToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Dispatch the voice agent to the room
+	// 2. Dispatch the voice agent to the room (fire-and-forget for faster iOS response)
 	agentClient := lksdk.NewAgentDispatchServiceClient(lkURL, lkAPIKey, lkAPISecret)
-	_, err = agentClient.CreateDispatch(context.Background(), &livekit.CreateAgentDispatchRequest{
-		AgentName: "agent",
-		Room:      roomName,
-		Metadata:  string(metadataJSON),
-	})
-	if err != nil {
-		// Log but don't fail — agent may auto-dispatch
-		fmt.Printf("Warning: agent dispatch failed: %v\n", err)
-	}
+	go func() {
+		_, err := agentClient.CreateDispatch(context.Background(), &livekit.CreateAgentDispatchRequest{
+			AgentName: "agent",
+			Room:      roomName,
+			Metadata:  string(metadataJSON),
+		})
+		if err != nil {
+			log.Printf("Warning: agent dispatch failed for room %s: %v", roomName, err)
+		}
+	}()
 
 	// 3. Create LiveKit access token for the iOS participant
 	at := lkauth.NewAccessToken(lkAPIKey, lkAPISecret)
