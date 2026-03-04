@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"os"
@@ -17,10 +17,13 @@ import (
 	"firelevel-backend/internal/auth"
 	"firelevel-backend/internal/streak"
 
+	gradium "github.com/cydanix/go-gradium"
+	"github.com/cydanix/go-gradium/tts"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/generative-ai-go/genai"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
 	"google.golang.org/api/option"
 )
 
@@ -2729,47 +2732,77 @@ func (h *Handler) TextToSpeech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Call Gradium TTS API
-	gradiumBody, _ := json.Marshal(map[string]string{
-		"text":          req.Text,
-		"voice_id":      voiceID,
-		"output_format": "wav",
+	// Use Gradium WebSocket TTS API
+	log, _ := zap.NewProduction()
+	t := gradium.NewTTS(&tts.TTSConfig{
+		Endpoint: "wss://eu.api.gradium.ai/api/speech/tts",
+		VoiceID:  voiceID,
+		ApiKey:   apiKey,
+		Log:      log,
 	})
 
-	gradiumReq, err := http.NewRequestWithContext(r.Context(), "POST", "https://api.gradium.ai/v1/tts", bytes.NewReader(gradiumBody))
-	if err != nil {
-		http.Error(w, "Failed to create TTS request", http.StatusInternalServerError)
+	if err := t.Start(); err != nil {
+		fmt.Printf("Gradium TTS start error: %v\n", err)
+		http.Error(w, "TTS connection failed", http.StatusBadGateway)
 		return
 	}
-	gradiumReq.Header.Set("Authorization", "Bearer "+apiKey)
-	gradiumReq.Header.Set("Content-Type", "application/json")
+	defer t.Shutdown()
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(gradiumReq)
-	if err != nil {
-		fmt.Printf("Gradium TTS error: %v\n", err)
-		http.Error(w, "TTS request failed", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
+	t.Process(req.Text)
+	audioChunks := t.GetSpeech(100)
 
-	audioBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		http.Error(w, "Failed to read TTS response", http.StatusInternalServerError)
+	if len(audioChunks) == 0 {
+		fmt.Println("Gradium TTS returned no audio chunks")
+		http.Error(w, "TTS produced no audio", http.StatusBadGateway)
 		return
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("Gradium TTS status %d: %s\n", resp.StatusCode, string(audioBytes))
-		http.Error(w, "TTS service error", http.StatusBadGateway)
-		return
+	// Decode base64 PCM chunks and concatenate
+	var pcmData []byte
+	for _, chunk := range audioChunks {
+		decoded, err := base64.StdEncoding.DecodeString(chunk)
+		if err != nil {
+			fmt.Printf("Gradium TTS decode chunk error: %v\n", err)
+			continue
+		}
+		pcmData = append(pcmData, decoded...)
 	}
 
-	// Encode audio as base64
-	audioBase64 := base64.StdEncoding.EncodeToString(audioBytes)
+	// Add WAV header (PCM 48kHz, 16-bit, mono)
+	wavData := addWAVHeader(pcmData, 48000, 16, 1)
+
+	audioBase64 := base64.StdEncoding.EncodeToString(wavData)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(TTSResponse{AudioBase64: audioBase64})
+}
+
+// addWAVHeader wraps raw PCM data with a 44-byte WAV header.
+func addWAVHeader(pcmData []byte, sampleRate, bitsPerSample, numChannels int) []byte {
+	dataSize := len(pcmData)
+	byteRate := sampleRate * numChannels * bitsPerSample / 8
+	blockAlign := numChannels * bitsPerSample / 8
+
+	buf := new(bytes.Buffer)
+	// RIFF header
+	buf.WriteString("RIFF")
+	binary.Write(buf, binary.LittleEndian, uint32(36+dataSize))
+	buf.WriteString("WAVE")
+	// fmt sub-chunk
+	buf.WriteString("fmt ")
+	binary.Write(buf, binary.LittleEndian, uint32(16))         // sub-chunk size
+	binary.Write(buf, binary.LittleEndian, uint16(1))          // PCM format
+	binary.Write(buf, binary.LittleEndian, uint16(numChannels))
+	binary.Write(buf, binary.LittleEndian, uint32(sampleRate))
+	binary.Write(buf, binary.LittleEndian, uint32(byteRate))
+	binary.Write(buf, binary.LittleEndian, uint16(blockAlign))
+	binary.Write(buf, binary.LittleEndian, uint16(bitsPerSample))
+	// data sub-chunk
+	buf.WriteString("data")
+	binary.Write(buf, binary.LittleEndian, uint32(dataSize))
+	buf.Write(pcmData)
+
+	return buf.Bytes()
 }
 
 // ===========================================
