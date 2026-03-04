@@ -2746,9 +2746,10 @@ func (h *Handler) TextToSpeech(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "TTS connection failed", http.StatusBadGateway)
 		return
 	}
-	defer t.Shutdown()
 
 	t.Process(req.Text)
+	// Shutdown sends end_of_stream and waits for all audio chunks to arrive
+	t.Shutdown()
 	audioChunks := t.GetSpeech(100)
 
 	if len(audioChunks) == 0 {
