@@ -535,43 +535,9 @@ If you can't detect something, use null for that field.`, emailSamples.String())
 	return &persona, nil
 }
 
-// savePersonaToKnowledge saves extracted persona to chat context
+// savePersonaToKnowledge saves extracted persona to user profile
 func (h *Handler) savePersonaToKnowledge(ctx context.Context, userID string, persona *PersonaData) {
-	// Save key facts to chat_contexts for Kai to use
-	facts := []string{}
-
-	if persona.ProfessionalContext != "" {
-		facts = append(facts, fmt.Sprintf("Works in: %s", persona.ProfessionalContext))
-	}
-	if persona.WorkPlace != "" {
-		facts = append(facts, fmt.Sprintf("Works at: %s", persona.WorkPlace))
-	}
-	if persona.Role != "" {
-		facts = append(facts, fmt.Sprintf("Job role: %s", persona.Role))
-	}
-	if persona.CommunicationStyle != "" {
-		facts = append(facts, fmt.Sprintf("Communication style: %s", persona.CommunicationStyle))
-	}
-	if len(persona.Interests) > 0 {
-		facts = append(facts, fmt.Sprintf("Interests: %s", strings.Join(persona.Interests, ", ")))
-	}
-	if len(persona.Topics) > 0 {
-		facts = append(facts, fmt.Sprintf("Common topics: %s", strings.Join(persona.Topics, ", ")))
-	}
-
-	// Insert facts into chat_contexts
-	for _, fact := range facts {
-		query := `
-			INSERT INTO public.chat_contexts (user_id, fact, category, mention_count, first_mentioned, last_mentioned)
-			VALUES ($1, $2, 'gmail_analysis', 1, NOW(), NOW())
-			ON CONFLICT (user_id, fact) DO UPDATE SET
-				mention_count = chat_contexts.mention_count + 1,
-				last_mentioned = NOW()
-		`
-		h.db.Exec(ctx, query, userID, fact)
-	}
-
-	// Also update user profile with work info
+	// Update user profile with work info
 	if persona.WorkPlace != "" || persona.Role != "" {
 		var description string
 		if persona.Role != "" && persona.WorkPlace != "" {
@@ -585,7 +551,7 @@ func (h *Handler) savePersonaToKnowledge(ctx context.Context, userID string, per
 		h.db.Exec(ctx, `UPDATE public.users SET description = $1 WHERE id = $2`, description, userID)
 	}
 
-	fmt.Printf("✅ Saved %d persona facts for user %s\n", len(facts), userID)
+	fmt.Printf("✅ Saved persona for user %s\n", userID)
 }
 
 // Helper to truncate strings

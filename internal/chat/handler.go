@@ -7,10 +7,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -291,20 +289,6 @@ ou:
   "delete_routine": {"title": "Méditation"}
 }
 
-MORNING CHECK-IN:
-Quand tu fais le check-in du matin avec l'utilisateur (humeur, sommeil, intentions), sauvegarde :
-{
-  "reply": "C'est noté, bonne journée !",
-  "morning_checkin": {
-    "mood": 4,
-    "sleep_quality": 3,
-    "top_priority": "Finir le projet X",
-    "intentions": ["Finir le projet", "Faire du sport", "Lire 30 min"],
-    "energy_level": 4
-  }
-}
-mood, sleep_quality, energy_level: 1-5. intentions: array de strings.
-
 EVENING CHECK-IN:
 Quand tu fais la review du soir (bilan, victoire, bloqueurs, objectif demain), sauvegarde :
 {
@@ -342,14 +326,6 @@ Quand l'utilisateur veut ajouter une tâche à son calendrier (pas focus, juste 
 date: YYYY-MM-DD (utilise la date du CONTEXTE — "aujourd'hui" = Date, "demain" = Demain). time_block: morning/afternoon/evening. scheduled_start et scheduled_end: HH:MM (optionnels).
 IMPORTANT: Tu DOIS TOUJOURS inclure "create_task" quand l'utilisateur mentionne une tâche. Si tu ne connais pas l'heure exacte, mets juste le titre et la date. Ne réponds JAMAIS "ajouté" sans le champ create_task.
 
-ENTRÉE JOURNAL:
-Quand l'utilisateur partage son humeur ou veut journaliser:
-{
-  "reply": "C'est noté dans ton journal.",
-  "create_journal_entry": {"mood": "happy", "transcript": "Bonne journée, j'ai avancé sur mes projets"}
-}
-mood: happy, calm, neutral, sad, anxious, angry, grateful, motivated, tired, stressed
-
 SCORE DE SATISFACTION:
 Tu DOIS TOUJOURS inclure "satisfaction_score" (0-100) dans ta réponse JSON.
 Ce score représente ton évaluation globale de la discipline de l'utilisateur aujourd'hui.
@@ -380,7 +356,6 @@ RÈGLES STRICTES:
 - TOUJOURS répondre en JSON valide — JAMAIS de texte brut
 - Utilise les actions pour TOUTE modification de données — ne dis jamais "je t'ai noté ça" sans l'action correspondante
 - CRITIQUE: Quand l'utilisateur demande d'ajouter/créer/mettre une tâche → TOUJOURS inclure "create_task" dans la réponse JSON. Ne JAMAIS répondre "ok" sans create_task.
-- Quand le matin tu demandes comment il va, son sommeil, ses intentions → morning_checkin
 - Quand le soir tu fais le bilan → evening_checkin
 - Quand il dit avoir fait quelque chose → complete_routines ou complete_task
 
@@ -398,12 +373,10 @@ Format de réponse (inclure seulement les champs pertinents):
   "complete_routines": [],
   "delete_quest": null,
   "delete_routine": null,
-  "morning_checkin": null,
   "evening_checkin": null,
   "create_weekly_goals": [],
   "complete_weekly_goal": null,
   "create_task": null,
-  "create_journal_entry": null,
   "show_card": null,
   "satisfaction_score": 50
 }
@@ -460,15 +433,6 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	isDailyGreeting := req.Content == "__daily_greeting__"
 	isCompletionEvent := strings.HasPrefix(req.Content, "__task_completed__:") || strings.HasPrefix(req.Content, "__routine_completed__:")
 
-	// Only save user message if it's NOT a system event
-	if !isGreeting && !isDailyGreeting && !isCompletionEvent {
-		userMsgID := uuid.New().String()
-		h.db.Exec(r.Context(), `
-			INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, source)
-			VALUES ($1, $2, $3, true, 'text', $4)
-		`, userMsgID, userID, req.Content, source)
-	}
-
 	// Get user info BEFORE updating streak (so isFirstSession detection works)
 	userInfo := h.getUserInfo(r.Context(), userID)
 	userInfo.AppsBlocked = req.AppsBlocked
@@ -478,8 +442,8 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	// Update streak (user engaged today by sending a message)
 	streak.UpdateUserStreak(r.Context(), h.db, userID)
 
-	// Get recent history (last 20 messages)
-	history, _ := h.getRecentHistory(r.Context(), userID, 20)
+	// Chat history (managed by Backboard)
+	var history []ChatMessage
 
 	// Replace greeting trigger with a prompt for the AI
 	messageForAI := req.Content
@@ -544,11 +508,6 @@ RÈGLES:
 		}
 	}
 
-	// Extract and save memories from user message (async, skip for system events)
-	if !isGreeting && !isDailyGreeting && !isCompletionEvent {
-		go h.extractAndSaveMemories(context.Background(), userID, req.Content)
-	}
-
 	// If focus intent detected, create task
 	if response.Action != nil && response.Action.Type == "focus_scheduled" && response.Action.TaskData != nil {
 		taskID, err := h.createFocusTask(r.Context(), userID, response.Action.TaskData)
@@ -584,44 +543,29 @@ RÈGLES:
 		}
 	}
 
-	// Save AI response
-	aiMsgID := uuid.New().String()
-	h.db.Exec(r.Context(), `
-		INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, source)
-		VALUES ($1, $2, $3, false, 'text', $4)
-	`, aiMsgID, userID, response.Reply, source)
-
-	response.MessageID = aiMsgID
+	response.MessageID = uuid.New().String()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
 
 func (h *Handler) GetHistory(w http.ResponseWriter, r *http.Request) {
-	userID, ok := r.Context().Value(auth.UserContextKey).(string)
-	if !ok || userID == "" {
+	_, ok := r.Context().Value(auth.UserContextKey).(string)
+	if !ok {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	messages, err := h.getRecentHistory(r.Context(), userID, 100)
-	if err != nil {
-		http.Error(w, "Failed to get history", http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(messages)
+	json.NewEncoder(w).Encode([]ChatMessage{})
 }
 
 func (h *Handler) ClearHistory(w http.ResponseWriter, r *http.Request) {
-	userID, ok := r.Context().Value(auth.UserContextKey).(string)
-	if !ok || userID == "" {
+	_, ok := r.Context().Value(auth.UserContextKey).(string)
+	if !ok {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-
-	h.db.Exec(r.Context(), `DELETE FROM chat_messages WHERE user_id = $1`, userID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -692,21 +636,13 @@ func (h *Handler) SendVoiceMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Save user voice message (with audio_url if provided)
-	userMsgID := uuid.New().String()
-	h.db.Exec(r.Context(), `
-		INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, source, audio_url)
-		VALUES ($1, $2, $3, true, 'voice', $4, $5)
-	`, userMsgID, userID, transcript, source, audioURL)
-
 	// Get user info
 	userInfo := h.getUserInfo(r.Context(), userID)
 
 	// Get relevant memories
-	memories := h.getRelevantMemories(r.Context(), userID, transcript)
-
-	// Get recent history
-	history, _ := h.getRecentHistory(r.Context(), userID, 20)
+	// Memory and history managed by Backboard
+	var memories []SemanticMemory
+	var history []ChatMessage
 
 	// Generate AI response
 	response, err := h.generateResponse(r.Context(), userID, transcript, userInfo, memories, history)
@@ -716,9 +652,6 @@ func (h *Handler) SendVoiceMessage(w http.ResponseWriter, r *http.Request) {
 			Reply: "Désolé, j'ai un souci technique. Tu peux réessayer?",
 		}
 	}
-
-	// Extract and save memories from transcript (async)
-	go h.extractAndSaveMemories(context.Background(), userID, transcript)
 
 	// If focus intent detected, create task
 	if response.Action != nil && response.Action.Type == "focus_scheduled" && response.Action.TaskData != nil {
@@ -731,12 +664,7 @@ func (h *Handler) SendVoiceMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Save AI response
 	aiMsgID := uuid.New().String()
-	h.db.Exec(r.Context(), `
-		INSERT INTO chat_messages (id, user_id, content, is_from_user, message_type, source)
-		VALUES ($1, $2, $3, false, 'text', $4)
-	`, aiMsgID, userID, response.Reply, source)
 
 	// Increment free voice messages counter
 	var updatedCount int
@@ -848,14 +776,14 @@ type UserInfo struct {
 	LastReflectionGoal    *string
 	// Weekly goals
 	WeeklyGoals []WeeklyGoalSummary
-	// Latest mood
-	LatestMood *string
 	// Device state (from client)
 	AppsBlocked      bool
 	StepsToday       *int
 	DistractionCount *int
 	// Satisfaction score (persisted)
 	SatisfactionScore int
+	// Coach mode
+	CoachHarshMode bool
 }
 
 type TaskSummary struct {
@@ -880,25 +808,6 @@ type QuestSummary struct {
 type WeeklyGoalSummary struct {
 	Content     string
 	IsCompleted bool
-}
-
-// ScoredMemory includes all scoring factors
-type ScoredMemory struct {
-	SemanticMemory
-	VectorSimilarity float64  `json:"vector_similarity"`
-	EntityScore      float64  `json:"entity_score"`
-	RecencyScore     float64  `json:"recency_score"`
-	Confidence       float64  `json:"confidence"`
-	TotalScore       float64  `json:"total_score"`
-	Entities         []string `json:"entities"`
-}
-
-// ExtractedFact with confidence and entities (Mira-style)
-type ExtractedFact struct {
-	Fact       string   `json:"fact"`
-	Category   string   `json:"category"`
-	Confidence float64  `json:"confidence"`
-	Entities   []string `json:"entities"`
 }
 
 // ensureUserExists checks if a user record exists in public.users and creates it if missing.
@@ -940,9 +849,10 @@ func (h *Handler) getUserInfo(ctx context.Context, userID string) *UserInfo {
 		       COALESCE(companion_name, 'ton coach'),
 		       COALESCE(current_streak, 0),
 		       COALESCE(satisfaction_score, 50),
-		       satisfaction_score_date
+		       satisfaction_score_date,
+		       COALESCE(coach_harsh_mode, false)
 		FROM users WHERE id = $1
-	`, userID).Scan(&info.Name, &info.CompanionName, &info.CurrentStreak, &info.SatisfactionScore, &scoreDate)
+	`, userID).Scan(&info.Name, &info.CompanionName, &info.CurrentStreak, &info.SatisfactionScore, &scoreDate, &info.CoachHarshMode)
 
 	// Reset satisfaction score if it's from a previous day
 	now := time.Now()
@@ -1026,30 +936,6 @@ func (h *Handler) getUserInfo(ctx context.Context, userID string) *UserInfo {
 		}
 	}
 
-	// Morning check-in status
-	var morningCount int
-	h.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM daily_reflections
-		WHERE user_id = $1 AND date = CURRENT_DATE AND reflection_type = 'morning'
-	`, userID).Scan(&morningCount)
-	info.HasMorningCheckin = morningCount > 0
-
-	// Evening review status
-	var eveningCount int
-	h.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM daily_reflections
-		WHERE user_id = $1 AND date = CURRENT_DATE AND reflection_type = 'evening'
-	`, userID).Scan(&eveningCount)
-	info.HasEveningReview = eveningCount > 0
-
-	// Last reflection (yesterday or today)
-	h.db.QueryRow(ctx, `
-		SELECT biggest_win, challenges, goal_for_tomorrow
-		FROM daily_reflections
-		WHERE user_id = $1
-		ORDER BY date DESC LIMIT 1
-	`, userID).Scan(&info.LastReflectionWin, &info.LastReflectionBlocker, &info.LastReflectionGoal)
-
 	// Weekly goals for current week
 	weeklyRows, err := h.db.Query(ctx, `
 		SELECT wgi.content, wgi.is_completed
@@ -1069,441 +955,15 @@ func (h *Handler) getUserInfo(ctx context.Context, userID string) *UserInfo {
 		}
 	}
 
-	// Latest mood from journal
-	h.db.QueryRow(ctx, `
-		SELECT mood FROM journal_entries
-		WHERE user_id = $1 AND mood IS NOT NULL
-		ORDER BY entry_date DESC LIMIT 1
-	`, userID).Scan(&info.LatestMood)
-
 	return info
 }
 
 // ===========================================
-// EMBEDDING SERVICE
-// ===========================================
-
-func (h *Handler) generateEmbedding(ctx context.Context, text string) ([]float32, error) {
-	apiKey := os.Getenv("GEMINI_API_KEY")
-	if apiKey == "" {
-		return nil, fmt.Errorf("GEMINI_API_KEY not set")
-	}
-
-	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
-	if err != nil {
-		return nil, err
-	}
-	defer client.Close()
-
-	em := client.EmbeddingModel("text-embedding-004")
-	res, err := em.EmbedContent(ctx, genai.Text(text))
-	if err != nil {
-		return nil, err
-	}
-
-	return res.Embedding.Values, nil
-}
-
-func vectorToString(embedding []float32) string {
-	parts := make([]string, len(embedding))
-	for i, v := range embedding {
-		parts[i] = fmt.Sprintf("%f", v)
-	}
-	return "[" + strings.Join(parts, ",") + "]"
-}
-
-// ===========================================
-// ENTITY EXTRACTION (Mira-style)
-// ===========================================
-
-func (h *Handler) extractEntities(ctx context.Context, text string) []string {
-	apiKey := os.Getenv("GEMINI_API_KEY")
-	if apiKey == "" {
-		return nil
-	}
-
-	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
-	if err != nil {
-		return nil
-	}
-	defer client.Close()
-
-	model := client.GenerativeModel("gemini-2.0-flash")
-	model.SetTemperature(0.1)
-
-	prompt := fmt.Sprintf(`Extrait les entités nommées de ce texte.
-Retourne un JSON array de strings. Types: personnes, lieux, organisations, produits, dates.
-Si aucune entité, retourne [].
-
-Texte: "%s"
-
-Exemple: ["Marie", "Paris", "Google", "lundi"]
-
-Réponds UNIQUEMENT avec le JSON array:`, text)
-
-	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
-	if err != nil || len(resp.Candidates) == 0 {
-		return nil
-	}
-
-	responseText := ""
-	for _, part := range resp.Candidates[0].Content.Parts {
-		if text, ok := part.(genai.Text); ok {
-			responseText += string(text)
-		}
-	}
-
-	responseText = strings.TrimSpace(responseText)
-	responseText = strings.TrimPrefix(responseText, "```json")
-	responseText = strings.TrimPrefix(responseText, "```")
-	responseText = strings.TrimSuffix(responseText, "```")
-	responseText = strings.TrimSpace(responseText)
-
-	var entities []string
-	json.Unmarshal([]byte(responseText), &entities)
-	return entities
-}
-
-// ===========================================
-// QUERY TYPE DETECTION (Mira-style)
-// ===========================================
-
-func isMemoryRecallQuery(message string) bool {
-	lowered := strings.ToLower(message)
-	recallPatterns := []string{
-		"tu te souviens",
-		"te souviens",
-		"tu sais",
-		"remember",
-		"do you remember",
-		"rappelle",
-		"c'était quoi",
-		"c'est quoi déjà",
-		"qu'est-ce que je t'avais dit",
-		"je t'avais parlé",
-	}
-	for _, pattern := range recallPatterns {
-		if strings.Contains(lowered, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
-// ===========================================
-// MULTI-FACTOR RELEVANCE SCORING (Mira-style)
-// Score = 0.4×vector + 0.4×entity + 0.15×recency + 0.05×confidence
-// ===========================================
-
-func calculateEntityScore(queryEntities, memoryEntities []string) float64 {
-	if len(queryEntities) == 0 || len(memoryEntities) == 0 {
-		return 0.0
-	}
-
-	matches := 0
-	for _, qe := range queryEntities {
-		qeLower := strings.ToLower(qe)
-		for _, me := range memoryEntities {
-			if strings.Contains(strings.ToLower(me), qeLower) || strings.Contains(qeLower, strings.ToLower(me)) {
-				matches++
-				break
-			}
-		}
-	}
-
-	return float64(matches) / float64(len(queryEntities))
-}
-
-func calculateRecencyScore(lastMentioned time.Time) float64 {
-	daysSince := time.Since(lastMentioned).Hours() / 24
-	// Exponential decay: e^(-days/30)
-	return math.Exp(-daysSince / 30.0)
-}
-
-func (h *Handler) scoreMemories(memories []ScoredMemory, queryEntities []string) []ScoredMemory {
-	for i := range memories {
-		// Multi-factor scoring (Mira weights)
-		vectorWeight := 0.40
-		entityWeight := 0.40
-		recencyWeight := 0.15
-		confidenceWeight := 0.05
-
-		memories[i].EntityScore = calculateEntityScore(queryEntities, memories[i].Entities)
-		memories[i].RecencyScore = calculateRecencyScore(memories[i].LastMention)
-
-		memories[i].TotalScore = (vectorWeight * memories[i].VectorSimilarity) +
-			(entityWeight * memories[i].EntityScore) +
-			(recencyWeight * memories[i].RecencyScore) +
-			(confidenceWeight * memories[i].Confidence)
-	}
-
-	// Sort by total score descending
-	sort.Slice(memories, func(i, j int) bool {
-		return memories[i].TotalScore > memories[j].TotalScore
-	})
-
-	return memories
-}
-
-// ===========================================
-// MEMORY RETRIEVAL (Mira-style)
+// AI MEMORY FUNCTIONS (managed by Backboard)
 // ===========================================
 
 func (h *Handler) getRelevantMemories(ctx context.Context, userID, message string) []SemanticMemory {
-	// Extract entities from query for entity matching
-	queryEntities := h.extractEntities(ctx, message)
-	fmt.Printf("🔍 Query entities: %v\n", queryEntities)
-
-	// Check if this is a memory recall query
-	isRecallQuery := isMemoryRecallQuery(message)
-	if isRecallQuery {
-		fmt.Printf("🧠 Memory recall query detected\n")
-	}
-
-	// Generate embedding for vector search
-	embedding, err := h.generateEmbedding(ctx, message)
-	if err != nil {
-		fmt.Printf("⚠️ Embedding error, falling back to recent memories: %v\n", err)
-		return h.getRecentMemories(ctx, userID)
-	}
-
-	embeddingStr := vectorToString(embedding)
-
-	// Get candidates from vector search (fetch more for multi-factor scoring)
-	rows, err := h.db.Query(ctx, `
-		SELECT c.id, c.fact, c.category, c.mention_count, c.first_mentioned, c.last_mentioned,
-		       c.confidence, c.entities, 1 - (c.embedding <=> $1::vector(768)) as similarity
-		FROM chat_contexts c
-		WHERE c.user_id = $2 AND c.embedding IS NOT NULL
-		ORDER BY c.embedding <=> $1::vector(768)
-		LIMIT 20
-	`, embeddingStr, userID)
-	if err != nil {
-		fmt.Printf("⚠️ Vector search error: %v\n", err)
-		return h.getRecentMemories(ctx, userID)
-	}
-	defer rows.Close()
-
-	var scoredMemories []ScoredMemory
-	for rows.Next() {
-		var m ScoredMemory
-		var entities []string
-		var confidence *float64
-
-		err := rows.Scan(&m.ID, &m.Fact, &m.Category, &m.MentionCount, &m.FirstMention, &m.LastMention,
-			&confidence, &entities, &m.VectorSimilarity)
-		if err != nil {
-			fmt.Printf("⚠️ Scan error: %v\n", err)
-			continue
-		}
-
-		if confidence != nil {
-			m.Confidence = *confidence
-		} else {
-			m.Confidence = 0.8 // Default confidence
-		}
-		m.Entities = entities
-
-		scoredMemories = append(scoredMemories, m)
-	}
-
-	if len(scoredMemories) == 0 {
-		return h.getRecentMemories(ctx, userID)
-	}
-
-	// Apply multi-factor scoring
-	scoredMemories = h.scoreMemories(scoredMemories, queryEntities)
-
-	// For recall queries, boost recent memories
-	if isRecallQuery {
-		for i := range scoredMemories {
-			if i < 5 {
-				scoredMemories[i].TotalScore += 0.3 // Boost top 5 recent
-			}
-		}
-		// Re-sort after boost
-		sort.Slice(scoredMemories, func(i, j int) bool {
-			return scoredMemories[i].TotalScore > scoredMemories[j].TotalScore
-		})
-	}
-
-	// Filter by threshold and take top 10
-	var results []SemanticMemory
-	threshold := 0.45 // Mira threshold
-	for _, sm := range scoredMemories {
-		if sm.TotalScore >= threshold && len(results) < 10 {
-			fmt.Printf("📝 Memory (score=%.2f, vec=%.2f, ent=%.2f, rec=%.2f): %s\n",
-				sm.TotalScore, sm.VectorSimilarity, sm.EntityScore, sm.RecencyScore, sm.Fact)
-			results = append(results, sm.SemanticMemory)
-		}
-	}
-
-	if len(results) == 0 {
-		return h.getRecentMemories(ctx, userID)
-	}
-
-	return results
-}
-
-func (h *Handler) getRecentMemories(ctx context.Context, userID string) []SemanticMemory {
-	rows, err := h.db.Query(ctx, `
-		SELECT id, user_id, fact, category, mention_count, first_mentioned, last_mentioned
-		FROM chat_contexts
-		WHERE user_id = $1
-		ORDER BY last_mentioned DESC
-		LIMIT 10
-	`, userID)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
-	var memories []SemanticMemory
-	for rows.Next() {
-		var m SemanticMemory
-		rows.Scan(&m.ID, &m.UserID, &m.Fact, &m.Category, &m.MentionCount, &m.FirstMention, &m.LastMention)
-		memories = append(memories, m)
-	}
-	return memories
-}
-
-// ===========================================
-// MEMORY EXTRACTION (Mira-style with confidence + entities)
-// ===========================================
-
-func (h *Handler) extractAndSaveMemories(ctx context.Context, userID, message string) {
-	apiKey := os.Getenv("GEMINI_API_KEY")
-	if apiKey == "" {
-		return
-	}
-
-	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
-	if err != nil {
-		return
-	}
-	defer client.Close()
-
-	model := client.GenerativeModel("gemini-2.0-flash")
-	model.SetTemperature(0.3)
-
-	// Mira-style extraction prompt with confidence and entities
-	prompt := fmt.Sprintf(`Extrait les informations importantes de ce message.
-
-Pour CHAQUE fait, retourne:
-- fact: L'information complète et auto-suffisante
-- category: personal, work, goals, preferences, emotions, relationship
-- confidence: 0.0 à 1.0 (certitude de l'information)
-- entities: Liste des entités nommées (personnes, lieux, etc.)
-
-Message: "%s"
-
-Exemple:
-[
-  {"fact": "travaille chez Google comme développeur", "category": "work", "confidence": 0.95, "entities": ["Google"]},
-  {"fact": "veut apprendre le piano cette année", "category": "goals", "confidence": 0.8, "entities": ["piano"]}
-]
-
-Si aucun fait intéressant, retourne [].
-Réponds UNIQUEMENT avec le JSON array:`, message)
-
-	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
-	if err != nil || len(resp.Candidates) == 0 {
-		return
-	}
-
-	responseText := ""
-	for _, part := range resp.Candidates[0].Content.Parts {
-		if text, ok := part.(genai.Text); ok {
-			responseText += string(text)
-		}
-	}
-
-	responseText = strings.TrimSpace(responseText)
-	responseText = strings.TrimPrefix(responseText, "```json")
-	responseText = strings.TrimPrefix(responseText, "```")
-	responseText = strings.TrimSuffix(responseText, "```")
-	responseText = strings.TrimSpace(responseText)
-
-	var facts []ExtractedFact
-	if err := json.Unmarshal([]byte(responseText), &facts); err != nil {
-		fmt.Printf("⚠️ Failed to parse facts: %v\n", err)
-		return
-	}
-
-	// Process each fact with semantic deduplication
-	for _, f := range facts {
-		if f.Fact == "" {
-			continue
-		}
-
-		// Default confidence if not provided
-		if f.Confidence == 0 {
-			f.Confidence = 0.8
-		}
-
-		// Generate embedding
-		embedding, err := h.generateEmbedding(ctx, f.Fact)
-		if err != nil {
-			fmt.Printf("⚠️ Failed to generate embedding: %v\n", err)
-			continue
-		}
-
-		embeddingStr := vectorToString(embedding)
-
-		// Check for semantic duplicate (85% similarity threshold)
-		var existingID string
-		var existingFact string
-		var similarity float64
-		err = h.db.QueryRow(ctx, `
-			SELECT id, fact, similarity
-			FROM find_similar_memory($1::vector(768), $2::uuid, 0.85)
-		`, embeddingStr, userID).Scan(&existingID, &existingFact, &similarity)
-
-		if err == nil && existingID != "" {
-			// Found similar memory - update mention count
-			fmt.Printf("🔄 Semantic duplicate (%.2f): '%s' ≈ '%s'\n", similarity, f.Fact, existingFact)
-			h.db.Exec(ctx, `
-				UPDATE chat_contexts
-				SET mention_count = mention_count + 1, last_mentioned = NOW()
-				WHERE id = $1
-			`, existingID)
-		} else {
-			// New unique memory - insert with embedding, confidence, entities
-			fmt.Printf("✨ New memory [%s] (conf=%.2f): %s\n", f.Category, f.Confidence, f.Fact)
-			h.db.Exec(ctx, `
-				INSERT INTO chat_contexts (id, user_id, fact, category, confidence, entities, mention_count, first_mentioned, last_mentioned, embedding)
-				VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 1, NOW(), NOW(), $6::vector(768))
-			`, userID, f.Fact, f.Category, f.Confidence, f.Entities, embeddingStr)
-		}
-	}
-}
-
-func (h *Handler) getRecentHistory(ctx context.Context, userID string, limit int) ([]ChatMessage, error) {
-	rows, err := h.db.Query(ctx, `
-		SELECT id, user_id, content, is_from_user, created_at, audio_url
-		FROM chat_messages
-		WHERE user_id = $1
-		ORDER BY created_at DESC
-		LIMIT $2
-	`, userID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var messages []ChatMessage
-	for rows.Next() {
-		var m ChatMessage
-		rows.Scan(&m.ID, &m.UserID, &m.Content, &m.IsFromUser, &m.CreatedAt, &m.AudioURL)
-		messages = append(messages, m)
-	}
-
-	// Reverse for chronological order
-	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
-		messages[i], messages[j] = messages[j], messages[i]
-	}
-
-	return messages, nil
+	return nil
 }
 
 // ===========================================
@@ -1655,11 +1115,6 @@ CONTEXTE:
 		contextStr += fmt.Sprintf("DERNIER BLOCAGE: %s\n", *userInfo.LastReflectionBlocker)
 	}
 
-	// Add mood
-	if userInfo.LatestMood != nil {
-		contextStr += fmt.Sprintf("\nDERNIÈRE HUMEUR: %s\n", *userInfo.LatestMood)
-	}
-
 	// Add memories
 	if len(memories) > 0 {
 		contextStr += "\nCE QUE TU SAIS SUR LUI:\n"
@@ -1688,6 +1143,35 @@ CONTEXTE:
 
 	// Build system prompt with dynamic companion name
 	systemPrompt := fmt.Sprintf(kaiSystemPromptTemplate, userInfo.CompanionName)
+
+	// Harsh coach mode: aggressive coaching personality (opt-in)
+	if userInfo.CoachHarshMode {
+		systemPrompt += `
+
+MODE COACH DUR (ACTIVÉ PAR L'UTILISATEUR — il a CHOISI ce mode):
+Tu es maintenant en mode SANS FILTRE. Change complètement de ton.
+
+QUAND IL NE RESPECTE PAS SES OBJECTIFS:
+- Insulte-le — "T'es sérieux là ?", "Quel branleur", "T'as fait quoi de ta journée ?"
+- Ridiculise — "Même un enfant de 5 ans aurait fait mieux"
+- Sarcasme méchant — "Bravo champion, encore une journée de glandeur"
+- Rappelle ses promesses — "Tu m'as dit que tu ferais X, t'es un menteur"
+- Compare à ses objectifs — "Tu voulais Y mais t'as fait 0, c'est pathétique"
+
+QUAND IL FAIT BIEN:
+- Célèbre comme un fou — "MONSTRUEUX ! T'es une machine !"
+- Reconnais l'effort — "Là tu me rends fier, sérieux"
+- Reste exigeant — "Bien, mais c'est normal, continue"
+
+RÈGLES:
+- Jamais de complaisance, jamais de "c'est pas grave"
+- 0 tâches faites → attaque directe
+- Routines ignorées → rappel brutal
+- Streak cassé → humiliation
+- Bons résultats → célébration intense mais exigeante
+- Langage familier, argot, tutoiement fort
+- Tu restes un coach : le but c'est de pousser, pas de détruire`
+	}
 
 	// Voice call mode: force very short responses
 	if source == "voice_call" {
@@ -1763,13 +1247,6 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 		DeleteRoutine *struct {
 			Title string `json:"title"`
 		} `json:"delete_routine"`
-		MorningCheckin *struct {
-			Mood         int      `json:"mood"`
-			SleepQuality int      `json:"sleep_quality"`
-			TopPriority  string   `json:"top_priority"`
-			Intentions   []string `json:"intentions"`
-			EnergyLevel  int      `json:"energy_level"`
-		} `json:"morning_checkin"`
 		EveningCheckin *struct {
 			Mood            int    `json:"mood"`
 			BiggestWin      string `json:"biggest_win"`
@@ -1782,10 +1259,6 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 			Content string `json:"content"`
 		} `json:"complete_weekly_goal"`
 		CreateTask *ChatTaskInput `json:"create_task"`
-		CreateJournalEntry *struct {
-			Mood       string `json:"mood"`
-			Transcript string `json:"transcript"`
-		} `json:"create_journal_entry"`
 		ShowCard          *string `json:"show_card"`
 		SatisfactionScore *int    `json:"satisfaction_score"`
 	}
@@ -1928,16 +1401,6 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 		}
 	}
 
-	// Handle morning check-in
-	if aiResp.MorningCheckin != nil && aiResp.MorningCheckin.Mood > 0 {
-		err := h.saveMorningCheckin(ctx, userID, aiResp.MorningCheckin.Mood, aiResp.MorningCheckin.SleepQuality, aiResp.MorningCheckin.TopPriority, aiResp.MorningCheckin.Intentions, aiResp.MorningCheckin.EnergyLevel)
-		if err != nil {
-			fmt.Printf("⚠️ Failed to save morning check-in: %v\n", err)
-		} else {
-			response.Action = &ActionData{Type: "morning_checkin_saved"}
-		}
-	}
-
 	// Handle evening check-in
 	if aiResp.EveningCheckin != nil && aiResp.EveningCheckin.Mood > 0 {
 		err := h.saveEveningCheckin(ctx, userID, aiResp.EveningCheckin.Mood, aiResp.EveningCheckin.BiggestWin, aiResp.EveningCheckin.Blockers, aiResp.EveningCheckin.GoalForTomorrow, aiResp.EveningCheckin.GratefulFor)
@@ -1975,16 +1438,6 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 			fmt.Printf("⚠️ Failed to create task '%s': %v\n", aiResp.CreateTask.Title, err)
 		} else {
 			response.Action = &ActionData{Type: "task_created", TaskID: &taskID}
-		}
-	}
-
-	// Handle journal entry creation
-	if aiResp.CreateJournalEntry != nil && aiResp.CreateJournalEntry.Transcript != "" {
-		err := h.createJournalEntry(ctx, userID, aiResp.CreateJournalEntry.Mood, aiResp.CreateJournalEntry.Transcript)
-		if err != nil {
-			fmt.Printf("⚠️ Failed to create journal entry: %v\n", err)
-		} else {
-			response.Action = &ActionData{Type: "journal_entry_created"}
 		}
 	}
 
@@ -2373,39 +1826,7 @@ func (h *Handler) deleteRoutineByTitle(ctx context.Context, userID, title string
 }
 
 // ===========================================
-// MORNING CHECK-IN (from coach chat)
-// ===========================================
-
-func (h *Handler) saveMorningCheckin(ctx context.Context, userID string, mood, sleepQuality int, topPriority string, intentions []string, energyLevel int) error {
-	if mood < 1 {
-		mood = 3
-	}
-	if sleepQuality < 1 {
-		sleepQuality = 3
-	}
-	if energyLevel < 1 {
-		energyLevel = 3
-	}
-
-	intentionsJSON, _ := json.Marshal(intentions)
-
-	_, err := h.db.Exec(ctx, `
-		INSERT INTO morning_checkins (id, user_id, date, morning_mood, sleep_quality, top_priority, intentions, energy_level)
-		VALUES ($1, $2, CURRENT_DATE, $3, $4, $5, $6::jsonb, $7)
-		ON CONFLICT (user_id, date) DO UPDATE SET
-			morning_mood = EXCLUDED.morning_mood,
-			sleep_quality = EXCLUDED.sleep_quality,
-			top_priority = EXCLUDED.top_priority,
-			intentions = EXCLUDED.intentions,
-			energy_level = EXCLUDED.energy_level,
-			updated_at = NOW()
-	`, uuid.New().String(), userID, mood, sleepQuality, topPriority, string(intentionsJSON), energyLevel)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("✅ Morning check-in saved (mood: %d, sleep: %d)\n", mood, sleepQuality)
-	return nil
-}
+// (morning_checkins table removed — data saved via evening_checkins/reflections)
 
 // ===========================================
 // EVENING CHECK-IN (from coach chat)
@@ -2670,34 +2091,6 @@ func (h *Handler) extractTaskFromMessage(msg string) *ChatTaskInput {
 	}
 }
 
-// ===========================================
-// JOURNAL ENTRY (from coach chat)
-// ===========================================
-
-func (h *Handler) createJournalEntry(ctx context.Context, userID, mood, transcript string) error {
-	if mood == "" {
-		mood = "neutral"
-	}
-
-	// Try to add 'text' to allowed media_types (safe to run multiple times)
-	h.db.Exec(ctx, `
-		ALTER TABLE journal_entries DROP CONSTRAINT IF EXISTS journal_entries_media_type_check
-	`)
-	h.db.Exec(ctx, `
-		ALTER TABLE journal_entries ADD CONSTRAINT journal_entries_media_type_check
-		CHECK (media_type IN ('audio', 'video', 'text'))
-	`)
-
-	_, err := h.db.Exec(ctx, `
-		INSERT INTO journal_entries (id, user_id, media_type, transcript, mood, entry_date)
-		VALUES ($1, $2, 'text', $3, $4, CURRENT_DATE)
-	`, uuid.New().String(), userID, transcript, mood)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("✅ Journal entry created (mood: %s)\n", mood)
-	return nil
-}
 
 // ===========================================
 // TEXT TO SPEECH (Gradium API)

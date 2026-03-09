@@ -121,12 +121,9 @@ func (h *Handler) GetSettings(w http.ResponseWriter, r *http.Request) {
 		SELECT COALESCE(notification_settings, '{
 			"focus_reminders": true,
 			"ritual_reminders": true,
-			"morning_checkin": true,
 			"evening_checkin": true,
 			"streak_alerts": true,
-			"quest_milestones": true,
-			"crew_activity": true,
-			"leaderboard_updates": false
+			"quest_milestones": true
 		}'::jsonb) as settings
 		FROM public.users
 		WHERE id = $1

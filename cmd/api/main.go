@@ -16,7 +16,6 @@ import (
 	"firelevel-backend/internal/database"
 	"firelevel-backend/internal/focus"
 	"firelevel-backend/internal/gmail"
-	"firelevel-backend/internal/journal"
 	"firelevel-backend/internal/notifications"
 	"firelevel-backend/internal/onboarding"
 	"firelevel-backend/internal/routines"
@@ -69,7 +68,6 @@ func main() {
 	onboardingHandler := onboarding.NewHandler(pool)
 	calendarHandler := calendar.NewHandler(pool)
 	chatHandler := chat.NewHandler(pool)
-	journalHandler := journal.NewHandler(pool)
 	notificationsHandler := notifications.NewHandler(pool)
 	gmailHandler := gmail.NewHandler(pool)
 	questsHandler := quests.NewHandler(pool)
@@ -164,14 +162,6 @@ func main() {
 		r.Post("/onboarding/complete", onboardingHandler.Complete)
 		r.Delete("/onboarding/reset", onboardingHandler.Reset)
 
-		// =====================
-		// JOURNAL (Audio/Video Entries)
-		// =====================
-		r.Get("/journal/entries", journalHandler.ListEntries)
-		r.Get("/journal/entries/{id}", journalHandler.GetEntry)
-		r.Post("/journal/entries", journalHandler.CreateEntry)
-		r.Delete("/journal/entries/{id}", journalHandler.DeleteEntry)
-		r.Get("/journal/mood-stats", journalHandler.GetMoodStats)
 
 		// =====================
 		// NOTIFICATIONS

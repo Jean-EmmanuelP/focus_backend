@@ -46,6 +46,7 @@ type User struct {
 	CreatedAt            *string    `json:"created_at"`             // Account creation date
 	BackboardAssistantID *string   `json:"backboard_assistant_id"` // Per-user Backboard assistant for isolated memory
 	VoiceID              *string   `json:"voice_id"`               // Gradium TTS voice preference
+	CoachHarshMode       *bool     `json:"coach_harsh_mode"`       // Opt-in harsh coach mode
 }
 
 // 2. The DTO: Represents what a user is ALLOWED to update
@@ -71,6 +72,7 @@ type UpdateUserRequest struct {
 	AvatarStyle          *string `json:"avatar_style"`
 	BackboardAssistantID *string `json:"backboard_assistant_id"`
 	VoiceID              *string `json:"voice_id"`
+	CoachHarshMode       *bool   `json:"coach_harsh_mode"`
 }
 
 // 3. The Handler: Holds dependencies (the database client)
@@ -105,7 +107,8 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(free_voice_messages_used, 0) as free_voice_messages_used,
 		       created_at,
 		       backboard_assistant_id,
-		       voice_id
+		       voice_id,
+		       COALESCE(coach_harsh_mode, false) as coach_harsh_mode
 		FROM public.users
 		WHERE id = $1
 	`
@@ -139,6 +142,7 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		&user.CreatedAt,
 		&user.BackboardAssistantID,
 		&user.VoiceID,
+		&user.CoachHarshMode,
 	)
 
 	if err != nil {
@@ -293,6 +297,12 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		argId++
 	}
 
+	if req.CoachHarshMode != nil {
+		setParts = append(setParts, fmt.Sprintf("coach_harsh_mode = $%d", argId))
+		args = append(args, *req.CoachHarshMode)
+		argId++
+	}
+
 	if len(setParts) == 0 {
 		http.Error(w, "No fields to update", http.StatusBadRequest)
 		return
@@ -310,7 +320,8 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		           companion_name, companion_gender, avatar_style,
 		           COALESCE(current_streak, 0), COALESCE(longest_streak, 0),
 		           COALESCE(free_voice_messages_used, 0), created_at,
-		           backboard_assistant_id, voice_id`,
+		           backboard_assistant_id, voice_id,
+		           COALESCE(coach_harsh_mode, false)`,
 		strings.Join(setParts, ", "),
 		argId,
 	)
@@ -345,6 +356,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		&updatedUser.CreatedAt,
 		&updatedUser.BackboardAssistantID,
 		&updatedUser.VoiceID,
+		&updatedUser.CoachHarshMode,
 	)
 
 	if err != nil {
@@ -556,21 +568,14 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Order: deepest child tables first, parent tables last, user record at the end
+	// Only includes tables that exist in Supabase
 	deletions := []deletion{
-		// ── Journal & Reflections ──
-		{`DELETE FROM public.daily_reflections WHERE user_id = $1`, "daily_reflections"},
-		{`DELETE FROM public.journal_entries WHERE user_id = $1`, "journal_entries"},
-		{`DELETE FROM public.journal_bilans WHERE user_id = $1`, "journal_bilans"},
-
 		// ── Focus & Tasks ──
 		{`DELETE FROM public.focus_sessions WHERE user_id = $1`, "focus_sessions"},
 		{`DELETE FROM public.tasks WHERE user_id = $1`, "tasks"},
-		{`DELETE FROM public.day_plans WHERE user_id = $1`, "day_plans"},
 
 		// ── Routines (child tables first) ──
 		{`DELETE FROM public.routine_completions WHERE user_id = $1`, "routine_completions"},
-		{`DELETE FROM public.group_routines WHERE shared_by = $1`, "group_routines"},
-		{`DELETE FROM public.routine_google_events WHERE user_id = $1`, "routine_google_events"},
 		{`DELETE FROM public.routines WHERE user_id = $1`, "routines"},
 
 		// ── Quests & Areas ──
@@ -582,27 +587,10 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		{`DELETE FROM public.weekly_goals WHERE user_id = $1`, "weekly_goals"},
 
 		// ── Daily tracking ──
-		{`DELETE FROM public.morning_checkins WHERE user_id = $1`, "morning_checkins"},
 		{`DELETE FROM public.evening_checkins WHERE user_id = $1`, "evening_checkins"},
-		{`DELETE FROM public.daily_intentions WHERE user_id = $1`, "daily_intentions"},
-
-		// ── Community & Social ──
-		{`DELETE FROM public.community_post_reports WHERE reporter_id = $1`, "community_post_reports"},
-		{`DELETE FROM public.community_post_likes WHERE user_id = $1`, "community_post_likes"},
-		{`DELETE FROM public.community_posts WHERE user_id = $1`, "community_posts"},
-
-		// ── Friends & Groups ──
-		{`DELETE FROM public.friend_group_members WHERE member_id = $1`, "friend_group_members"},
-		{`DELETE FROM public.friend_groups WHERE user_id = $1`, "friend_groups"},
 
 		// ── Integrations ──
-		{`DELETE FROM public.google_calendar_config WHERE user_id = $1`, "google_calendar_config"},
 		{`DELETE FROM public.gmail_config WHERE user_id = $1`, "gmail_config"},
-		{`DELETE FROM public.whatsapp_users WHERE user_id = $1`, "whatsapp_users"},
-		{`DELETE FROM public.whatsapp_verification_codes WHERE user_id = $1`, "whatsapp_verification_codes"},
-		{`DELETE FROM public.whatsapp_otp WHERE user_id = $1`, "whatsapp_otp"},
-		{`DELETE FROM public.whatsapp_pending_users WHERE converted_to_user_id = $1`, "whatsapp_pending_users"},
-		{`DELETE FROM public.phone_linking_otps WHERE user_id = $1`, "phone_linking_otps"},
 
 		// ── Device & Notifications ──
 		{`DELETE FROM public.device_tokens WHERE user_id = $1`, "device_tokens"},

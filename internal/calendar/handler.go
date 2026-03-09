@@ -34,49 +34,6 @@ func (h *Handler) SetGoogleCalendarSyncer(syncer GoogleCalendarSyncer) {
 	h.googleCalSvc = syncer
 }
 
-// ==========================================
-// DAY PLAN TYPES
-// ==========================================
-
-type DayPlan struct {
-	ID             string     `json:"id"`
-	UserID         string     `json:"userId"`
-	Date           string     `json:"date"`
-	IdealDayPrompt *string    `json:"idealDayPrompt,omitempty"`
-	AISummary      *string    `json:"aiSummary,omitempty"`
-	Progress       int        `json:"progress"`
-	Status         string     `json:"status"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	UpdatedAt      time.Time  `json:"updatedAt"`
-	TimeBlocks     []TimeBlock `json:"timeBlocks,omitempty"`
-	Tasks          []Task      `json:"tasks,omitempty"`
-}
-
-type TimeBlock struct {
-	ID                 string    `json:"id"`
-	UserID             string    `json:"userId"`
-	DayPlanID          *string   `json:"dayPlanId,omitempty"`
-	QuestID            *string   `json:"questId,omitempty"`
-	AreaID             *string   `json:"areaId,omitempty"`
-	Title              string    `json:"title"`
-	Description        *string   `json:"description,omitempty"`
-	StartTime          time.Time `json:"startTime"`
-	EndTime            time.Time `json:"endTime"`
-	BlockType          string    `json:"blockType"`
-	ExternalCalendarID *string   `json:"externalCalendarId,omitempty"`
-	ExternalEventID    *string   `json:"externalEventId,omitempty"`
-	Status             string    `json:"status"`
-	Progress           int       `json:"progress"`
-	IsAIGenerated      bool      `json:"isAiGenerated"`
-	Color              *string   `json:"color,omitempty"`
-	CreatedAt          time.Time `json:"createdAt"`
-	UpdatedAt          time.Time `json:"updatedAt"`
-	Tasks              []Task    `json:"tasks,omitempty"`
-	QuestTitle         *string   `json:"questTitle,omitempty"`
-	AreaName           *string   `json:"areaName,omitempty"`
-	AreaIcon           *string   `json:"areaIcon,omitempty"`
-}
-
 type Task struct {
 	ID               string     `json:"id"`
 	UserID           string     `json:"userId"`
@@ -109,17 +66,6 @@ type Task struct {
 // ==========================================
 // REQUEST/RESPONSE TYPES
 // ==========================================
-
-type CreateDayPlanRequest struct {
-	Date           string `json:"date"`
-	IdealDayPrompt string `json:"idealDayPrompt"`
-}
-
-type UpdateDayPlanRequest struct {
-	IdealDayPrompt *string `json:"idealDayPrompt,omitempty"`
-	AISummary      *string `json:"aiSummary,omitempty"`
-	Status         *string `json:"status,omitempty"`
-}
 
 type CreateTaskRequest struct {
 	QuestID          *string    `json:"quest_id,omitempty"`
@@ -157,143 +103,9 @@ type UpdateTaskRequest struct {
 }
 
 type CalendarDayResponse struct {
-	DayPlan    *DayPlan    `json:"dayPlan,omitempty"`
-	TimeBlocks []TimeBlock `json:"timeBlocks"`
-	Tasks      []Task      `json:"tasks"`
-	Progress   int         `json:"progress"`
+	Tasks    []Task `json:"tasks"`
+	Progress int    `json:"progress"`
 }
-
-// ==========================================
-// DAY PLAN HANDLERS
-// ==========================================
-
-func (h *Handler) GetDayPlan(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(auth.UserContextKey).(string)
-	date := r.URL.Query().Get("date")
-	if date == "" {
-		date = time.Now().Format("2006-01-02")
-	}
-
-	// Always fetch tasks and time blocks, regardless of day_plan existence
-	timeBlocks, _ := h.getTimeBlocksForDay(r.Context(), userID, date)
-	tasks, _ := h.getTasksForDay(r.Context(), userID, date, nil)
-
-	// Try to get day_plan (optional)
-	var plan DayPlan
-	var dayPlanPtr *DayPlan
-	err := h.db.QueryRow(r.Context(), `
-		SELECT id, user_id, date, ideal_day_prompt, ai_summary, progress, status, created_at, updated_at
-		FROM day_plans
-		WHERE user_id = $1 AND date = $2
-	`, userID, date).Scan(
-		&plan.ID, &plan.UserID, &plan.Date, &plan.IdealDayPrompt,
-		&plan.AISummary, &plan.Progress, &plan.Status,
-		&plan.CreatedAt, &plan.UpdatedAt,
-	)
-
-	if err == nil {
-		plan.TimeBlocks = timeBlocks
-		plan.Tasks = tasks
-		dayPlanPtr = &plan
-	}
-
-	// Calculate progress from tasks if no day_plan
-	progress := 0
-	if dayPlanPtr != nil {
-		progress = plan.Progress
-	} else if len(tasks) > 0 {
-		completedCount := 0
-		for _, t := range tasks {
-			if t.Status == "completed" {
-				completedCount++
-			}
-		}
-		progress = (completedCount * 100) / len(tasks)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(CalendarDayResponse{
-		DayPlan:    dayPlanPtr,
-		TimeBlocks: timeBlocks,
-		Tasks:      tasks,
-		Progress:   progress,
-	})
-}
-
-func (h *Handler) CreateDayPlan(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(auth.UserContextKey).(string)
-
-	var req CreateDayPlanRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	if req.Date == "" {
-		req.Date = time.Now().Format("2006-01-02")
-	}
-
-	var plan DayPlan
-	err := h.db.QueryRow(r.Context(), `
-		INSERT INTO day_plans (user_id, date, ideal_day_prompt, status)
-		VALUES ($1, $2, $3, 'active')
-		ON CONFLICT (user_id, date)
-		DO UPDATE SET ideal_day_prompt = EXCLUDED.ideal_day_prompt, updated_at = now()
-		RETURNING id, user_id, date, ideal_day_prompt, ai_summary, progress, status, created_at, updated_at
-	`, userID, req.Date, req.IdealDayPrompt).Scan(
-		&plan.ID, &plan.UserID, &plan.Date, &plan.IdealDayPrompt,
-		&plan.AISummary, &plan.Progress, &plan.Status,
-		&plan.CreatedAt, &plan.UpdatedAt,
-	)
-
-	if err != nil {
-		http.Error(w, "Failed to create day plan", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(plan)
-}
-
-func (h *Handler) UpdateDayPlan(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(auth.UserContextKey).(string)
-	planID := chi.URLParam(r, "id")
-
-	var req UpdateDayPlanRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	var plan DayPlan
-	err := h.db.QueryRow(r.Context(), `
-		UPDATE day_plans
-		SET
-			ideal_day_prompt = COALESCE($3, ideal_day_prompt),
-			ai_summary = COALESCE($4, ai_summary),
-			status = COALESCE($5, status),
-			updated_at = now()
-		WHERE id = $1 AND user_id = $2
-		RETURNING id, user_id, date, ideal_day_prompt, ai_summary, progress, status, created_at, updated_at
-	`, planID, userID, req.IdealDayPrompt, req.AISummary, req.Status).Scan(
-		&plan.ID, &plan.UserID, &plan.Date, &plan.IdealDayPrompt,
-		&plan.AISummary, &plan.Progress, &plan.Status,
-		&plan.CreatedAt, &plan.UpdatedAt,
-	)
-
-	if err != nil {
-		http.Error(w, "Day plan not found", http.StatusNotFound)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(plan)
-}
-
-// ==========================================
-// TIME BLOCK HANDLERS
-// ==========================================
 
 // ==========================================
 // TASK HANDLERS
@@ -624,49 +436,6 @@ func (h *Handler) DeleteTask(w http.ResponseWriter, r *http.Request) {
 // HELPER METHODS
 // ==========================================
 
-func (h *Handler) getTimeBlocksForDay(ctx context.Context, userID, date string) ([]TimeBlock, error) {
-	rows, err := h.db.Query(ctx, `
-		SELECT
-			tb.id, tb.user_id, tb.day_plan_id, tb.quest_id, tb.area_id,
-			tb.title, tb.description, tb.start_time, tb.end_time,
-			tb.block_type, tb.status, tb.progress, tb.is_ai_generated,
-			tb.color, tb.created_at, tb.updated_at,
-			q.title as quest_title, a.name as area_name, a.icon as area_icon
-		FROM time_blocks tb
-		LEFT JOIN quests q ON tb.quest_id = q.id
-		LEFT JOIN areas a ON tb.area_id = a.id
-		WHERE tb.user_id = $1 AND DATE(tb.start_time) = $2
-		ORDER BY tb.start_time
-	`, userID, date)
-
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var blocks []TimeBlock
-	for rows.Next() {
-		var b TimeBlock
-		err := rows.Scan(
-			&b.ID, &b.UserID, &b.DayPlanID, &b.QuestID, &b.AreaID,
-			&b.Title, &b.Description, &b.StartTime, &b.EndTime,
-			&b.BlockType, &b.Status, &b.Progress, &b.IsAIGenerated,
-			&b.Color, &b.CreatedAt, &b.UpdatedAt,
-			&b.QuestTitle, &b.AreaName, &b.AreaIcon,
-		)
-		if err != nil {
-			continue
-		}
-		blocks = append(blocks, b)
-	}
-
-	if blocks == nil {
-		blocks = []TimeBlock{}
-	}
-
-	return blocks, nil
-}
-
 func (h *Handler) getTasksForDay(ctx context.Context, userID, date string, dayPlanID *string) ([]Task, error) {
 	rows, err := h.db.Query(ctx, `
 		SELECT
@@ -739,12 +508,6 @@ func (h *Handler) getTasksForDay(ctx context.Context, userID, date string, dayPl
 }
 
 func (h *Handler) updateQuestProgress(ctx context.Context, userID, questID, taskID string, minutesSpent int) {
-	// Log the progress
-	h.db.Exec(ctx, `
-		INSERT INTO quest_progress_log (user_id, quest_id, source_type, source_id, progress_value, minutes_spent)
-		VALUES ($1, $2, 'task', $3, 1, $4)
-	`, userID, questID, taskID, minutesSpent)
-
 	// Update quest current_value
 	h.db.Exec(ctx, `
 		UPDATE quests
