@@ -35,9 +35,10 @@ func NewHandler(jwtSecret string) *Handler {
 // --- Request/Response for iOS ---
 
 type livekitTokenRequest struct {
-	Mode    string `json:"mode,omitempty"`
-	Lang    string `json:"lang,omitempty"`
-	VoiceID string `json:"voice_id,omitempty"`
+	Mode          string `json:"mode,omitempty"`
+	Lang          string `json:"lang,omitempty"`
+	VoiceID       string `json:"voice_id,omitempty"`
+	CompanionName string `json:"companion_name,omitempty"`
 }
 
 type livekitTokenResponse struct {
@@ -97,10 +98,11 @@ func (h *Handler) GenerateLiveKitToken(w http.ResponseWriter, r *http.Request) {
 
 	// Build room metadata (the agent reads this on room join)
 	metadata := map[string]string{
-		"lang":       lang,
-		"mode":       mode,
-		"auth_token": agentTokenStr,
-		"voice_id":   voiceID,
+		"lang":           lang,
+		"mode":           mode,
+		"auth_token":     agentTokenStr,
+		"voice_id":       voiceID,
+		"companion_name": req.CompanionName,
 	}
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
