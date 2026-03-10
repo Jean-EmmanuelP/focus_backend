@@ -12,9 +12,11 @@ import (
 
 	"firelevel-backend/internal/auth"
 	"firelevel-backend/internal/calendar"
+	"firelevel-backend/internal/calendarevents"
 	"firelevel-backend/internal/chat"
 	"firelevel-backend/internal/database"
 	"firelevel-backend/internal/focus"
+	"firelevel-backend/internal/gcalendar"
 	"firelevel-backend/internal/gmail"
 	"firelevel-backend/internal/notifications"
 	"firelevel-backend/internal/onboarding"
@@ -72,6 +74,8 @@ func main() {
 	gmailHandler := gmail.NewHandler(pool)
 	questsHandler := quests.NewHandler(pool)
 	voiceHandler := voice.NewHandler(jwtSecret)
+	gcalendarHandler := gcalendar.NewHandler(pool)
+	calendarEventsHandler := calendarevents.NewHandler(pool)
 
 	// 4. Setup Router
 	r := chi.NewRouter()
@@ -189,6 +193,24 @@ func main() {
 		r.Post("/gmail/tokens", gmailHandler.SaveTokens)
 		r.Post("/gmail/analyze", gmailHandler.Analyze)
 		r.Delete("/gmail/config", gmailHandler.Disconnect)
+
+		// =====================
+		// GOOGLE CALENDAR
+		// =====================
+		r.Get("/google-calendar/config", gcalendarHandler.GetConfig)
+		r.Post("/google-calendar/tokens", gcalendarHandler.SaveTokens)
+		r.Patch("/google-calendar/config", gcalendarHandler.UpdateConfig)
+		r.Delete("/google-calendar/config", gcalendarHandler.Disconnect)
+		r.Post("/google-calendar/sync", gcalendarHandler.Sync)
+		r.Get("/google-calendar/check-weekly", gcalendarHandler.CheckWeekly)
+
+		// =====================
+		// CALENDAR EVENTS (cached external events)
+		// =====================
+		r.Get("/calendar/events", calendarEventsHandler.ListEvents)
+		r.Get("/calendar/providers", calendarEventsHandler.ListProviders)
+		r.Get("/calendar/blocking-schedule", calendarEventsHandler.GetBlockingSchedule)
+		r.Patch("/calendar/events/{id}/blocking", calendarEventsHandler.UpdateBlocking)
 
 		// =====================
 		// LOCATION
