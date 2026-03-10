@@ -348,7 +348,8 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 		// Auto-enable blocking for focusTime events
 		autoBlock := eventType == "focusTime"
 
-		rawData, _ := json.Marshal(event)
+		rawDataBytes, _ := json.Marshal(event)
+		rawData := string(rawDataBytes)
 
 		upsertQuery := `
 			INSERT INTO public.calendar_events (
