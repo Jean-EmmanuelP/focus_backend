@@ -320,6 +320,8 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 	imported := 0
 	var syncErrors []string
 
+	fmt.Printf("📅 Google Calendar: %d events fetched from API for user %s\n", len(events.Items), userID)
+
 	for _, event := range events.Items {
 		if event.Status == "cancelled" {
 			// Mark cancelled events
@@ -333,8 +335,10 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 
 		startAt, endAt, isAllDay := parseGoogleDateTime(event.Start, event.End)
 		if startAt.IsZero() {
+			fmt.Printf("⚠️ Skipping event '%s': startAt is zero (Start=%+v)\n", event.Summary, event.Start)
 			continue
 		}
+		fmt.Printf("📝 Processing event '%s': %s -> %s (allDay=%v)\n", event.Summary, startAt, endAt, isAllDay)
 
 		eventType := "default"
 		if event.EventType != "" {
@@ -388,6 +392,7 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 		)
 
 		if err != nil {
+			fmt.Printf("❌ Upsert error for event '%s' (id=%s): %v\n", event.Summary, event.Id, err)
 			syncErrors = append(syncErrors, fmt.Sprintf("Event %s: %v", event.Id, err))
 			continue
 		}
