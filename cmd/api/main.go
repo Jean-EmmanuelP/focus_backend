@@ -23,6 +23,7 @@ import (
 	"firelevel-backend/internal/routines"
 	"firelevel-backend/internal/users"
 	"firelevel-backend/internal/quests"
+	"firelevel-backend/internal/discover"
 	"firelevel-backend/internal/voice"
 )
 
@@ -76,6 +77,7 @@ func main() {
 	voiceHandler := voice.NewHandler(jwtSecret)
 	gcalendarHandler := gcalendar.NewHandler(pool)
 	calendarEventsHandler := calendarevents.NewHandler(pool)
+	discoverHandler := discover.NewHandler(pool)
 
 	// 4. Setup Router
 	r := chi.NewRouter()
@@ -216,6 +218,11 @@ func main() {
 		// LOCATION
 		// =====================
 		r.Post("/me/location", usersHandler.UpdateLocation)
+
+		// =====================
+		// DISCOVER MAP
+		// =====================
+		r.Get("/discover/users", discoverHandler.ListNearbyUsers)
 	})
 
 	port := os.Getenv("PORT")

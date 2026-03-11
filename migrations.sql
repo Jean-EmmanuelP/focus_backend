@@ -138,7 +138,10 @@ create table public.focus_sessions (
   -- Optional link to a specific Quest
   -- "on delete set null" means if the Quest is deleted, we keep the session history, just unlink it.
   quest_id uuid references public.quests on delete set null,
-  
+
+  -- Optional link to a specific Task (calendar task)
+  task_id uuid references public.tasks on delete set null,
+
   description text,              -- "What will you work on?"
   duration_minutes integer not null, -- 25, 50, 90, etc.
   
@@ -981,3 +984,15 @@ ALTER TABLE public.users ADD COLUMN IF NOT EXISTS longest_streak integer DEFAULT
 
 -- Unique constraint on areas (user_id, slug) for upsert
 CREATE UNIQUE INDEX IF NOT EXISTS idx_areas_user_slug ON public.areas(user_id, slug);
+
+-- ==========================================
+-- COACH HARSH MODE
+-- Opt-in harsh coaching personality
+-- ==========================================
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS coach_harsh_mode boolean default false;
+
+-- ==========================================
+-- DISCOVER MAP
+-- Opt-out visibility on the discover map
+-- ==========================================
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS discover_visible boolean DEFAULT true;
