@@ -17,7 +17,6 @@ import (
 type FocusSession struct {
 	ID              string     `json:"id"`
 	QuestID         *string    `json:"quest_id"`
-	TaskID          *string    `json:"task_id"`
 	Description     *string    `json:"description"`
 	DurationMinutes int        `json:"duration_minutes"`
 	Status          string     `json:"status"`
@@ -27,7 +26,6 @@ type FocusSession struct {
 
 type StartSessionRequest struct {
 	QuestID         *string `json:"quest_id"`
-	TaskID          *string `json:"task_id"`
 	Description     *string `json:"description"`
 	DurationMinutes int     `json:"duration_minutes"`
 	Status          *string `json:"status"` // Optional: "active" or "completed", defaults to "active"
@@ -74,21 +72,21 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 
 	if status == "completed" {
 		query = `
-			INSERT INTO public.focus_sessions (user_id, quest_id, task_id, description, duration_minutes, status, started_at, completed_at)
-			VALUES ($1, $2, $3, $4, $5, $6, now(), now())
-			RETURNING id, quest_id, task_id, description, duration_minutes, status, started_at, completed_at
+			INSERT INTO public.focus_sessions (user_id, quest_id, description, duration_minutes, status, started_at, completed_at)
+			VALUES ($1, $2, $3, $4, $5, now(), now())
+			RETURNING id, quest_id, description, duration_minutes, status, started_at, completed_at
 		`
-		err = h.db.QueryRow(r.Context(), query, userID, req.QuestID, req.TaskID, req.Description, req.DurationMinutes, status).Scan(
-			&s.ID, &s.QuestID, &s.TaskID, &s.Description, &s.DurationMinutes, &s.Status, &s.StartedAt, &s.CompletedAt,
+		err = h.db.QueryRow(r.Context(), query, userID, req.QuestID, req.Description, req.DurationMinutes, status).Scan(
+			&s.ID, &s.QuestID, &s.Description, &s.DurationMinutes, &s.Status, &s.StartedAt, &s.CompletedAt,
 		)
 	} else {
 		query = `
-			INSERT INTO public.focus_sessions (user_id, quest_id, task_id, description, duration_minutes, status, started_at)
-			VALUES ($1, $2, $3, $4, $5, $6, now())
-			RETURNING id, quest_id, task_id, description, duration_minutes, status, started_at, completed_at
+			INSERT INTO public.focus_sessions (user_id, quest_id, description, duration_minutes, status, started_at)
+			VALUES ($1, $2, $3, $4, $5, now())
+			RETURNING id, quest_id, description, duration_minutes, status, started_at, completed_at
 		`
-		err = h.db.QueryRow(r.Context(), query, userID, req.QuestID, req.TaskID, req.Description, req.DurationMinutes, status).Scan(
-			&s.ID, &s.QuestID, &s.TaskID, &s.Description, &s.DurationMinutes, &s.Status, &s.StartedAt, &s.CompletedAt,
+		err = h.db.QueryRow(r.Context(), query, userID, req.QuestID, req.Description, req.DurationMinutes, status).Scan(
+			&s.ID, &s.QuestID, &s.Description, &s.DurationMinutes, &s.Status, &s.StartedAt, &s.CompletedAt,
 		)
 	}
 
@@ -147,7 +145,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 
 	args = append(args, userID, sessionID)
 	query := fmt.Sprintf(
-		"UPDATE public.focus_sessions SET %s WHERE user_id = $%d AND id = $%d RETURNING id, quest_id, task_id, description, duration_minutes, status, started_at, completed_at",
+		"UPDATE public.focus_sessions SET %s WHERE user_id = $%d AND id = $%d RETURNING id, quest_id, description, duration_minutes, status, started_at, completed_at",
 		strings.Join(setParts, ", "),
 		argId,
 		argId+1,
@@ -155,7 +153,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 
 	var s FocusSession
 	err := h.db.QueryRow(r.Context(), query, args...).Scan(
-		&s.ID, &s.QuestID, &s.TaskID, &s.Description, &s.DurationMinutes, &s.Status, &s.StartedAt, &s.CompletedAt,
+		&s.ID, &s.QuestID, &s.Description, &s.DurationMinutes, &s.Status, &s.StartedAt, &s.CompletedAt,
 	)
 
 	if err != nil {
@@ -178,7 +176,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	questID := r.URL.Query().Get("quest_id")
 	status := r.URL.Query().Get("status")
 
-	query := `SELECT id, quest_id, task_id, description, duration_minutes, status, started_at, completed_at FROM public.focus_sessions WHERE user_id = $1`
+	query := `SELECT id, quest_id, description, duration_minutes, status, started_at, completed_at FROM public.focus_sessions WHERE user_id = $1`
 	args := []interface{}{userID}
 	argId := 2
 
@@ -207,7 +205,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	sessions := []FocusSession{}
 	for rows.Next() {
 		var s FocusSession
-		if err := rows.Scan(&s.ID, &s.QuestID, &s.TaskID, &s.Description, &s.DurationMinutes, &s.Status, &s.StartedAt, &s.CompletedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.QuestID, &s.Description, &s.DurationMinutes, &s.Status, &s.StartedAt, &s.CompletedAt); err != nil {
 			log.Println("Scan session error:", err)
 			continue
 		}
