@@ -24,6 +24,7 @@ import (
 	"firelevel-backend/internal/users"
 	"firelevel-backend/internal/quests"
 	"firelevel-backend/internal/discover"
+	"firelevel-backend/internal/focusrooms"
 	"firelevel-backend/internal/voice"
 )
 
@@ -78,6 +79,7 @@ func main() {
 	gcalendarHandler := gcalendar.NewHandler(pool)
 	calendarEventsHandler := calendarevents.NewHandler(pool)
 	discoverHandler := discover.NewHandler(pool)
+	focusRoomsHandler := focusrooms.NewHandler(pool)
 
 	// 4. Setup Router
 	r := chi.NewRouter()
@@ -223,6 +225,14 @@ func main() {
 		// DISCOVER MAP
 		// =====================
 		r.Get("/discover/users", discoverHandler.ListNearbyUsers)
+
+		// =====================
+		// FOCUS ROOMS (Group Sessions)
+		// =====================
+		r.Get("/focus-rooms", focusRoomsHandler.List)
+		r.Post("/focus-rooms/join", focusRoomsHandler.Join)
+		r.Get("/focus-rooms/{id}", focusRoomsHandler.Get)
+		r.Post("/focus-rooms/{id}/leave", focusRoomsHandler.Leave)
 	})
 
 	port := os.Getenv("PORT")
