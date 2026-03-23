@@ -45,6 +45,7 @@ type User struct {
 	FreeVoiceMessagesUsed *int     `json:"free_voice_messages_used"` // Counter for free voice messages
 	CreatedAt            *string    `json:"created_at"`             // Account creation date
 	BackboardAssistantID *string   `json:"backboard_assistant_id"` // Per-user Backboard assistant for isolated memory
+	BackboardThreadID    *string   `json:"backboard_thread_id"`    // Per-user Backboard thread for conversation persistence
 	VoiceID              *string   `json:"voice_id"`               // Gradium TTS voice preference
 	CoachHarshMode       *bool     `json:"coach_harsh_mode"`       // Opt-in harsh coach mode
 }
@@ -71,6 +72,7 @@ type UpdateUserRequest struct {
 	CompanionGender      *string `json:"companion_gender"`
 	AvatarStyle          *string `json:"avatar_style"`
 	BackboardAssistantID *string `json:"backboard_assistant_id"`
+	BackboardThreadID    *string `json:"backboard_thread_id"`
 	VoiceID              *string `json:"voice_id"`
 	CoachHarshMode       *bool   `json:"coach_harsh_mode"`
 }
@@ -107,6 +109,7 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(free_voice_messages_used, 0) as free_voice_messages_used,
 		       created_at,
 		       backboard_assistant_id,
+		       backboard_thread_id,
 		       voice_id,
 		       COALESCE(coach_harsh_mode, false) as coach_harsh_mode
 		FROM public.users
@@ -141,6 +144,7 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		&user.FreeVoiceMessagesUsed,
 		&user.CreatedAt,
 		&user.BackboardAssistantID,
+		&user.BackboardThreadID,
 		&user.VoiceID,
 		&user.CoachHarshMode,
 	)
@@ -291,6 +295,12 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		argId++
 	}
 
+	if req.BackboardThreadID != nil {
+		setParts = append(setParts, fmt.Sprintf("backboard_thread_id = $%d", argId))
+		args = append(args, *req.BackboardThreadID)
+		argId++
+	}
+
 	if req.VoiceID != nil {
 		setParts = append(setParts, fmt.Sprintf("voice_id = $%d", argId))
 		args = append(args, *req.VoiceID)
@@ -320,7 +330,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		           companion_name, companion_gender, avatar_style,
 		           COALESCE(current_streak, 0), COALESCE(longest_streak, 0),
 		           COALESCE(free_voice_messages_used, 0), created_at,
-		           backboard_assistant_id, voice_id,
+		           backboard_assistant_id, backboard_thread_id, voice_id,
 		           COALESCE(coach_harsh_mode, false)`,
 		strings.Join(setParts, ", "),
 		argId,
@@ -355,6 +365,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		&updatedUser.FreeVoiceMessagesUsed,
 		&updatedUser.CreatedAt,
 		&updatedUser.BackboardAssistantID,
+		&updatedUser.BackboardThreadID,
 		&updatedUser.VoiceID,
 		&updatedUser.CoachHarshMode,
 	)

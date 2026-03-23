@@ -996,3 +996,9 @@ ALTER TABLE public.users ADD COLUMN IF NOT EXISTS coach_harsh_mode boolean defau
 -- Opt-out visibility on the discover map
 -- ==========================================
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS discover_visible boolean DEFAULT true;
+
+-- ==========================================
+-- BACKBOARD THREAD PERSISTENCE
+-- Store thread ID per user for cross-device conversation persistence
+-- ==========================================
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS backboard_thread_id text;
