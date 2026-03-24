@@ -72,6 +72,14 @@ func main() {
 	onboardingHandler := onboarding.NewHandler(pool)
 	calendarHandler := calendar.NewHandler(pool)
 	chatHandler := chat.NewHandler(pool)
+
+	// Initialize Backboard API key for the new AI chat handler
+	if bbKey := os.Getenv("BACKBOARD_API_KEY"); bbKey != "" {
+		chat.SetBackboardAPIKey(bbKey)
+		log.Println("✅ Backboard API key loaded")
+	} else {
+		log.Println("⚠️ BACKBOARD_API_KEY not set — /chat/v2 endpoints will be unavailable")
+	}
 	notificationsHandler := notifications.NewHandler(pool)
 	gmailHandler := gmail.NewHandler(pool)
 	questsHandler := quests.NewHandler(pool)
@@ -115,11 +123,17 @@ func main() {
 		// =====================
 		// CHAT WITH KAI (Core)
 		// =====================
-		r.Post("/chat/message", chatHandler.SendMessage)
-		r.Post("/chat/voice", chatHandler.SendVoiceMessage)
+		r.Post("/chat/message", chatHandler.SendMessage)       // Legacy (Gemini)
+		r.Post("/chat/voice", chatHandler.SendVoiceMessage)     // Legacy (Gemini)
 		r.Post("/chat/tts", chatHandler.TextToSpeech)
-		r.Get("/chat/history", chatHandler.GetHistory)
-		r.Delete("/chat/history", chatHandler.ClearHistory)
+		r.Get("/chat/history", chatHandler.GetHistory)           // Legacy (empty)
+		r.Delete("/chat/history", chatHandler.ClearHistory)      // Legacy (noop)
+
+		// Backboard-powered chat (v2) — tools run server-side
+		r.Post("/chat/v2/message", chatHandler.SendMessageV2)
+		r.Post("/chat/v2/voice", chatHandler.SendVoiceMessageV2)
+		r.Get("/chat/v2/history", chatHandler.GetHistoryV2)
+		r.Delete("/chat/v2/history", chatHandler.ClearHistoryV2)
 
 		// =====================
 		// USER PROFILE
