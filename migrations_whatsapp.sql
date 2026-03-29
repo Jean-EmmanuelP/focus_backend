@@ -58,23 +58,8 @@ CREATE TABLE IF NOT EXISTS public.whatsapp_pending_users (
 CREATE INDEX IF NOT EXISTS idx_pending_phone ON public.whatsapp_pending_users(phone_number);
 
 -- ==========================================
--- 5. Daily intentions table (if not exists)
--- For mood logging via WhatsApp
+-- 5. (REMOVED) daily_intentions table — no longer used
 -- ==========================================
-CREATE TABLE IF NOT EXISTS public.daily_intentions (
-  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id uuid NOT NULL REFERENCES auth.users ON DELETE CASCADE,
-  date date DEFAULT current_date NOT NULL,
-  mood_rating integer,  -- 1-5
-  sleep_rating integer, -- 1-10
-  intentions text,
-  created_at timestamp with time zone DEFAULT now(),
-  UNIQUE (user_id, date)
-);
-
-ALTER TABLE public.daily_intentions ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Users can manage own intentions" ON public.daily_intentions
-  USING (auth.uid() = user_id);
 
 -- ==========================================
 -- 6. Cleanup job for expired OTPs
