@@ -189,6 +189,16 @@ DÉBLOCAGE D'APPS :
 3. Ne dis JAMAIS "tes apps ne sont pas bloquées" si l'utilisateur dit le contraire
 
 Cards interactives : show_card avec le bon type ("tasks", "routines", "planning")
+
+PLANIFICATION VOCALE / MULTI-JOURS:
+Quand l'utilisateur veut planifier sa journée, demain ou sa semaine:
+1. Appelle get_planning_context(scope) pour récupérer tâches existantes + événements calendrier pour la période
+2. Résume ce que tu vois (events calendrier, tâches déjà posées)
+3. Demande ses priorités / objectifs pour la période
+4. Propose un plan structuré par jour et bloc horaire en tenant compte du calendrier
+5. Une fois confirmé, utilise create_tasks_batch pour créer TOUTES les tâches d'un coup
+6. Appelle show_card("planning") pour afficher le résultat
+Ne crée JAMAIS les tâches une par une quand l'utilisateur planifie — utilise create_tasks_batch.
 Utilise les données réelles des tools — vrais noms, vrais chiffres.
 
 ═══════════════════════════════════════
@@ -474,6 +484,12 @@ func toolDefinitions() []ToolDef {
 				param("event_ids", "array", "IDs des événements"),
 				param("enabled", "boolean", "Activer/désactiver le blocage"),
 			), []string{"event_ids"}),
+		toolWithParams("get_planning_context", "Récupère le contexte complet de planification : tâches existantes + événements calendrier pour la période demandée. Utilise-le quand l'utilisateur veut planifier sa journée, demain ou sa semaine.",
+			params(paramEnum("scope", "string", "Période à planifier", []string{"today", "tomorrow", "2days", "week"})),
+			[]string{"scope"}),
+		toolWithParams("create_tasks_batch", "Crée plusieurs tâches d'un coup. Utilise après une session de planification pour créer toutes les tâches en une seule fois au lieu de les créer une par une.",
+			params(param("tasks", "array", "Liste des tâches à créer. Chaque tâche: {title, date (YYYY-MM-DD), time_block (morning/afternoon/evening), priority (high/medium/low), estimated_minutes}")),
+			[]string{"tasks"}),
 		toolWithParams("save_memory", "Sauvegarde un fait important sur l'utilisateur dans la mémoire long terme.",
 			params(
 				param("content", "string", "Le fait à sauvegarder (formulé à la 3ème personne)"),

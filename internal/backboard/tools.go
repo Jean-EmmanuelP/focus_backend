@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 )
 
@@ -85,6 +86,27 @@ func (e *Executor) getUserContext(ctx context.Context, userID string, deviceCtx 
 		morningBlockEnd = deviceCtx.MorningBlockEnd
 	}
 
+	// Fetch user's productivity challenges from onboarding diagnostic
+	var productivityChallenges []string
+	var onboardingResponses json.RawMessage
+	err = e.db.QueryRow(ctx, `
+		SELECT COALESCE(responses, '{}'::jsonb) FROM public.user_onboarding WHERE user_id = $1
+	`, userID).Scan(&onboardingResponses)
+	if err == nil && len(onboardingResponses) > 0 {
+		var respMap map[string]interface{}
+		if json.Unmarshal(onboardingResponses, &respMap) == nil {
+			if challenges, ok := respMap["productivity_challenges"]; ok {
+				if arr, ok := challenges.([]interface{}); ok {
+					for _, c := range arr {
+						if s, ok := c.(string); ok {
+							productivityChallenges = append(productivityChallenges, s)
+						}
+					}
+				}
+			}
+		}
+	}
+
 	result := map[string]interface{}{
 		"user_name":             userName,
 		"companion_name":        companionName,
@@ -106,6 +128,10 @@ func (e *Executor) getUserContext(ctx context.Context, userID string, deviceCtx 
 		"morning_block_enabled": morningBlockEnabled,
 		"morning_block_start":   morningBlockStart,
 		"morning_block_end":     morningBlockEnd,
+	}
+
+	if len(productivityChallenges) > 0 {
+		result["productivity_challenges"] = productivityChallenges
 	}
 
 	return toJSON(result), nil
@@ -551,6 +577,148 @@ func (e *Executor) scheduleCalendarBlocking(ctx context.Context, userID string, 
 	}
 
 	return toJSON(map[string]interface{}{"updated": true, "count": len(eventIDs)}), nil
+}
+
+// ==========================================
+// Planning Tools
+// ==========================================
+
+func (e *Executor) getPlanningContext(ctx context.Context, userID, scope string, deviceCtx *DeviceContext) (string, error) {
+	today := todayStr(ctx, userID, e.db)
+
+	// Determine date range based on scope
+	loc := time.UTC
+	var tz string
+	e.db.QueryRow(ctx, "SELECT COALESCE(timezone, 'Europe/Paris') FROM public.users WHERE id = $1", userID).Scan(&tz)
+	if l, err := time.LoadLocation(tz); err == nil {
+		loc = l
+	}
+	now := time.Now().In(loc)
+
+	var dates []string
+	switch scope {
+	case "tomorrow":
+		d := now.AddDate(0, 0, 1)
+		dates = []string{d.Format("2006-01-02")}
+	case "2days":
+		dates = []string{today, now.AddDate(0, 0, 1).Format("2006-01-02")}
+	case "week":
+		for i := 0; i < 7; i++ {
+			d := now.AddDate(0, 0, i)
+			dates = append(dates, d.Format("2006-01-02"))
+		}
+	default: // "today"
+		dates = []string{today}
+	}
+
+	// Fetch tasks + calendar events for each date
+	var days []map[string]interface{}
+	for _, dateStr := range dates {
+		d, _ := time.Parse("2006-01-02", dateStr)
+		dayName := frenchWeekday(d.Weekday())
+
+		tasksJSON, _ := e.getTasksForDate(ctx, userID, dateStr)
+		var tasksResult map[string]interface{}
+		json.Unmarshal([]byte(tasksJSON), &tasksResult)
+		tasks := tasksResult["tasks"]
+
+		eventsJSON, _ := e.getCalendarEvents(ctx, userID, dateStr)
+		var eventsResult map[string]interface{}
+		json.Unmarshal([]byte(eventsJSON), &eventsResult)
+		events := eventsResult["events"]
+
+		days = append(days, map[string]interface{}{
+			"date":            dateStr,
+			"day_name":        dayName,
+			"tasks":           tasks,
+			"calendar_events": events,
+		})
+	}
+
+	// Fetch rituals
+	ritualsJSON, _ := e.getRituals(ctx, userID)
+	var ritualsResult map[string]interface{}
+	json.Unmarshal([]byte(ritualsJSON), &ritualsResult)
+
+	// Basic user context
+	userCtxJSON, _ := e.getUserContext(ctx, userID, deviceCtx)
+	var userCtx map[string]interface{}
+	json.Unmarshal([]byte(userCtxJSON), &userCtx)
+
+	result := map[string]interface{}{
+		"scope":        scope,
+		"days":         days,
+		"rituals":      ritualsResult,
+		"user_context": userCtx,
+	}
+
+	return toJSON(result), nil
+}
+
+func (e *Executor) createTasksBatch(ctx context.Context, userID string, args map[string]interface{}) (string, error) {
+	tasksRaw, ok := args["tasks"].([]interface{})
+	if !ok || len(tasksRaw) == 0 {
+		return "", fmt.Errorf("tasks array is required and must not be empty")
+	}
+
+	today := todayStr(ctx, userID, e.db)
+	var created []map[string]interface{}
+
+	for _, t := range tasksRaw {
+		taskMap, ok := t.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		title := ""
+		if v, ok := taskMap["title"].(string); ok {
+			title = v
+		}
+		if title == "" {
+			continue
+		}
+
+		dateStr := today
+		if v, ok := taskMap["date"].(string); ok && v != "" {
+			dateStr = v
+		}
+		priority := "medium"
+		if v, ok := taskMap["priority"].(string); ok && v != "" {
+			priority = v
+		}
+		timeBlock := "morning"
+		if v, ok := taskMap["time_block"].(string); ok && v != "" {
+			timeBlock = v
+		}
+		estimatedMinutes := 0
+		if v, ok := taskMap["estimated_minutes"].(float64); ok {
+			estimatedMinutes = int(v)
+		}
+
+		var taskID string
+		err := e.db.QueryRow(ctx, `
+			INSERT INTO tasks (user_id, title, date, priority, time_block, estimated_minutes, is_ai_generated)
+			VALUES ($1, $2, $3, $4, $5, NULLIF($6, 0), true)
+			RETURNING id
+		`, userID, title, dateStr, priority, timeBlock, estimatedMinutes).Scan(&taskID)
+		if err != nil {
+			log.Printf("create_tasks_batch: failed to create task '%s': %v", title, err)
+			continue
+		}
+
+		created = append(created, map[string]interface{}{
+			"id":         taskID,
+			"title":      title,
+			"date":       dateStr,
+			"time_block": timeBlock,
+			"priority":   priority,
+		})
+	}
+
+	return toJSON(map[string]interface{}{
+		"created": len(created),
+		"tasks":   created,
+	}), nil
 }
 
 // ==========================================

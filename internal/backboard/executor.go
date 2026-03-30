@@ -326,6 +326,29 @@ func (e *Executor) executeToolCall(
 		}
 		return toJSON(map[string]interface{}{"enabled": false}), nil
 
+	// ==========================================
+	// Planning
+	// ==========================================
+
+	case "get_planning_context":
+		scope := stringArg(args, "scope", "today")
+		result, err := e.getPlanningContext(ctx, userID, scope, deviceCtx)
+		if err != nil {
+			return errorJSON(err), nil
+		}
+		return result, nil
+
+	case "create_tasks_batch":
+		result, err := e.createTasksBatch(ctx, userID, args)
+		if err != nil {
+			return errorJSON(err), nil
+		}
+		return result, []SideEffect{
+			NewSideEffect("refresh_tasks"),
+			NewSideEffect("calendar_needs_refresh"),
+			NewSideEffectWithData("show_card", map[string]string{"card_type": "planning"}),
+		}
+
 	case "start_morning_flow":
 		result, err := e.getMorningFlowContext(ctx, userID, deviceCtx)
 		if err != nil {

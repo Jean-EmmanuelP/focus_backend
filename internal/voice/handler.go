@@ -39,6 +39,7 @@ type livekitTokenRequest struct {
 	Lang          string `json:"lang,omitempty"`
 	VoiceID       string `json:"voice_id,omitempty"`
 	CompanionName string `json:"companion_name,omitempty"`
+	PlanningScope string `json:"planning_scope,omitempty"` // today, tomorrow, 2days, week
 }
 
 type livekitTokenResponse struct {
@@ -98,11 +99,12 @@ func (h *Handler) GenerateLiveKitToken(w http.ResponseWriter, r *http.Request) {
 
 	// Build room metadata (the agent reads this on room join)
 	metadata := map[string]string{
-		"lang":           lang,
-		"mode":           mode,
-		"auth_token":     agentTokenStr,
-		"voice_id":       voiceID,
-		"companion_name": req.CompanionName,
+		"lang":            lang,
+		"mode":            mode,
+		"auth_token":      agentTokenStr,
+		"voice_id":        voiceID,
+		"companion_name":  req.CompanionName,
+		"planning_scope":  req.PlanningScope,
 	}
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {

@@ -81,6 +81,7 @@ type SaveOnboardingRequest struct {
 	// Step-specific data (all optional, sent per step)
 	FirstName       *string  `json:"first_name,omitempty"`
 	LastName        *string  `json:"last_name,omitempty"`
+	Sex             *string  `json:"sex,omitempty"`              // "homme", "femme", "autre"
 	AgeRange        *string  `json:"age_range,omitempty"`        // "less_than_18", "18-24", "25-34", etc.
 	Pronouns        *string  `json:"pronouns,omitempty"`         // "elle_la", "il_lui", "iel_iels"
 	CompanionRole   *string  `json:"companion_role,omitempty"`   // role chosen
@@ -94,6 +95,9 @@ type SaveOnboardingRequest struct {
 	GuideExpectations   []string `json:"guide_expectations,omitempty"`   // step 9
 	DevelopmentAreas    []string `json:"development_areas,omitempty"`    // step 11
 	AdditionalActivities []string `json:"additional_activities,omitempty"` // step 12
+
+	// Productivity diagnostic (from chat)
+	ProductivityChallenges []string `json:"productivity_challenges,omitempty"`
 
 	// Yes/No agreement questions (steps 13-17)
 	AgreementQ1 *bool `json:"agreement_q1,omitempty"`
@@ -317,6 +321,9 @@ func (h *Handler) buildResponsesJSON(req SaveOnboardingRequest) map[string]inter
 	if req.LastName != nil {
 		responses["last_name"] = *req.LastName
 	}
+	if req.Sex != nil {
+		responses["sex"] = *req.Sex
+	}
 	if req.AgeRange != nil {
 		responses["age_range"] = *req.AgeRange
 	}
@@ -349,6 +356,9 @@ func (h *Handler) buildResponsesJSON(req SaveOnboardingRequest) map[string]inter
 	}
 	if len(req.AdditionalActivities) > 0 {
 		responses["additional_activities"] = req.AdditionalActivities
+	}
+	if len(req.ProductivityChallenges) > 0 {
+		responses["productivity_challenges"] = req.ProductivityChallenges
 	}
 	if req.AgreementQ1 != nil {
 		responses["agreement_q1"] = *req.AgreementQ1
@@ -388,8 +398,22 @@ func (h *Handler) updateUserProfile(r *http.Request, userID string, req SaveOnbo
 		}
 	}
 
-	// Update pronouns → gender field (step 2)
-	if req.Pronouns != nil {
+	// Update sex → gender field (explicit sex selection takes priority)
+	if req.Sex != nil {
+		gender := "prefer_not_to_say"
+		switch *req.Sex {
+		case "homme":
+			gender = "male"
+		case "femme":
+			gender = "female"
+		case "autre":
+			gender = "other"
+		}
+		h.db.Exec(r.Context(),
+			`UPDATE public.users SET gender = $1 WHERE id = $2`,
+			gender, userID)
+	} else if req.Pronouns != nil {
+		// Fallback: infer gender from pronouns (legacy)
 		gender := "prefer_not_to_say"
 		switch *req.Pronouns {
 		case "elle_la":
