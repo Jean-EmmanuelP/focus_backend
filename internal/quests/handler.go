@@ -27,6 +27,7 @@ type Quest struct {
 	Status       string `json:"status"`
 	CurrentValue int    `json:"current_value"`
 	TargetValue  int    `json:"target_value"`
+	Term         string `json:"term"` // short, medium, long
 }
 
 type createQuestRequest struct {
@@ -34,6 +35,7 @@ type createQuestRequest struct {
 	Area        string `json:"area,omitempty"`
 	TargetValue int    `json:"target_value,omitempty"`
 	TargetDate  string `json:"target_date,omitempty"`
+	Term        string `json:"term,omitempty"` // short, medium, long
 }
 
 // areaDefaults maps area slugs to display names and icons.
@@ -55,7 +57,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 
 	rows, err := h.db.Query(r.Context(), `
-		SELECT id, area_id, title, status, current_value, target_value
+		SELECT id, area_id, title, status, current_value, target_value, COALESCE(term, 'short')
 		FROM quests
 		WHERE user_id = $1 AND status = 'active'
 		ORDER BY created_at DESC
@@ -70,7 +72,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	quests := []Quest{}
 	for rows.Next() {
 		var q Quest
-		if err := rows.Scan(&q.ID, &q.AreaID, &q.Title, &q.Status, &q.CurrentValue, &q.TargetValue); err != nil {
+		if err := rows.Scan(&q.ID, &q.AreaID, &q.Title, &q.Status, &q.CurrentValue, &q.TargetValue, &q.Term); err != nil {
 			log.Printf("quests.List scan error: %v", err)
 			continue
 		}
@@ -114,13 +116,21 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	term := req.Term
+	if term == "" {
+		term = "short"
+	}
+	if term != "short" && term != "medium" && term != "long" {
+		term = "short"
+	}
+
 	var q Quest
 	err = h.db.QueryRow(r.Context(), `
-		INSERT INTO quests (user_id, area_id, title, target_value, current_value, status)
-		VALUES ($1, $2, $3, $4, 0, 'active')
-		RETURNING id, area_id, title, status, current_value, target_value
-	`, userID, areaID, req.Title, req.TargetValue).Scan(
-		&q.ID, &q.AreaID, &q.Title, &q.Status, &q.CurrentValue, &q.TargetValue,
+		INSERT INTO quests (user_id, area_id, title, target_value, current_value, status, term)
+		VALUES ($1, $2, $3, $4, 0, 'active', $5)
+		RETURNING id, area_id, title, status, current_value, target_value, term
+	`, userID, areaID, req.Title, req.TargetValue, term).Scan(
+		&q.ID, &q.AreaID, &q.Title, &q.Status, &q.CurrentValue, &q.TargetValue, &q.Term,
 	)
 	if err != nil {
 		log.Printf("quests.Create insert error: %v", err)
