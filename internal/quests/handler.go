@@ -169,3 +169,33 @@ func (h *Handler) findOrCreateArea(r *http.Request, userID, slug string) (string
 	}
 	return areaID, nil
 }
+
+// Delete removes a quest by ID.
+// DELETE /quests/{id}
+func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+
+	// Extract quest ID from URL path
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 3 {
+		http.Error(w, "Quest ID required", http.StatusBadRequest)
+		return
+	}
+	questID := parts[len(parts)-1]
+
+	result, err := h.db.Exec(r.Context(), `
+		DELETE FROM quests WHERE id = $1 AND user_id = $2
+	`, questID, userID)
+	if err != nil {
+		log.Printf("quests.Delete error: %v", err)
+		http.Error(w, "Failed to delete quest", http.StatusInternalServerError)
+		return
+	}
+
+	if result.RowsAffected() == 0 {
+		http.Error(w, "Quest not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}

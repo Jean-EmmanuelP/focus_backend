@@ -198,6 +198,7 @@ func main() {
 		// =====================
 		r.Get("/quests", questsHandler.List)
 		r.Post("/quests", questsHandler.Create)
+		r.Delete("/quests/{id}", questsHandler.Delete)
 
 		// =====================
 		// VOICE (LiveKit)
