@@ -23,6 +23,8 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 type Quest struct {
 	ID           string `json:"id"`
 	AreaID       string `json:"area_id"`
+	AreaName     string `json:"area_name"`
+	AreaIcon     string `json:"area_icon"`
 	Title        string `json:"title"`
 	Status       string `json:"status"`
 	CurrentValue int    `json:"current_value"`
@@ -57,10 +59,12 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
 
 	rows, err := h.db.Query(r.Context(), `
-		SELECT id, area_id, title, status, current_value, target_value, COALESCE(term, 'short')
-		FROM quests
-		WHERE user_id = $1 AND status = 'active'
-		ORDER BY created_at DESC
+		SELECT q.id, q.area_id, COALESCE(a.name, 'Autre'), COALESCE(a.icon, 'star'),
+		       q.title, q.status, q.current_value, q.target_value, COALESCE(q.term, 'short')
+		FROM quests q
+		LEFT JOIN areas a ON q.area_id = a.id
+		WHERE q.user_id = $1 AND q.status = 'active'
+		ORDER BY q.created_at DESC
 	`, userID)
 	if err != nil {
 		log.Printf("quests.List error: %v", err)
@@ -72,7 +76,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	quests := []Quest{}
 	for rows.Next() {
 		var q Quest
-		if err := rows.Scan(&q.ID, &q.AreaID, &q.Title, &q.Status, &q.CurrentValue, &q.TargetValue, &q.Term); err != nil {
+		if err := rows.Scan(&q.ID, &q.AreaID, &q.AreaName, &q.AreaIcon, &q.Title, &q.Status, &q.CurrentValue, &q.TargetValue, &q.Term); err != nil {
 			log.Printf("quests.List scan error: %v", err)
 			continue
 		}
@@ -128,9 +132,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	err = h.db.QueryRow(r.Context(), `
 		INSERT INTO quests (user_id, area_id, title, target_value, current_value, status, term)
 		VALUES ($1, $2, $3, $4, 0, 'active', $5)
-		RETURNING id, area_id, title, status, current_value, target_value, term
+		RETURNING id, area_id,
+			(SELECT name FROM areas WHERE id = area_id),
+			(SELECT icon FROM areas WHERE id = area_id),
+			title, status, current_value, target_value, term
 	`, userID, areaID, req.Title, req.TargetValue, term).Scan(
-		&q.ID, &q.AreaID, &q.Title, &q.Status, &q.CurrentValue, &q.TargetValue, &q.Term,
+		&q.ID, &q.AreaID, &q.AreaName, &q.AreaIcon, &q.Title, &q.Status, &q.CurrentValue, &q.TargetValue, &q.Term,
 	)
 	if err != nil {
 		log.Printf("quests.Create insert error: %v", err)
