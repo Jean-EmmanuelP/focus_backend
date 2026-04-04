@@ -45,12 +45,12 @@ var areaDefaults = map[string]struct {
 	Name string
 	Icon string
 }{
-	"health":        {Name: "Santé", Icon: "heart"},
-	"learning":      {Name: "Apprentissage", Icon: "book"},
-	"career":        {Name: "Carrière", Icon: "briefcase"},
-	"relationships": {Name: "Relations", Icon: "person.2"},
-	"creativity":    {Name: "Créativité", Icon: "paintbrush"},
-	"other":         {Name: "Autre", Icon: "star"},
+	"health":        {Name: "Santé", Icon: "heart.fill"},
+	"learning":      {Name: "Apprentissage", Icon: "book.fill"},
+	"career":        {Name: "Carrière", Icon: "briefcase.fill"},
+	"relationships": {Name: "Relations", Icon: "person.2.fill"},
+	"creativity":    {Name: "Créativité", Icon: "paintbrush.fill"},
+	"other":         {Name: "Autre", Icon: "star.fill"},
 }
 
 // List returns the user's quests (active by default).
@@ -205,4 +205,35 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// Complete marks a quest as completed.
+// POST /quests/{id}/complete
+func (h *Handler) Complete(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserContextKey).(string)
+
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 3 {
+		http.Error(w, "Quest ID required", http.StatusBadRequest)
+		return
+	}
+	questID := parts[len(parts)-2] // /quests/{id}/complete
+
+	result, err := h.db.Exec(r.Context(), `
+		UPDATE quests SET status = 'completed', current_value = target_value
+		WHERE id = $1 AND user_id = $2
+	`, questID, userID)
+	if err != nil {
+		log.Printf("quests.Complete error: %v", err)
+		http.Error(w, "Failed to complete quest", http.StatusInternalServerError)
+		return
+	}
+
+	if result.RowsAffected() == 0 {
+		http.Error(w, "Quest not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]bool{"completed": true})
 }
