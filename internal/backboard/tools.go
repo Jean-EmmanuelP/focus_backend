@@ -137,6 +137,48 @@ func (e *Executor) getUserContext(ctx context.Context, userID string, deviceCtx 
 	return toJSON(result), nil
 }
 
+// ==========================================
+// Coaching Diagnostic
+// ==========================================
+
+func (e *Executor) saveProductivityChallenges(ctx context.Context, userID string, args map[string]interface{}) (string, error) {
+	challenges := stringArrayArg(args, "challenges")
+	if len(challenges) == 0 {
+		return errorJSON(fmt.Errorf("no challenges provided")), nil
+	}
+
+	// Cap at 5
+	if len(challenges) > 5 {
+		challenges = challenges[:5]
+	}
+
+	challengesJSON, _ := json.Marshal(map[string]interface{}{
+		"productivity_challenges": challenges,
+	})
+
+	// Merge into user_onboarding.responses JSONB
+	query := `
+		INSERT INTO public.user_onboarding (user_id, responses, current_step, created_at, updated_at)
+		VALUES ($1, $2::jsonb, 0, NOW(), NOW())
+		ON CONFLICT (user_id)
+		DO UPDATE SET
+			responses = COALESCE(user_onboarding.responses, '{}'::jsonb) || $2::jsonb,
+			updated_at = NOW()
+	`
+	_, err := e.db.Exec(ctx, query, userID, string(challengesJSON))
+	if err != nil {
+		return "", fmt.Errorf("save challenges: %w", err)
+	}
+
+	log.Printf("Saved %d productivity challenges for user %s: %v", len(challenges), userID, challenges)
+
+	return toJSON(map[string]interface{}{
+		"saved":      true,
+		"challenges": challenges,
+		"count":      len(challenges),
+	}), nil
+}
+
 func (e *Executor) getCurrentDatetime(ctx context.Context, userID string) string {
 	tz := "Europe/Paris"
 	e.db.QueryRow(ctx, "SELECT COALESCE(timezone, 'Europe/Paris') FROM public.users WHERE id = $1", userID).Scan(&tz)

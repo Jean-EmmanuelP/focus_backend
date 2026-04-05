@@ -549,6 +549,9 @@ func (h *Handler) Complete(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("Onboarding completed for user %s", userID)
 
+	// Create default "Santé" area + walking routine for every new user
+	h.createDefaultWalkingRoutine(r, userID)
+
 	// Also update user productivity_peak
 	if req.ProductivityPeak != "" {
 		h.db.Exec(r.Context(),
@@ -592,4 +595,55 @@ func (h *Handler) Reset(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// createDefaultWalkingRoutine creates a "Santé" area and a daily walking routine for new users.
+// Recommended: ~30 min walk / ~8000 steps per day for an average adult.
+func (h *Handler) createDefaultWalkingRoutine(r *http.Request, userID string) {
+	ctx := r.Context()
+
+	// 1. Find or create the "Santé" (health) area for this user
+	var areaID string
+	err := h.db.QueryRow(ctx, `
+		SELECT id FROM public.areas WHERE user_id = $1 AND slug = 'health'
+	`, userID).Scan(&areaID)
+
+	if err != nil {
+		// Area doesn't exist — create it
+		err = h.db.QueryRow(ctx, `
+			INSERT INTO public.areas (user_id, name, slug, icon)
+			VALUES ($1, 'Santé', 'health', '💪')
+			ON CONFLICT DO NOTHING
+			RETURNING id
+		`, userID).Scan(&areaID)
+		if err != nil {
+			log.Printf("⚠️ Failed to create health area for user %s: %v", userID, err)
+			return
+		}
+		log.Printf("✅ Created health area for user %s", userID)
+	}
+
+	// 2. Check if a walking routine already exists (avoid duplicates)
+	var existingID string
+	err = h.db.QueryRow(ctx, `
+		SELECT id FROM public.routines
+		WHERE user_id = $1 AND area_id = $2 AND title ILIKE '%march%'
+	`, userID, areaID).Scan(&existingID)
+
+	if err == nil {
+		// Already exists
+		return
+	}
+
+	// 3. Create the daily walking routine (30 min, scheduled at 12:30 — lunchtime walk)
+	_, err = h.db.Exec(ctx, `
+		INSERT INTO public.routines (user_id, area_id, title, frequency, icon, scheduled_time, duration_minutes)
+		VALUES ($1, $2, 'Marcher 30 min', 'daily', 'figure.walk', '12:30', 30)
+	`, userID, areaID)
+
+	if err != nil {
+		log.Printf("⚠️ Failed to create walking routine for user %s: %v", userID, err)
+		return
+	}
+	log.Printf("✅ Created default walking routine for user %s", userID)
 }

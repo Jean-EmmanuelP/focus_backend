@@ -371,6 +371,17 @@ func (e *Executor) executeToolCall(
 		}
 		return result, []SideEffect{NewSideEffect("refresh_calendar_events")}
 
+	// ==========================================
+	// Coaching Diagnostic
+	// ==========================================
+
+	case "save_productivity_challenges":
+		result, err := e.saveProductivityChallenges(ctx, userID, args)
+		if err != nil {
+			return errorJSON(err), nil
+		}
+		return result, nil
+
 	default:
 		log.Printf("⚠️ Unknown tool: %s", name)
 		return toJSON(map[string]string{"error": "unknown tool: " + name}), nil
@@ -403,6 +414,19 @@ func stringArg(args map[string]interface{}, key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func stringArrayArg(args map[string]interface{}, key string) []string {
+	if arr, ok := args[key].([]interface{}); ok {
+		var result []string
+		for _, v := range arr {
+			if s, ok := v.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result
+	}
+	return nil
 }
 
 func intArg(args map[string]interface{}, key string, fallback int) int {
