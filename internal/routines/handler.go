@@ -102,6 +102,27 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		req.Frequency = "daily"
 	}
 
+	// If no area_id provided, find or create the "other" area
+	if req.AreaID == "" {
+		var defaultAreaID string
+		err := h.db.QueryRow(r.Context(), `SELECT id FROM areas WHERE user_id = $1 AND slug = 'other'`, userID).Scan(&defaultAreaID)
+		if err != nil {
+			// Create the "other" area
+			err = h.db.QueryRow(r.Context(), `
+				INSERT INTO areas (user_id, name, slug, icon)
+				VALUES ($1, 'Autre', 'other', 'star')
+				ON CONFLICT (user_id, slug) DO UPDATE SET name = EXCLUDED.name
+				RETURNING id
+			`, userID).Scan(&defaultAreaID)
+			if err != nil {
+				log.Println("Create default area error:", err)
+				http.Error(w, "Failed to create routine", http.StatusInternalServerError)
+				return
+			}
+		}
+		req.AreaID = defaultAreaID
+	}
+
 	query := `
 		INSERT INTO public.routines (user_id, area_id, title, frequency, icon, scheduled_time)
 		VALUES ($1, $2, $3, $4, $5, $6)
@@ -110,11 +131,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 
 	var rt Routine
 	var icon *string
-	var areaID *string
-	if req.AreaID != "" {
-		areaID = &req.AreaID
-	}
-	err := h.db.QueryRow(r.Context(), query, userID, areaID, req.Title, req.Frequency, req.Icon, req.ScheduledTime).Scan(
+	err := h.db.QueryRow(r.Context(), query, userID, req.AreaID, req.Title, req.Frequency, req.Icon, req.ScheduledTime).Scan(
 		&rt.ID, &rt.AreaID, &rt.Title, &rt.Frequency, &icon, &rt.ScheduledTime,
 	)
 	if err != nil {
