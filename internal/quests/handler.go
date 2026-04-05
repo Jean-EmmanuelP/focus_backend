@@ -219,8 +219,11 @@ func (h *Handler) Complete(w http.ResponseWriter, r *http.Request) {
 	}
 	questID := parts[len(parts)-2] // /quests/{id}/complete
 
+	// Toggle: if already completed → reactivate, otherwise → complete
 	result, err := h.db.Exec(r.Context(), `
-		UPDATE quests SET status = 'completed', current_value = target_value
+		UPDATE quests SET
+			status = CASE WHEN status = 'completed' THEN 'active' ELSE 'completed' END,
+			current_value = CASE WHEN status = 'completed' THEN 0 ELSE target_value END
 		WHERE id = $1 AND user_id = $2
 	`, questID, userID)
 	if err != nil {
