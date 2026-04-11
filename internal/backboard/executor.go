@@ -277,14 +277,7 @@ func (e *Executor) executeToolCall(
 
 	case "block_apps":
 		duration := intArg(args, "duration_minutes", 0)
-		durationLabel := "30 minutes"
-		if duration > 0 {
-			durationLabel = fmt.Sprintf("%d minutes", duration)
-		}
-		return toJSON(map[string]interface{}{
-			"status":  "activation_requested",
-			"message": fmt.Sprintf("Le blocage d'apps est en cours d'activation pour %s. Si l'utilisateur n'a pas encore configuré ses apps, l'app lui demandera de les sélectionner.", durationLabel),
-		}), []SideEffect{
+		return toJSON(map[string]interface{}{"blocked": true, "duration_minutes": duration}), []SideEffect{
 			NewSideEffectWithData("block_apps", map[string]interface{}{"duration_minutes": duration}),
 		}
 
