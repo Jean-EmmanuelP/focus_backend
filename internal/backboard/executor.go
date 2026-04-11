@@ -21,7 +21,7 @@ func NewExecutor(db *pgxpool.Pool, bbClient *Client) *Executor {
 	return &Executor{db: db, bbClient: bbClient}
 }
 
-const maxToolCallRounds = 10
+const maxToolCallRounds = 5
 
 // RunToolLoop processes the initial Backboard response and handles tool calls until completion.
 // Returns the final AI content and accumulated side effects.

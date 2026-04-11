@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"time"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -72,7 +73,10 @@ func (h *Handler) SendMessageV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
+	// Render free tier kills requests after ~30s. Set a 25s timeout so we
+	// respond gracefully instead of leaving Backboard runs stuck forever.
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
 
 	// 1. Ensure the user has a Backboard assistant
 	assistantID, err := h.ensureBackboardAssistant(ctx, userID, bbClient)
