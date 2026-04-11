@@ -93,9 +93,29 @@ func (h *Handler) SendMessageV2(w http.ResponseWriter, r *http.Request) {
 	// 3. Send the message to Backboard
 	response, err := bbClient.SendMessage(ctx, threadID, req.Content)
 	if err != nil {
-		log.Printf("❌ SendMessage failed for user %s: %v", userID, err)
-		http.Error(w, "AI service error", http.StatusBadGateway)
-		return
+		log.Printf("⚠️ SendMessage failed for user %s (thread %s): %v — attempting thread reset", userID, threadID, err)
+
+		// Thread is likely corrupted (stuck run, 500 error). Delete and recreate.
+		_ = bbClient.DeleteThread(ctx, threadID)
+		h.db.Exec(ctx, "UPDATE public.users SET backboard_thread_id = NULL WHERE id = $1", userID)
+		log.Printf("🗑️ Deleted corrupted thread %s for user %s", threadID, userID)
+
+		// Create fresh thread and retry once
+		newThreadID, err2 := h.ensureBackboardThread(ctx, userID, assistantID, bbClient)
+		if err2 != nil {
+			log.Printf("❌ Thread recreation failed for user %s: %v", userID, err2)
+			http.Error(w, "AI service error", http.StatusBadGateway)
+			return
+		}
+		threadID = newThreadID
+
+		response, err = bbClient.SendMessage(ctx, threadID, req.Content)
+		if err != nil {
+			log.Printf("❌ SendMessage retry failed for user %s: %v", userID, err)
+			http.Error(w, "AI service error", http.StatusBadGateway)
+			return
+		}
+		log.Printf("✅ SendMessage succeeded after thread reset for user %s (new thread: %s)", userID, threadID)
 	}
 
 	// 4. Execute the tool call loop
@@ -347,11 +367,12 @@ func (h *Handler) ensureBackboardAssistant(ctx context.Context, userID string, b
 			FROM public.users WHERE id = $1
 		`, userID).Scan(&companionName, &timezone, &harshMode)
 
-		config := backboard.BuildAssistantConfig(companionName, harshMode, timezone)
-		if err := bbClient.UpdateAssistant(ctx, *assistantID, config); err != nil {
-			log.Printf("⚠️ Failed to update assistant date for user %s: %v", userID, err)
-			// Non-fatal: continue with existing assistant
-		}
+		// Note: UpdateAssistant (PATCH) returns 405 from Backboard — disabled for now
+		// config := backboard.BuildAssistantConfig(companionName, harshMode, timezone)
+		// bbClient.UpdateAssistant(ctx, *assistantID, config)
+		_ = companionName
+		_ = timezone
+		_ = harshMode
 		return *assistantID, nil
 	}
 
