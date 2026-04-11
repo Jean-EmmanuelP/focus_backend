@@ -25,6 +25,7 @@ import (
 	"firelevel-backend/internal/quests"
 	"firelevel-backend/internal/discover"
 	"firelevel-backend/internal/focusrooms"
+	"firelevel-backend/internal/challenges"
 	"firelevel-backend/internal/voice"
 )
 
@@ -88,6 +89,7 @@ func main() {
 	calendarEventsHandler := calendarevents.NewHandler(pool)
 	discoverHandler := discover.NewHandler(pool)
 	focusRoomsHandler := focusrooms.NewHandler(pool)
+	challengesHandler := challenges.NewHandler(pool)
 
 	// 4. Setup Router
 	r := chi.NewRouter()
@@ -249,6 +251,11 @@ func main() {
 		r.Post("/focus-rooms/join", focusRoomsHandler.Join)
 		r.Get("/focus-rooms/{id}", focusRoomsHandler.Get)
 		r.Post("/focus-rooms/{id}/leave", focusRoomsHandler.Leave)
+
+		// =====================
+		// WAKE-UP CHALLENGES
+		// =====================
+		challengesHandler.Routes(r)
 	})
 
 	port := os.Getenv("PORT")
