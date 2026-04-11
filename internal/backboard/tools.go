@@ -20,7 +20,7 @@ func (e *Executor) getUserContext(ctx context.Context, userID string, deviceCtx 
 		SELECT COALESCE(pseudo, first_name, ''),
 		       COALESCE(companion_name, 'Kai'),
 		       COALESCE(language, 'fr'),
-		       COALESCE(current_streak, 0)
+		       COALESCE(satisfaction_score, 45)
 		FROM public.users WHERE id = $1
 	`, userID).Scan(&userName, &companionName, &userLanguage, &satisfactionScore)
 	if err != nil {
@@ -75,6 +75,18 @@ func (e *Executor) getUserContext(ctx context.Context, userID string, deviceCtx 
 	var currentStreak int
 	e.db.QueryRow(ctx, "SELECT COALESCE(current_streak, 0) FROM public.users WHERE id = $1", userID).Scan(&currentStreak)
 
+	// Days since last message
+	var daysSinceLastMessage int
+	err = e.db.QueryRow(ctx, `
+		SELECT COALESCE(
+			(CURRENT_DATE - last_active_date)::int,
+			-1
+		) FROM public.users WHERE id = $1
+	`, userID).Scan(&daysSinceLastMessage)
+	if err != nil {
+		daysSinceLastMessage = -1
+	}
+
 	appsBlocked := false
 	morningBlockEnabled := false
 	morningBlockStart := "06:00"
@@ -125,9 +137,10 @@ func (e *Executor) getUserContext(ctx context.Context, userID string, deviceCtx 
 		"all_tasks_completed":   tasksTotal > 0 && tasksCompleted == tasksTotal,
 		"all_rituals_completed": ritualsTotal > 0 && ritualsCompleted == ritualsTotal,
 		"user_language":         userLanguage,
-		"morning_block_enabled": morningBlockEnabled,
-		"morning_block_start":   morningBlockStart,
-		"morning_block_end":     morningBlockEnd,
+		"morning_block_enabled":    morningBlockEnabled,
+		"morning_block_start":      morningBlockStart,
+		"morning_block_end":        morningBlockEnd,
+		"days_since_last_message":  daysSinceLastMessage,
 	}
 
 	if len(productivityChallenges) > 0 {
