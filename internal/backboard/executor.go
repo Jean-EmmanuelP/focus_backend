@@ -277,7 +277,22 @@ func (e *Executor) executeToolCall(
 
 	case "block_apps":
 		duration := intArg(args, "duration_minutes", 0)
-		return toJSON(map[string]interface{}{"blocked": true, "duration_minutes": duration}), []SideEffect{
+		alreadyBlocked := deviceCtx != nil && deviceCtx.AppsBlocked
+		configured := deviceCtx != nil && deviceCtx.AppBlockingAvailable
+		result := map[string]interface{}{
+			"already_blocked": alreadyBlocked,
+			"configured":     configured,
+		}
+		if alreadyBlocked {
+			result["message"] = "Les apps sont déjà bloquées."
+		} else if configured {
+			result["blocked"] = true
+			result["message"] = "Blocage activé."
+		} else {
+			result["blocked"] = false
+			result["message"] = "L'utilisateur n'a pas encore configuré le blocage d'apps sur son appareil. Dis-lui d'aller dans les réglages pour sélectionner les apps à bloquer."
+		}
+		return toJSON(result), []SideEffect{
 			NewSideEffectWithData("block_apps", map[string]interface{}{"duration_minutes": duration}),
 		}
 
