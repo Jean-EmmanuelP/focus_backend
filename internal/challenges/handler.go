@@ -67,7 +67,7 @@ func (h *Handler) CreateChallenge(w http.ResponseWriter, r *http.Request) {
 
 	err := h.db.QueryRow(r.Context(), `
 		INSERT INTO public.wake_up_challenges (creator_id, opponent_id, alarm_time, duration_days, status, start_date, end_date)
-		VALUES ($1, NULLIF($2, ''), $3, $4, CASE WHEN $2 != '' THEN 'active' ELSE 'pending' END, $5, $6)
+		VALUES ($1::uuid, NULLIF($2, '')::uuid, $3, $4, CASE WHEN $2 != '' THEN 'active' ELSE 'pending' END, $5, $6)
 		RETURNING id
 	`, userID, req.OpponentID, req.AlarmTime, req.DurationDays, startDate, endDate).Scan(&challengeID)
 
@@ -101,7 +101,7 @@ func (h *Handler) JoinChallenge(w http.ResponseWriter, r *http.Request) {
 	var durationDays int
 	err := h.db.QueryRow(r.Context(), `
 		SELECT duration_days FROM public.wake_up_challenges
-		WHERE id = $1 AND status = 'pending' AND opponent_id IS NULL AND creator_id != $2
+		WHERE id = $1 AND status = 'pending' AND opponent_id IS NULL AND creator_id != $2::uuid
 	`, challengeID, userID).Scan(&durationDays)
 	if err != nil {
 		http.Error(w, "Challenge not found or already taken", http.StatusNotFound)
@@ -112,7 +112,7 @@ func (h *Handler) JoinChallenge(w http.ResponseWriter, r *http.Request) {
 
 	_, err = h.db.Exec(r.Context(), `
 		UPDATE public.wake_up_challenges
-		SET opponent_id = $1, status = 'active', start_date = $2, end_date = $3, updated_at = now()
+		SET opponent_id = $1::uuid, status = 'active', start_date = $2, end_date = $3, updated_at = now()
 		WHERE id = $4 AND status = 'pending' AND opponent_id IS NULL
 	`, userID, now, endDate, challengeID)
 
@@ -181,7 +181,7 @@ func (h *Handler) CheckIn(w http.ResponseWriter, r *http.Request) {
 	// Insert entry
 	_, err = h.db.Exec(r.Context(), `
 		INSERT INTO public.wake_up_entries (challenge_id, user_id, day_number, wake_up_time, photo_url, is_on_time)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		VALUES ($1, $2::uuid, $3, $4, $5, $6)
 		ON CONFLICT (challenge_id, user_id, day_number) DO UPDATE
 		SET wake_up_time = $4, photo_url = $5, is_on_time = $6
 	`, challengeID, userID, daysSinceStart, req.WakeUpTime, req.PhotoURL, isOnTime)
