@@ -83,19 +83,18 @@ func (h *Handler) CreateChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var challengeID string
-	var startDate, endDate *time.Time
 
-	// If opponent already specified, start immediately
-	if req.OpponentID != "" {
-		now := time.Now()
-		end := now.AddDate(0, 0, req.DurationDays)
-		startDate = &now
-		endDate = &end
-	}
+	// Solo or with opponent: always start immediately
+	now := time.Now()
+	end := now.AddDate(0, 0, req.DurationDays)
+	startDate := &now
+	endDate := &end
+
+	isSolo := req.OpponentID == ""
 
 	err = h.db.QueryRow(r.Context(), `
 		INSERT INTO public.wake_up_challenges (creator_id, opponent_id, alarm_time, duration_days, status, start_date, end_date, invite_code, title, mantra)
-		VALUES ($1::uuid, NULLIF($2, '')::uuid, $3, $4, CASE WHEN $2 != '' THEN 'active' ELSE 'pending' END, $5, $6, $7, $8, $9)
+		VALUES ($1::uuid, NULLIF($2, '')::uuid, $3, $4, 'active', $5, $6, $7, $8, $9)
 		RETURNING id
 	`, userID, req.OpponentID, req.AlarmTime, req.DurationDays, startDate, endDate, inviteCode, req.Title, req.Mantra).Scan(&challengeID)
 
@@ -105,20 +104,16 @@ func (h *Handler) CreateChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	responseStatus := "pending"
-	if req.OpponentID != "" {
-		responseStatus = "active"
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"id":            challengeID,
 		"alarm_time":    req.AlarmTime,
 		"duration_days": req.DurationDays,
-		"status":        responseStatus,
+		"status":        "active",
 		"invite_code":   inviteCode,
 		"title":         req.Title,
 		"mantra":        req.Mantra,
+		"solo":          isSolo,
 	})
 }
 
