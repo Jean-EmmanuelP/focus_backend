@@ -348,8 +348,8 @@ func (h *Handler) ListChallenges(w http.ResponseWriter, r *http.Request) {
 			   COALESCE(u2.pseudo, u2.first_name, 'En attente') as opponent_name,
 			   COALESCE(c.invite_code, ''), COALESCE(c.title, ''), COALESCE(c.mantra, '')
 		FROM public.wake_up_challenges c
-		LEFT JOIN public.users u1 ON u1.id = c.creator_id::text
-		LEFT JOIN public.users u2 ON u2.id = c.opponent_id::text
+		LEFT JOIN public.users u1 ON u1.id::text = c.creator_id::text
+		LEFT JOIN public.users u2 ON u2.id::text = c.opponent_id::text
 		WHERE c.creator_id = $1 OR c.opponent_id = $1::uuid
 		ORDER BY c.created_at DESC
 		LIMIT 10
@@ -427,8 +427,8 @@ func (h *Handler) GetChallenge(w http.ResponseWriter, r *http.Request) {
 			   COALESCE(u2.pseudo, u2.first_name, '') as opponent_name,
 			   COALESCE(c.invite_code, ''), COALESCE(c.title, ''), COALESCE(c.mantra, '')
 		FROM public.wake_up_challenges c
-		LEFT JOIN public.users u1 ON u1.id = c.creator_id::text
-		LEFT JOIN public.users u2 ON u2.id = c.opponent_id::text
+		LEFT JOIN public.users u1 ON u1.id::text = c.creator_id::text
+		LEFT JOIN public.users u2 ON u2.id::text = c.opponent_id::text
 		WHERE c.id = $1 AND (c.creator_id = $2 OR c.opponent_id = $2::uuid)
 	`, challengeID, userID).Scan(&alarmTime, &status, &durationDays,
 		&creatorScore, &opponentScore, &startDate, &creatorID, &opponentID,
