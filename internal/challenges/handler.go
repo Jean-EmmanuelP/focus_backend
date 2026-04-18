@@ -341,7 +341,9 @@ func (h *Handler) ListChallenges(w http.ResponseWriter, r *http.Request) {
 			   c.start_date, c.creator_id, COALESCE(c.opponent_id::text, ''),
 			   COALESCE(u1.pseudo, u1.first_name, 'Joueur 1') as creator_name,
 			   COALESCE(u2.pseudo, u2.first_name, 'En attente') as opponent_name,
-			   COALESCE(c.invite_code, ''), COALESCE(c.title, ''), COALESCE(c.mantra, '')
+			   COALESCE(c.invite_code, ''), COALESCE(c.title, ''), COALESCE(c.mantra, ''),
+			   COALESCE(u1.avatar_url, '') as creator_avatar_url,
+			   COALESCE(u2.avatar_url, '') as opponent_avatar_url
 		FROM public.wake_up_challenges c
 		LEFT JOIN public.users u1 ON u1.id::text = c.creator_id::text
 		LEFT JOIN public.users u2 ON u2.id::text = c.opponent_id::text
@@ -369,9 +371,11 @@ func (h *Handler) ListChallenges(w http.ResponseWriter, r *http.Request) {
 		OpponentID     string  `json:"opponent_id"`
 		CreatorName    string  `json:"creator_name"`
 		OpponentName   string  `json:"opponent_name"`
-		InviteCode     string  `json:"invite_code"`
-		Title          string  `json:"title"`
-		Mantra         string  `json:"mantra"`
+		InviteCode       string  `json:"invite_code"`
+		Title            string  `json:"title"`
+		Mantra           string  `json:"mantra"`
+		CreatorAvatarURL string  `json:"creator_avatar_url"`
+		OpponentAvatarURL string `json:"opponent_avatar_url"`
 	}
 
 	var challenges []ChallengeResponse
@@ -381,7 +385,8 @@ func (h *Handler) ListChallenges(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&c.ID, &c.AlarmTime, &c.DurationDays, &c.Status,
 			&c.CreatorScore, &c.OpponentScore, &c.CreatorStreak, &c.OpponentStreak,
 			&startDate, &c.CreatorID, &c.OpponentID, &c.CreatorName, &c.OpponentName,
-			&c.InviteCode, &c.Title, &c.Mantra); err != nil {
+			&c.InviteCode, &c.Title, &c.Mantra,
+			&c.CreatorAvatarURL, &c.OpponentAvatarURL); err != nil {
 			continue
 		}
 		if startDate != nil {
@@ -412,6 +417,7 @@ func (h *Handler) GetChallenge(w http.ResponseWriter, r *http.Request) {
 	// Get challenge
 	var alarmTime, status, creatorID, opponentID, creatorName, opponentName string
 	var inviteCode, title, mantra string
+	var creatorAvatarURL, opponentAvatarURL string
 	var durationDays, creatorScore, opponentScore int
 	var startDate *time.Time
 	err := h.db.QueryRow(r.Context(), `
@@ -420,14 +426,17 @@ func (h *Handler) GetChallenge(w http.ResponseWriter, r *http.Request) {
 			   c.start_date, c.creator_id, COALESCE(c.opponent_id::text, ''),
 			   COALESCE(u1.pseudo, u1.first_name, '') as creator_name,
 			   COALESCE(u2.pseudo, u2.first_name, '') as opponent_name,
-			   COALESCE(c.invite_code, ''), COALESCE(c.title, ''), COALESCE(c.mantra, '')
+			   COALESCE(c.invite_code, ''), COALESCE(c.title, ''), COALESCE(c.mantra, ''),
+			   COALESCE(u1.avatar_url, '') as creator_avatar_url,
+			   COALESCE(u2.avatar_url, '') as opponent_avatar_url
 		FROM public.wake_up_challenges c
 		LEFT JOIN public.users u1 ON u1.id::text = c.creator_id::text
 		LEFT JOIN public.users u2 ON u2.id::text = c.opponent_id::text
 		WHERE c.id = $1 AND (c.creator_id = $2 OR c.opponent_id = $2::uuid)
 	`, challengeID, userID).Scan(&alarmTime, &status, &durationDays,
 		&creatorScore, &opponentScore, &startDate, &creatorID, &opponentID,
-		&creatorName, &opponentName, &inviteCode, &title, &mantra)
+		&creatorName, &opponentName, &inviteCode, &title, &mantra,
+		&creatorAvatarURL, &opponentAvatarURL)
 
 	if err != nil {
 		http.Error(w, "Challenge not found", http.StatusNotFound)
@@ -486,10 +495,12 @@ func (h *Handler) GetChallenge(w http.ResponseWriter, r *http.Request) {
 		"creator_score":  creatorScore,
 		"opponent_score": opponentScore,
 		"start_date":     startStr,
-		"invite_code":    inviteCode,
-		"title":          title,
-		"mantra":         mantra,
-		"entries":        entries,
+		"invite_code":          inviteCode,
+		"title":                title,
+		"mantra":               mantra,
+		"creator_avatar_url":   creatorAvatarURL,
+		"opponent_avatar_url":  opponentAvatarURL,
+		"entries":              entries,
 	})
 }
 
