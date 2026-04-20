@@ -57,11 +57,12 @@ func (h *Handler) CreateChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		AlarmTime    string `json:"alarm_time"`
-		DurationDays int    `json:"duration_days"`
-		OpponentID   string `json:"opponent_id,omitempty"`
-		Title        string `json:"title,omitempty"`
-		Mantra       string `json:"mantra,omitempty"`
+		AlarmTime     string `json:"alarm_time"`
+		DurationDays  int    `json:"duration_days"`
+		OpponentID    string `json:"opponent_id,omitempty"`
+		Title         string `json:"title,omitempty"`
+		Mantra        string `json:"mantra,omitempty"`
+		ChallengeType string `json:"challenge_type,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
@@ -73,6 +74,9 @@ func (h *Handler) CreateChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.DurationDays <= 0 {
 		req.DurationDays = 30
+	}
+	if req.ChallengeType == "" {
+		req.ChallengeType = "wakeup"
 	}
 
 	inviteCode, err := generateInviteCode()
@@ -93,10 +97,10 @@ func (h *Handler) CreateChallenge(w http.ResponseWriter, r *http.Request) {
 	isSolo := req.OpponentID == ""
 
 	err = h.db.QueryRow(r.Context(), `
-		INSERT INTO public.wake_up_challenges (creator_id, opponent_id, alarm_time, duration_days, status, start_date, end_date, invite_code, title, mantra)
-		VALUES ($1::uuid, NULLIF($2, '')::uuid, $3, $4, 'active', $5, $6, $7, $8, $9)
+		INSERT INTO public.wake_up_challenges (creator_id, opponent_id, alarm_time, duration_days, status, start_date, end_date, invite_code, title, mantra, challenge_type)
+		VALUES ($1::uuid, NULLIF($2, '')::uuid, $3, $4, 'active', $5, $6, $7, $8, $9, $10)
 		RETURNING id
-	`, userID, req.OpponentID, req.AlarmTime, req.DurationDays, startDate, endDate, inviteCode, req.Title, req.Mantra).Scan(&challengeID)
+	`, userID, req.OpponentID, req.AlarmTime, req.DurationDays, startDate, endDate, inviteCode, req.Title, req.Mantra, req.ChallengeType).Scan(&challengeID)
 
 	if err != nil {
 		log.Printf("Create challenge error: %v", err)
@@ -106,14 +110,15 @@ func (h *Handler) CreateChallenge(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id":            challengeID,
-		"alarm_time":    req.AlarmTime,
-		"duration_days": req.DurationDays,
-		"status":        "active",
-		"invite_code":   inviteCode,
-		"title":         req.Title,
-		"mantra":        req.Mantra,
-		"solo":          isSolo,
+		"id":             challengeID,
+		"challenge_type": req.ChallengeType,
+		"alarm_time":     req.AlarmTime,
+		"duration_days":  req.DurationDays,
+		"status":         "active",
+		"invite_code":    inviteCode,
+		"title":          req.Title,
+		"mantra":         req.Mantra,
+		"solo":           isSolo,
 	})
 }
 
@@ -343,7 +348,8 @@ func (h *Handler) ListChallenges(w http.ResponseWriter, r *http.Request) {
 			   COALESCE(u2.pseudo, u2.first_name, 'En attente') as opponent_name,
 			   COALESCE(c.invite_code, ''), COALESCE(c.title, ''), COALESCE(c.mantra, ''),
 			   COALESCE(u1.avatar_url, '') as creator_avatar_url,
-			   COALESCE(u2.avatar_url, '') as opponent_avatar_url
+			   COALESCE(u2.avatar_url, '') as opponent_avatar_url,
+			   COALESCE(c.challenge_type, 'wakeup') as challenge_type
 		FROM public.wake_up_challenges c
 		LEFT JOIN public.users u1 ON u1.id::text = c.creator_id::text
 		LEFT JOIN public.users u2 ON u2.id::text = c.opponent_id::text
@@ -374,8 +380,9 @@ func (h *Handler) ListChallenges(w http.ResponseWriter, r *http.Request) {
 		InviteCode       string  `json:"invite_code"`
 		Title            string  `json:"title"`
 		Mantra           string  `json:"mantra"`
-		CreatorAvatarURL string  `json:"creator_avatar_url"`
+		CreatorAvatarURL  string `json:"creator_avatar_url"`
 		OpponentAvatarURL string `json:"opponent_avatar_url"`
+		ChallengeType     string `json:"challenge_type"`
 	}
 
 	var challenges []ChallengeResponse
@@ -386,7 +393,7 @@ func (h *Handler) ListChallenges(w http.ResponseWriter, r *http.Request) {
 			&c.CreatorScore, &c.OpponentScore, &c.CreatorStreak, &c.OpponentStreak,
 			&startDate, &c.CreatorID, &c.OpponentID, &c.CreatorName, &c.OpponentName,
 			&c.InviteCode, &c.Title, &c.Mantra,
-			&c.CreatorAvatarURL, &c.OpponentAvatarURL); err != nil {
+			&c.CreatorAvatarURL, &c.OpponentAvatarURL, &c.ChallengeType); err != nil {
 			continue
 		}
 		if startDate != nil {
@@ -416,7 +423,7 @@ func (h *Handler) GetChallenge(w http.ResponseWriter, r *http.Request) {
 
 	// Get challenge
 	var alarmTime, status, creatorID, opponentID, creatorName, opponentName string
-	var inviteCode, title, mantra string
+	var inviteCode, title, mantra, challengeType string
 	var creatorAvatarURL, opponentAvatarURL string
 	var durationDays, creatorScore, opponentScore int
 	var startDate *time.Time
@@ -428,7 +435,8 @@ func (h *Handler) GetChallenge(w http.ResponseWriter, r *http.Request) {
 			   COALESCE(u2.pseudo, u2.first_name, '') as opponent_name,
 			   COALESCE(c.invite_code, ''), COALESCE(c.title, ''), COALESCE(c.mantra, ''),
 			   COALESCE(u1.avatar_url, '') as creator_avatar_url,
-			   COALESCE(u2.avatar_url, '') as opponent_avatar_url
+			   COALESCE(u2.avatar_url, '') as opponent_avatar_url,
+			   COALESCE(c.challenge_type, 'wakeup')
 		FROM public.wake_up_challenges c
 		LEFT JOIN public.users u1 ON u1.id::text = c.creator_id::text
 		LEFT JOIN public.users u2 ON u2.id::text = c.opponent_id::text
@@ -436,7 +444,7 @@ func (h *Handler) GetChallenge(w http.ResponseWriter, r *http.Request) {
 	`, challengeID, userID).Scan(&alarmTime, &status, &durationDays,
 		&creatorScore, &opponentScore, &startDate, &creatorID, &opponentID,
 		&creatorName, &opponentName, &inviteCode, &title, &mantra,
-		&creatorAvatarURL, &opponentAvatarURL)
+		&creatorAvatarURL, &opponentAvatarURL, &challengeType)
 
 	if err != nil {
 		http.Error(w, "Challenge not found", http.StatusNotFound)
@@ -484,17 +492,18 @@ func (h *Handler) GetChallenge(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id":             challengeID,
-		"alarm_time":     alarmTime,
-		"status":         status,
-		"duration_days":  durationDays,
-		"creator_id":     creatorID,
-		"opponent_id":    opponentID,
-		"creator_name":   creatorName,
-		"opponent_name":  opponentName,
-		"creator_score":  creatorScore,
-		"opponent_score": opponentScore,
-		"start_date":     startStr,
+		"id":                   challengeID,
+		"challenge_type":       challengeType,
+		"alarm_time":           alarmTime,
+		"status":               status,
+		"duration_days":        durationDays,
+		"creator_id":           creatorID,
+		"opponent_id":          opponentID,
+		"creator_name":         creatorName,
+		"opponent_name":        opponentName,
+		"creator_score":        creatorScore,
+		"opponent_score":       opponentScore,
+		"start_date":           startStr,
 		"invite_code":          inviteCode,
 		"title":                title,
 		"mantra":               mantra,
