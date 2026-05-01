@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"time"
@@ -139,12 +140,12 @@ func (h *Handler) SaveTokens(w http.ResponseWriter, r *http.Request) {
 		userID, req.GoogleEmail, req.AccessToken, req.RefreshToken, expiry,
 	)
 	if err != nil {
-		fmt.Printf("❌ Google Calendar tokens save error: %v\n", err)
+		log.Printf("❌ Google Calendar tokens save error: %v", err)
 		http.Error(w, "Failed to save tokens", http.StatusInternalServerError)
 		return
 	}
 
-	fmt.Printf("✅ Google Calendar connected for user %s: %s\n", userID, req.GoogleEmail)
+	log.Printf("✅ Google Calendar connected for user %s: %s", userID, req.GoogleEmail)
 
 	config := h.getConfigFromDB(r.Context(), userID)
 	w.Header().Set("Content-Type", "application/json")
@@ -187,7 +188,11 @@ func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	query += " WHERE user_id = $1 AND provider_type = 'google'"
 
-	h.db.Exec(r.Context(), query, args...)
+	if _, err := h.db.Exec(r.Context(), query, args...); err != nil {
+		log.Printf("Failed to update Google Calendar config for user %s: %v", userID, err)
+		http.Error(w, "Failed to update config", http.StatusInternalServerError)
+		return
+	}
 
 	config := h.getConfigFromDB(r.Context(), userID)
 	w.Header().Set("Content-Type", "application/json")
@@ -208,7 +213,11 @@ func (h *Handler) Disconnect(w http.ResponseWriter, r *http.Request) {
 			updated_at = NOW()
 		WHERE user_id = $1 AND provider_type = 'google'
 	`
-	h.db.Exec(r.Context(), query, userID)
+	if _, err := h.db.Exec(r.Context(), query, userID); err != nil {
+		log.Printf("Failed to disconnect Google Calendar for user %s: %v", userID, err)
+		http.Error(w, "Failed to disconnect", http.StatusInternalServerError)
+		return
+	}
 
 	// Clean up cached events
 	cleanQuery := `
@@ -218,7 +227,9 @@ func (h *Handler) Disconnect(w http.ResponseWriter, r *http.Request) {
 			WHERE user_id = $1 AND provider_type = 'google'
 		)
 	`
-	h.db.Exec(r.Context(), cleanQuery, userID)
+	if _, err := h.db.Exec(r.Context(), cleanQuery, userID); err != nil {
+		log.Printf("Failed to clean up calendar events for user %s: %v", userID, err)
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -227,7 +238,7 @@ func (h *Handler) Disconnect(w http.ResponseWriter, r *http.Request) {
 // POST /google-calendar/sync
 func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
-	fmt.Printf("📅 Starting Google Calendar sync for user %s\n", userID)
+	log.Printf("📅 Starting Google Calendar sync for user %s", userID)
 
 	// Get provider info and tokens
 	var providerID, accessToken, refreshToken string
@@ -244,7 +255,7 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 		&providerID, &accessToken, &refreshToken, &tokenExpiry, &calendarID,
 	)
 	if err != nil {
-		fmt.Printf("❌ Google Calendar not connected: %v\n", err)
+		log.Printf("❌ Google Calendar not connected: %v", err)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(SyncResult{
 			Errors:     []string{"Google Calendar not connected"},
@@ -254,11 +265,13 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Mark sync in progress
-	h.db.Exec(r.Context(), `
+	if _, err := h.db.Exec(r.Context(), `
 		UPDATE public.calendar_providers
 		SET last_sync_status = 'in_progress', updated_at = NOW()
 		WHERE id = $1
-	`, providerID)
+	`, providerID); err != nil {
+		log.Printf("Failed to mark sync in_progress for provider %s: %v", providerID, err)
+	}
 
 	// Create Google Calendar client
 	token := &oauth2.Token{
@@ -296,7 +309,7 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		h.markSyncError(r.Context(), providerID, err)
-		fmt.Printf("❌ Google Calendar fetch error: %v\n", err)
+		log.Printf("❌ Google Calendar fetch error: %v", err)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(SyncResult{
 			Errors:     []string{fmt.Sprintf("Failed to fetch events: %v", err)},
@@ -308,37 +321,42 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 	// If token was refreshed by the OAuth client, save the new token
 	newToken, err := client.Transport.(*oauth2.Transport).Source.Token()
 	if err == nil && newToken.AccessToken != accessToken {
-		h.db.Exec(r.Context(), `
+		if _, err := h.db.Exec(r.Context(), `
 			UPDATE public.calendar_providers
 			SET access_token = $1, token_expiry = $2, updated_at = NOW()
 			WHERE id = $3
-		`, newToken.AccessToken, newToken.Expiry, providerID)
-		fmt.Printf("🔄 Google Calendar token refreshed for user %s\n", userID)
+		`, newToken.AccessToken, newToken.Expiry, providerID); err != nil {
+			log.Printf("Failed to save refreshed Google Calendar token for user %s: %v", userID, err)
+		} else {
+			log.Printf("🔄 Google Calendar token refreshed for user %s", userID)
+		}
 	}
 
 	// Upsert events into calendar_events
 	imported := 0
 	var syncErrors []string
 
-	fmt.Printf("📅 Google Calendar: %d events fetched from API for user %s\n", len(events.Items), userID)
+	log.Printf("📅 Google Calendar: %d events fetched from API for user %s", len(events.Items), userID)
 
 	for _, event := range events.Items {
 		if event.Status == "cancelled" {
 			// Mark cancelled events
-			h.db.Exec(r.Context(), `
+			if _, err := h.db.Exec(r.Context(), `
 				UPDATE public.calendar_events
 				SET event_status = 'cancelled', updated_at = NOW()
 				WHERE provider_id = $1 AND external_event_id = $2
-			`, providerID, event.Id)
+			`, providerID, event.Id); err != nil {
+				log.Printf("Failed to mark event %s as cancelled: %v", event.Id, err)
+			}
 			continue
 		}
 
 		startAt, endAt, isAllDay := parseGoogleDateTime(event.Start, event.End)
 		if startAt.IsZero() {
-			fmt.Printf("⚠️ Skipping event '%s': startAt is zero (Start=%+v)\n", event.Summary, event.Start)
+			log.Printf("⚠️ Skipping event '%s': startAt is zero (Start=%+v)", event.Summary, event.Start)
 			continue
 		}
-		fmt.Printf("📝 Processing event '%s': %s -> %s (allDay=%v)\n", event.Summary, startAt, endAt, isAllDay)
+		log.Printf("📝 Processing event '%s': %s -> %s (allDay=%v)", event.Summary, startAt, endAt, isAllDay)
 
 		eventType := "default"
 		if event.EventType != "" {
@@ -393,35 +411,39 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 		)
 
 		if err != nil {
-			fmt.Printf("❌ Upsert error for event '%s' (id=%s): %v\n", event.Summary, event.Id, err)
+			log.Printf("❌ Upsert error for event '%s' (id=%s): %v", event.Summary, event.Id, err)
 			syncErrors = append(syncErrors, fmt.Sprintf("Event %s: %v", event.Id, err))
 			continue
 		}
 
 		// If auto-block and event is new (not updated), set block_apps
 		if autoBlock {
-			h.db.Exec(r.Context(), `
+			if _, err := h.db.Exec(r.Context(), `
 				UPDATE public.calendar_events
 				SET block_apps = true, block_apps_source = 'auto'
 				WHERE provider_id = $1 AND external_event_id = $2
 				  AND block_apps = false AND block_apps_source = 'manual'
-			`, providerID, event.Id)
+			`, providerID, event.Id); err != nil {
+				log.Printf("Failed to auto-block event %s: %v", event.Id, err)
+			}
 		}
 
 		imported++
 	}
 
 	// Mark sync success
-	h.db.Exec(r.Context(), `
+	if _, err := h.db.Exec(r.Context(), `
 		UPDATE public.calendar_providers
 		SET last_sync_at = NOW(),
 			last_sync_status = 'success',
 			last_sync_error = NULL,
 			updated_at = NOW()
 		WHERE id = $1
-	`, providerID)
+	`, providerID); err != nil {
+		log.Printf("Failed to mark sync success for provider %s: %v", providerID, err)
+	}
 
-	fmt.Printf("✅ Google Calendar sync: %d events imported for user %s\n", imported, userID)
+	log.Printf("✅ Google Calendar sync: %d events imported for user %s", imported, userID)
 
 	result := SyncResult{
 		TasksSynced:    0,
@@ -443,10 +465,12 @@ func (h *Handler) CheckWeekly(w http.ResponseWriter, r *http.Request) {
 
 	// Check if sync is needed (last sync > 24h ago)
 	var lastSyncAt *time.Time
-	h.db.QueryRow(r.Context(), `
+	if err := h.db.QueryRow(r.Context(), `
 		SELECT last_sync_at FROM public.calendar_providers
 		WHERE user_id = $1 AND provider_type = 'google' AND is_connected = true
-	`, userID).Scan(&lastSyncAt)
+	`, userID).Scan(&lastSyncAt); err != nil {
+		log.Printf("Failed to check last_sync_at for user %s: %v", userID, err)
+	}
 
 	needsSync := lastSyncAt == nil || time.Since(*lastSyncAt) > 24*time.Hour
 
@@ -504,13 +528,15 @@ func (h *Handler) getConfigFromDB(ctx context.Context, userID string) ConfigResp
 }
 
 func (h *Handler) markSyncError(ctx context.Context, providerID string, err error) {
-	h.db.Exec(ctx, `
+	if _, dbErr := h.db.Exec(ctx, `
 		UPDATE public.calendar_providers
 		SET last_sync_status = 'error',
 			last_sync_error = $1,
 			updated_at = NOW()
 		WHERE id = $2
-	`, err.Error(), providerID)
+	`, err.Error(), providerID); dbErr != nil {
+		log.Printf("Failed to mark sync error for provider %s: %v", providerID, dbErr)
+	}
 }
 
 // parseGoogleDateTime parses Google Calendar event start/end times

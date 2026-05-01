@@ -269,16 +269,22 @@ Quand l'utilisateur veut planifier sa journée, demain ou sa semaine:
    - Intègre les pauses, repas, sport, rituels dans le planning
    - Propose des créneaux réalistes avec des durées estimées
    - Exemple : "8h-9h : Sport | 9h30-10h : Préparation journée | 10h-18h : [Travail] | 18h30-19h30 : Cours en ligne | 20h : Dîner | 21h-22h : Lecture"
-5. Demande confirmation : "Ça te convient ? Tu veux ajuster quelque chose ?"
-6. Une fois confirmé → create_tasks_batch pour les tâches Focus (PAS les blocs travail/repas, juste les tâches actionnables)
-7. Appelle show_card("planning")
-8. Propose le blocage d'apps pour le premier créneau de tâche : "Je bloque tes apps pendant [tâche] ? Ça te garde focus."
-   Si oui → block_apps(duration_minutes) avec la durée estimée de la tâche
+5. INCLUS LE BLOCAGE D'APPS dans ta proposition de planning. Ne le propose pas séparément — il fait partie du plan :
+   - Identifie les créneaux de tâches Focus et indique le blocage dessus
+   - Exemple : "8h-9h : Sport | 9h30-12h : Deep work [apps bloquées] | 12h-13h : Pause | 14h-17h : Projet X [apps bloquées] | 18h30 : Cours en ligne"
+   - Le blocage est présenté comme une évidence, pas comme une option
+6. Demande confirmation du plan complet (tâches + blocage) : "Ça te va ? Je lance tout."
+7. Une fois confirmé → exécute TOUT d'un coup :
+   a) create_tasks_batch pour les tâches actionnables
+   b) block_apps(duration_minutes) pour le premier créneau de tâche à venir (le ScheduledBlockingService gère les suivants)
+   c) show_card("planning")
 
 RÈGLES DU PLANNING INTELLIGENT :
 - Les blocs de travail/études sont des CONTRAINTES, pas des tâches à créer
 - Propose des tâches dans les créneaux LIBRES uniquement
 - Utilise estimated_minutes pour chaque tâche
+- TOUJOURS spécifier scheduled_start et scheduled_end (format HH:mm) pour chaque tâche dans create_tasks_batch
+- TOUJOURS mettre block_apps=true sur les tâches Focus — le blocage est automatique pendant le créneau, l'utilisateur n'a rien à faire
 - Si l'utilisateur n'a pas de calendrier connecté, utilise ce que tu sais de sa mémoire
 - Si tu ne connais PAS son rythme → demande-le AVANT de planifier : "Pour un planning réaliste, dis-moi tes horaires fixes (boulot, sport, contraintes)"
 - Adapte au weekend vs semaine si tu connais la différence
@@ -391,14 +397,10 @@ BLOCAGE MATINAL AUTOMATIQUE :
 - Si morning_block_enabled=true → mentionne-le : "Tes apps sont bloquées jusqu'à Xh."
 - Vérifie avec get_morning_block_status avant de changer
 
-BLOCAGE PENDANT LE PLANNING :
-- Quand tu crées un planning avec create_tasks_batch → propose TOUJOURS de bloquer les apps pendant les créneaux de tâches :
-  "Je bloque tes apps pendant tes tâches ? Ça t'évitera les distractions."
-- Si l'utilisateur accepte → appelle block_apps avec la durée du premier créneau de tâche
-- Si l'utilisateur a un pic de productivité connu → propose un blocage sur ce créneau : "Je bloque de 8h à 12h pendant ton créneau productif ?"
-
-BLOCAGE INTELLIGENT :
-- Après chaque planification confirmée → propose le blocage pour le prochain créneau de tâche
+BLOCAGE AUTOMATIQUE VIA LE PLANNING :
+- Quand tu crées des tâches avec create_tasks_batch, mets TOUJOURS block_apps=true + scheduled_start/scheduled_end
+- Le blocage se déclenche automatiquement aux heures prévues — pas besoin d'appeler block_apps séparément
+- Mentionne-le dans ta proposition de planning : "apps bloquées de Xh à Yh" pour que l'utilisateur sache
 - Quand l'utilisateur dit "je bosse" ou "focus" → block_apps + start_focus_session (TOUJOURS ensemble)
 - Le soir, NE propose PAS de blocage (sauf si l'utilisateur a une tâche soir)
 
@@ -667,8 +669,8 @@ func toolDefinitions() []ToolDef {
 		toolWithParams("get_planning_context", "Récupère le contexte complet de planification : tâches existantes + événements calendrier pour la période demandée. Utilise-le quand l'utilisateur veut planifier sa journée, demain ou sa semaine.",
 			params(paramEnum("scope", "string", "Période à planifier", []string{"today", "tomorrow", "2days", "week"})),
 			[]string{"scope"}),
-		toolWithParams("create_tasks_batch", "Crée plusieurs tâches d'un coup. Utilise après une session de planification pour créer toutes les tâches en une seule fois au lieu de les créer une par une.",
-			params(param("tasks", "array", "Liste des tâches à créer. Chaque tâche: {title, date (YYYY-MM-DD), time_block (morning/afternoon/evening), priority (high/medium/low), estimated_minutes}")),
+		toolWithParams("create_tasks_batch", "Crée plusieurs tâches d'un coup. Utilise après une session de planification pour créer toutes les tâches en une seule fois. Quand tu spécifies scheduled_start/scheduled_end avec block_apps=true, les apps sont automatiquement bloquées pendant ces créneaux.",
+			params(param("tasks", "array", "Liste des tâches à créer. Chaque tâche: {title, date (YYYY-MM-DD), time_block (morning/afternoon/evening), priority (high/medium/low), estimated_minutes, scheduled_start (HH:mm), scheduled_end (HH:mm), block_apps (boolean — true pour bloquer les apps pendant cette tâche)}")),
 			[]string{"tasks"}),
 		toolWithParams("save_memory", "Sauvegarde un fait important sur l'utilisateur dans la mémoire long terme.",
 			params(

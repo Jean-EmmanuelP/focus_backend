@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -17,7 +18,6 @@ import (
 
 	gradium "github.com/cydanix/go-gradium"
 	"github.com/cydanix/go-gradium/tts"
-	"github.com/go-chi/chi/v5"
 	"github.com/google/generative-ai-go/genai"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -36,14 +36,6 @@ type Handler struct {
 
 func NewHandler(db *pgxpool.Pool) *Handler {
 	return &Handler{db: db}
-}
-
-func (h *Handler) RegisterRoutes(r chi.Router) {
-	r.Post("/chat/message", h.SendMessage)
-	r.Post("/chat/voice", h.SendVoiceMessage)
-	r.Post("/chat/tts", h.TextToSpeech)
-	r.Get("/chat/history", h.GetHistory)
-	r.Delete("/chat/history", h.ClearHistory)
 }
 
 // ============================================
@@ -502,7 +494,7 @@ RÈGLES:
 	// Generate AI response
 	response, err := h.generateResponse(r.Context(), userID, messageForAI, userInfo, memories, history, source)
 	if err != nil {
-		fmt.Printf("AI error: %v\n", err)
+		log.Printf("AI error: %v", err)
 		response = &SendMessageResponse{
 			Reply: "Désolé, j'ai un souci technique. Tu peux réessayer?",
 		}
@@ -512,7 +504,7 @@ RÈGLES:
 	if response.Action != nil && response.Action.Type == "focus_scheduled" && response.Action.TaskData != nil {
 		taskID, err := h.createFocusTask(r.Context(), userID, response.Action.TaskData)
 		if err != nil {
-			fmt.Printf("Failed to create focus task: %v\n", err)
+			log.Printf("Failed to create focus task: %v", err)
 		} else {
 			response.Action.TaskID = &taskID
 			response.Action.Type = "task_created"
@@ -520,24 +512,24 @@ RÈGLES:
 	}
 
 	// Fallback: if user asked to add a task but AI forgot create_task in JSON
-	fmt.Printf("🔍 FALLBACK CHECK: action=%v isGreeting=%v isDailyGreeting=%v content='%s' reply='%s'\n", response.Action, isGreeting, isDailyGreeting, req.Content, response.Reply)
+	log.Printf("FALLBACK CHECK: action=%v isGreeting=%v isDailyGreeting=%v content='%s' reply='%s'", response.Action, isGreeting, isDailyGreeting, req.Content, response.Reply)
 	if response.Action == nil && !isGreeting && !isDailyGreeting && !isCompletionEvent {
 		replyLower := strings.ToLower(response.Reply)
 		msgLower := strings.ToLower(req.Content)
 		taskMentioned := strings.Contains(msgLower, "tâche") || strings.Contains(msgLower, "tache") ||
 			(strings.Contains(msgLower, "ajoute") && (strings.Contains(msgLower, "réunion") || strings.Contains(msgLower, "rdv") || strings.Contains(msgLower, "rendez")))
 		aiConfirmed := strings.Contains(replyLower, "ajout") || strings.Contains(replyLower, "calendrier") || strings.Contains(replyLower, "noté")
-		fmt.Printf("🔍 FALLBACK MATCH: taskMentioned=%v aiConfirmed=%v\n", taskMentioned, aiConfirmed)
+		log.Printf("FALLBACK MATCH: taskMentioned=%v aiConfirmed=%v", taskMentioned, aiConfirmed)
 		if taskMentioned && aiConfirmed {
-			fmt.Printf("⚠️ Task fallback triggered for: %s\n", req.Content)
+			log.Printf("Task fallback triggered for: %s", req.Content)
 			fallbackTask := h.extractTaskFromMessage(req.Content)
 			if fallbackTask != nil {
 				taskID, err := h.createCalendarTask(r.Context(), userID, fallbackTask)
 				if err != nil {
-					fmt.Printf("⚠️ Task fallback DB error: %v\n", err)
+					log.Printf("Task fallback DB error: %v", err)
 				} else {
 					response.Action = &ActionData{Type: "task_created", TaskID: &taskID}
-					fmt.Printf("✅ Task fallback success: '%s' on %s\n", fallbackTask.Title, fallbackTask.Date)
+					log.Printf("Task fallback success: '%s' on %s", fallbackTask.Title, fallbackTask.Date)
 				}
 			}
 		}
@@ -609,13 +601,13 @@ func (h *Handler) SendVoiceMessage(w http.ResponseWriter, r *http.Request) {
 	// Get audio_url (Supabase Storage path) if provided
 	audioURL := r.FormValue("audio_url")
 	if audioURL != "" {
-		fmt.Printf("📎 Voice message audio_url: %s\n", audioURL)
+		log.Printf("Voice message audio_url: %s", audioURL)
 	}
 
 	// Transcribe audio using Gemini
 	transcript, err := h.transcribeAudio(r.Context(), audioData, header.Filename)
 	if err != nil {
-		fmt.Printf("Transcription error: %v\n", err)
+		log.Printf("Transcription error: %v", err)
 		// Return error response
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(VoiceMessageResponse{
@@ -647,7 +639,7 @@ func (h *Handler) SendVoiceMessage(w http.ResponseWriter, r *http.Request) {
 	// Generate AI response
 	response, err := h.generateResponse(r.Context(), userID, transcript, userInfo, memories, history)
 	if err != nil {
-		fmt.Printf("AI error: %v\n", err)
+		log.Printf("AI error: %v", err)
 		response = &SendMessageResponse{
 			Reply: "Désolé, j'ai un souci technique. Tu peux réessayer?",
 		}
@@ -657,7 +649,7 @@ func (h *Handler) SendVoiceMessage(w http.ResponseWriter, r *http.Request) {
 	if response.Action != nil && response.Action.Type == "focus_scheduled" && response.Action.TaskData != nil {
 		taskID, err := h.createFocusTask(r.Context(), userID, response.Action.TaskData)
 		if err != nil {
-			fmt.Printf("Failed to create focus task: %v\n", err)
+			log.Printf("Failed to create focus task: %v", err)
 		} else {
 			response.Action.TaskID = &taskID
 			response.Action.Type = "task_created"
@@ -674,7 +666,7 @@ func (h *Handler) SendVoiceMessage(w http.ResponseWriter, r *http.Request) {
 		RETURNING free_voice_messages_used
 	`, userID).Scan(&updatedCount)
 	if err != nil {
-		fmt.Printf("⚠️ Failed to increment voice counter: %v\n", err)
+		log.Printf("Failed to increment voice counter: %v", err)
 	}
 
 	// Build voice response
@@ -821,7 +813,7 @@ func (h *Handler) ensureUserExists(ctx context.Context, userID string) {
 	}
 
 	// User is missing from public.users — try to auto-create from auth.users
-	fmt.Printf("⚠️ User %s missing from public.users — auto-creating\n", userID)
+	log.Printf("User %s missing from public.users — auto-creating", userID)
 
 	// Get email from auth.users if available
 	var email *string
@@ -833,9 +825,9 @@ func (h *Handler) ensureUserExists(ctx context.Context, userID string) {
 		ON CONFLICT (id) DO NOTHING
 	`, userID, email)
 	if err != nil {
-		fmt.Printf("❌ Failed to auto-create user %s: %v\n", userID, err)
+		log.Printf("Failed to auto-create user %s: %v", userID, err)
 	} else {
-		fmt.Printf("✅ Auto-created user record for %s\n", userID)
+		log.Printf("Auto-created user record for %s", userID)
 	}
 }
 
@@ -858,7 +850,9 @@ func (h *Handler) getUserInfo(ctx context.Context, userID string) *UserInfo {
 	now := time.Now()
 	if scoreDate == nil || scoreDate.Format("2006-01-02") != now.Format("2006-01-02") {
 		info.SatisfactionScore = 45
-		h.db.Exec(ctx, `UPDATE users SET satisfaction_score = 45, satisfaction_score_date = CURRENT_DATE WHERE id = $1`, userID)
+		if _, err := h.db.Exec(ctx, `UPDATE users SET satisfaction_score = 45, satisfaction_score_date = CURRENT_DATE WHERE id = $1`, userID); err != nil {
+			log.Printf("Failed to reset satisfaction_score for user %s: %v", userID, err)
+		}
 	}
 
 	// Focus stats
@@ -1209,7 +1203,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 	responseText = strings.TrimSuffix(responseText, "```")
 	responseText = strings.TrimSpace(responseText)
 
-	fmt.Printf("🤖 Raw AI response: %s\n", responseText)
+	log.Printf("Raw AI response: %s", responseText)
 
 	var aiResp struct {
 		Reply       string `json:"reply"`
@@ -1264,7 +1258,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 	}
 
 	if err := json.Unmarshal([]byte(responseText), &aiResp); err != nil {
-		fmt.Printf("⚠️ JSON parse failed: %v — using raw text as reply\n", err)
+		log.Printf("JSON parse failed: %v — using raw text as reply", err)
 		return &SendMessageResponse{Reply: responseText}, nil
 	}
 
@@ -1272,7 +1266,9 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 
 	// Persist satisfaction score to DB (with today's date for daily reset)
 	if aiResp.SatisfactionScore != nil {
-		h.db.Exec(ctx, `UPDATE users SET satisfaction_score = $1, satisfaction_score_date = CURRENT_DATE WHERE id = $2`, *aiResp.SatisfactionScore, userID)
+		if _, err := h.db.Exec(ctx, `UPDATE users SET satisfaction_score = $1, satisfaction_score_date = CURRENT_DATE WHERE id = $2`, *aiResp.SatisfactionScore, userID); err != nil {
+			log.Printf("Failed to persist satisfaction_score for user %s: %v", userID, err)
+		}
 	}
 
 	// Handle focus intent (scheduled blocking with times)
@@ -1313,7 +1309,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 			}
 			_, err := h.createQuestFromChat(ctx, userID, q.Title, q.TargetValue, q.Area)
 			if err != nil {
-				fmt.Printf("⚠️ Failed to create quest '%s': %v\n", q.Title, err)
+				log.Printf("Failed to create quest '%s': %v", q.Title, err)
 			} else {
 				createdCount++
 			}
@@ -1332,7 +1328,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 			}
 			_, err := h.createRoutineFromChat(ctx, userID, r.Title, r.Frequency, r.ScheduledTime)
 			if err != nil {
-				fmt.Printf("⚠️ Failed to create routine '%s': %v\n", r.Title, err)
+				log.Printf("Failed to create routine '%s': %v", r.Title, err)
 			} else {
 				createdCount++
 			}
@@ -1346,7 +1342,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 	if aiResp.UpdateQuest != nil && aiResp.UpdateQuest.Title != "" {
 		err := h.updateQuestProgress(ctx, userID, aiResp.UpdateQuest.Title, aiResp.UpdateQuest.Increment)
 		if err != nil {
-			fmt.Printf("⚠️ Failed to update quest '%s': %v\n", aiResp.UpdateQuest.Title, err)
+			log.Printf("Failed to update quest '%s': %v", aiResp.UpdateQuest.Title, err)
 		} else {
 			response.Action = &ActionData{Type: "quest_updated"}
 		}
@@ -1356,7 +1352,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 	if aiResp.CompleteTask != nil && aiResp.CompleteTask.Title != "" {
 		err := h.completeTaskByTitle(ctx, userID, aiResp.CompleteTask.Title)
 		if err != nil {
-			fmt.Printf("⚠️ Failed to complete task '%s': %v\n", aiResp.CompleteTask.Title, err)
+			log.Printf("Failed to complete task '%s': %v", aiResp.CompleteTask.Title, err)
 		} else {
 			response.Action = &ActionData{Type: "task_completed"}
 		}
@@ -1371,7 +1367,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 			}
 			err := h.completeRoutineByTitle(ctx, userID, title)
 			if err != nil {
-				fmt.Printf("⚠️ Failed to complete routine '%s': %v\n", title, err)
+				log.Printf("Failed to complete routine '%s': %v", title, err)
 			} else {
 				completedCount++
 			}
@@ -1385,7 +1381,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 	if aiResp.DeleteQuest != nil && aiResp.DeleteQuest.Title != "" {
 		err := h.deleteQuestByTitle(ctx, userID, aiResp.DeleteQuest.Title)
 		if err != nil {
-			fmt.Printf("⚠️ Failed to delete quest '%s': %v\n", aiResp.DeleteQuest.Title, err)
+			log.Printf("Failed to delete quest '%s': %v", aiResp.DeleteQuest.Title, err)
 		} else {
 			response.Action = &ActionData{Type: "quest_deleted"}
 		}
@@ -1395,7 +1391,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 	if aiResp.DeleteRoutine != nil && aiResp.DeleteRoutine.Title != "" {
 		err := h.deleteRoutineByTitle(ctx, userID, aiResp.DeleteRoutine.Title)
 		if err != nil {
-			fmt.Printf("⚠️ Failed to delete routine '%s': %v\n", aiResp.DeleteRoutine.Title, err)
+			log.Printf("Failed to delete routine '%s': %v", aiResp.DeleteRoutine.Title, err)
 		} else {
 			response.Action = &ActionData{Type: "routine_deleted"}
 		}
@@ -1405,7 +1401,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 	if aiResp.EveningCheckin != nil && aiResp.EveningCheckin.Mood > 0 {
 		err := h.saveEveningCheckin(ctx, userID, aiResp.EveningCheckin.Mood, aiResp.EveningCheckin.BiggestWin, aiResp.EveningCheckin.Blockers, aiResp.EveningCheckin.GoalForTomorrow, aiResp.EveningCheckin.GratefulFor)
 		if err != nil {
-			fmt.Printf("⚠️ Failed to save evening check-in: %v\n", err)
+			log.Printf("Failed to save evening check-in: %v", err)
 		} else {
 			response.Action = &ActionData{Type: "evening_checkin_saved"}
 		}
@@ -1415,7 +1411,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 	if len(aiResp.CreateWeeklyGoals) > 0 {
 		err := h.createWeeklyGoals(ctx, userID, aiResp.CreateWeeklyGoals)
 		if err != nil {
-			fmt.Printf("⚠️ Failed to create weekly goals: %v\n", err)
+			log.Printf("Failed to create weekly goals: %v", err)
 		} else {
 			response.Action = &ActionData{Type: "weekly_goals_created"}
 		}
@@ -1425,7 +1421,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 	if aiResp.CompleteWeeklyGoal != nil && aiResp.CompleteWeeklyGoal.Content != "" {
 		err := h.completeWeeklyGoal(ctx, userID, aiResp.CompleteWeeklyGoal.Content)
 		if err != nil {
-			fmt.Printf("⚠️ Failed to complete weekly goal '%s': %v\n", aiResp.CompleteWeeklyGoal.Content, err)
+			log.Printf("Failed to complete weekly goal '%s': %v", aiResp.CompleteWeeklyGoal.Content, err)
 		} else {
 			response.Action = &ActionData{Type: "weekly_goal_completed"}
 		}
@@ -1435,7 +1431,7 @@ Réponds en JSON:`, systemPrompt, contextStr, historyStr, message)
 	if aiResp.CreateTask != nil && aiResp.CreateTask.Title != "" {
 		taskID, err := h.createCalendarTask(ctx, userID, aiResp.CreateTask)
 		if err != nil {
-			fmt.Printf("⚠️ Failed to create task '%s': %v\n", aiResp.CreateTask.Title, err)
+			log.Printf("Failed to create task '%s': %v", aiResp.CreateTask.Title, err)
 		} else {
 			response.Action = &ActionData{Type: "task_created", TaskID: &taskID}
 		}
@@ -1578,7 +1574,7 @@ func (h *Handler) createQuestFromChat(ctx context.Context, userID, title string,
 		return "", err
 	}
 
-	fmt.Printf("✅ Quest created from chat: %s (target: %d, area: %s)\n", title, targetValue, areaSlug)
+	log.Printf("Quest created from chat: %s (target: %d, area: %s)", title, targetValue, areaSlug)
 	return questID, nil
 }
 
@@ -1613,7 +1609,7 @@ func (h *Handler) createRoutineFromChat(ctx context.Context, userID, title, freq
 	if scheduledTime != nil {
 		timeStr = fmt.Sprintf(" à %s", *scheduledTime)
 	}
-	fmt.Printf("✅ Routine created from chat: %s (%s%s)\n", title, frequency, timeStr)
+	log.Printf("Routine created from chat: %s (%s%s)", title, frequency, timeStr)
 	return routineID, nil
 }
 
@@ -1697,7 +1693,7 @@ func (h *Handler) updateQuestProgress(ctx context.Context, userID, questTitle st
 		return fmt.Errorf("no active quest matching '%s'", questTitle)
 	}
 
-	fmt.Printf("✅ Quest progress updated: '%s' +%d\n", questTitle, increment)
+	log.Printf("Quest progress updated: '%s' +%d", questTitle, increment)
 	return nil
 }
 
@@ -1724,7 +1720,7 @@ func (h *Handler) completeTaskByTitle(ctx context.Context, userID, title string)
 	if result.RowsAffected() == 0 {
 		return fmt.Errorf("no pending task matching '%s'", title)
 	}
-	fmt.Printf("✅ Task completed: '%s'\n", title)
+	log.Printf("Task completed: '%s'", title)
 	return nil
 }
 
@@ -1767,7 +1763,7 @@ func (h *Handler) completeRoutineByTitle(ctx context.Context, userID, title stri
 	if err != nil {
 		return err
 	}
-	fmt.Printf("✅ Routine completed: '%s'\n", title)
+	log.Printf("Routine completed: '%s'", title)
 	return nil
 }
 
@@ -1794,7 +1790,7 @@ func (h *Handler) deleteQuestByTitle(ctx context.Context, userID, title string) 
 	if result.RowsAffected() == 0 {
 		return fmt.Errorf("no quest matching '%s'", title)
 	}
-	fmt.Printf("✅ Quest deleted: '%s'\n", title)
+	log.Printf("Quest deleted: '%s'", title)
 	return nil
 }
 
@@ -1821,7 +1817,7 @@ func (h *Handler) deleteRoutineByTitle(ctx context.Context, userID, title string
 	if result.RowsAffected() == 0 {
 		return fmt.Errorf("no routine matching '%s'", title)
 	}
-	fmt.Printf("✅ Routine deleted: '%s'\n", title)
+	log.Printf("Routine deleted: '%s'", title)
 	return nil
 }
 
@@ -1869,7 +1865,7 @@ func (h *Handler) saveEveningCheckin(ctx context.Context, userID string, mood in
 	if err != nil {
 		return err
 	}
-	fmt.Printf("✅ Evening check-in saved (mood: %d, rituals: %d, tasks: %d, focus: %dm)\n", mood, ritualsCompleted, tasksCompleted, focusMinutes)
+	log.Printf("Evening check-in saved (mood: %d, rituals: %d, tasks: %d, focus: %dm)", mood, ritualsCompleted, tasksCompleted, focusMinutes)
 	return nil
 }
 
@@ -1900,7 +1896,9 @@ func (h *Handler) createWeeklyGoals(ctx context.Context, userID string, goals []
 	}
 
 	// Delete existing items for this week (replace all)
-	h.db.Exec(ctx, `DELETE FROM weekly_goal_items WHERE weekly_goal_id = $1`, weeklyGoalID)
+	if _, err := h.db.Exec(ctx, `DELETE FROM weekly_goal_items WHERE weekly_goal_id = $1`, weeklyGoalID); err != nil {
+		log.Printf("Failed to delete existing weekly goal items for %s: %v", weeklyGoalID, err)
+	}
 
 	// Insert new goals
 	for i, goal := range goals {
@@ -1912,11 +1910,11 @@ func (h *Handler) createWeeklyGoals(ctx context.Context, userID string, goals []
 			VALUES ($1, $2, $3, $4, false)
 		`, uuid.New().String(), weeklyGoalID, goal, i)
 		if err != nil {
-			fmt.Printf("⚠️ Failed to create weekly goal item '%s': %v\n", goal, err)
+			log.Printf("Failed to create weekly goal item '%s': %v", goal, err)
 		}
 	}
 
-	fmt.Printf("✅ Weekly goals created: %d items\n", len(goals))
+	log.Printf("Weekly goals created: %d items", len(goals))
 	return nil
 }
 
@@ -1949,7 +1947,7 @@ func (h *Handler) completeWeeklyGoal(ctx context.Context, userID, content string
 	if result.RowsAffected() == 0 {
 		return fmt.Errorf("no weekly goal matching '%s'", content)
 	}
-	fmt.Printf("✅ Weekly goal completed: '%s'\n", content)
+	log.Printf("Weekly goal completed: '%s'", content)
 	return nil
 }
 
@@ -1996,7 +1994,7 @@ func (h *Handler) createCalendarTask(ctx context.Context, userID string, task *C
 	if err != nil {
 		return "", err
 	}
-	fmt.Printf("✅ Calendar task created: '%s' on %s\n", task.Title, date)
+	log.Printf("Calendar task created: '%s' on %s", task.Title, date)
 	return taskID, nil
 }
 
@@ -2126,16 +2124,16 @@ func (h *Handler) TextToSpeech(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Use Gradium WebSocket TTS API
-	log, _ := zap.NewProduction()
+	zapLog, _ := zap.NewProduction()
 	t := gradium.NewTTS(&tts.TTSConfig{
 		Endpoint: "wss://eu.api.gradium.ai/api/speech/tts",
 		VoiceID:  voiceID,
 		ApiKey:   apiKey,
-		Log:      log,
+		Log:      zapLog,
 	})
 
 	if err := t.Start(); err != nil {
-		fmt.Printf("Gradium TTS start error: %v\n", err)
+		log.Printf("Gradium TTS start error: %v", err)
 		http.Error(w, "TTS connection failed", http.StatusBadGateway)
 		return
 	}
@@ -2146,7 +2144,7 @@ func (h *Handler) TextToSpeech(w http.ResponseWriter, r *http.Request) {
 	audioChunks := t.GetSpeech(100)
 
 	if len(audioChunks) == 0 {
-		fmt.Println("Gradium TTS returned no audio chunks")
+		log.Printf("Gradium TTS returned no audio chunks")
 		http.Error(w, "TTS produced no audio", http.StatusBadGateway)
 		return
 	}
@@ -2156,7 +2154,7 @@ func (h *Handler) TextToSpeech(w http.ResponseWriter, r *http.Request) {
 	for _, chunk := range audioChunks {
 		decoded, err := base64.StdEncoding.DecodeString(chunk)
 		if err != nil {
-			fmt.Printf("Gradium TTS decode chunk error: %v\n", err)
+			log.Printf("Gradium TTS decode chunk error: %v", err)
 			continue
 		}
 		pcmData = append(pcmData, decoded...)

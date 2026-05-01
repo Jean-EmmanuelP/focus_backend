@@ -292,9 +292,13 @@ func (e *Executor) executeToolCall(
 			result["blocked"] = false
 			result["message"] = "L'utilisateur n'a pas encore configuré le blocage d'apps sur son appareil. Dis-lui d'aller dans les réglages pour sélectionner les apps à bloquer."
 		}
-		return toJSON(result), []SideEffect{
-			NewSideEffectWithData("block_apps", map[string]interface{}{"duration_minutes": duration}),
+		var effects []SideEffect
+		if configured && !alreadyBlocked {
+			effects = []SideEffect{
+				NewSideEffectWithData("block_apps", map[string]interface{}{"duration_minutes": duration}),
+			}
 		}
+		return toJSON(result), effects
 
 	case "unblock_apps":
 		return toJSON(map[string]interface{}{"unblocked": true}), []SideEffect{NewSideEffect("unblock_apps")}

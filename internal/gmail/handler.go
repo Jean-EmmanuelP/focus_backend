@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -150,7 +151,7 @@ func (h *Handler) SaveTokens(w http.ResponseWriter, r *http.Request) {
 	if req.AuthCode != "" && h.oauthConfig.ClientSecret != "" {
 		token, err := h.oauthConfig.Exchange(r.Context(), req.AuthCode)
 		if err != nil {
-			fmt.Printf("⚠️ Auth code exchange failed (falling back to direct token): %v\n", err)
+			log.Printf("Auth code exchange failed (falling back to direct token): %v", err)
 			accessToken = req.AccessToken
 			refreshToken = req.RefreshToken
 			expiry = time.Now().Add(time.Duration(req.ExpiresIn) * time.Second)
@@ -158,7 +159,7 @@ func (h *Handler) SaveTokens(w http.ResponseWriter, r *http.Request) {
 			accessToken = token.AccessToken
 			refreshToken = token.RefreshToken
 			expiry = token.Expiry
-			fmt.Printf("✅ Auth code exchanged — refresh_token present: %v\n", refreshToken != "")
+			log.Printf("Auth code exchanged — refresh_token present: %v", refreshToken != "")
 		}
 	} else {
 		// Direct token from GIDSignIn (valid ~1h, iOS refreshes via SDK)
@@ -203,12 +204,12 @@ func (h *Handler) SaveTokens(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err != nil {
-		fmt.Printf("❌ Gmail tokens save error: %v\n", err)
+		log.Printf("Gmail tokens save error: %v", err)
 		http.Error(w, "Failed to save tokens", http.StatusInternalServerError)
 		return
 	}
 
-	fmt.Printf("✅ Gmail connected for user %s: %s\n", userID, req.GoogleEmail)
+	log.Printf("Gmail connected for user %s: %s", userID, req.GoogleEmail)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(config)
@@ -218,7 +219,7 @@ func (h *Handler) SaveTokens(w http.ResponseWriter, r *http.Request) {
 // POST /gmail/analyze
 func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(auth.UserContextKey).(string)
-	fmt.Printf("📧 Starting Gmail analysis for user %s\n", userID)
+	log.Printf("Starting Gmail analysis for user %s", userID)
 
 	// Get stored tokens
 	var accessToken, refreshToken string
@@ -254,7 +255,7 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 
 	gmailService, err := gmail.NewService(ctx, option.WithHTTPClient(client))
 	if err != nil {
-		fmt.Printf("❌ Gmail service error: %v\n", err)
+		log.Printf("Gmail service error: %v", err)
 		json.NewEncoder(w).Encode(AnalysisResult{
 			Success: false,
 			Error:   "Failed to create Gmail service",
@@ -263,26 +264,26 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch recent emails (last 100 sent emails to understand communication style)
-	fmt.Println("📧 Fetching sent emails...")
+	log.Printf("Fetching sent emails...")
 	sentMessages, err := h.fetchSentEmails(gmailService, 50)
 	if err != nil {
-		fmt.Printf("❌ Failed to fetch sent emails: %v\n", err)
+		log.Printf("Failed to fetch sent emails: %v", err)
 	}
 
 	// Fetch recent received emails for context
-	fmt.Println("📧 Fetching received emails...")
+	log.Printf("Fetching received emails...")
 	receivedMessages, err := h.fetchReceivedEmails(gmailService, 50)
 	if err != nil {
-		fmt.Printf("❌ Failed to fetch received emails: %v\n", err)
+		log.Printf("Failed to fetch received emails: %v", err)
 	}
 
 	totalMessages := len(sentMessages) + len(receivedMessages)
-	fmt.Printf("📧 Fetched %d total messages\n", totalMessages)
+	log.Printf("Fetched %d total messages", totalMessages)
 
 	// Analyze emails with AI to extract persona
 	persona, err := h.analyzeWithAI(r.Context(), userID, sentMessages, receivedMessages)
 	if err != nil {
-		fmt.Printf("❌ AI analysis error: %v\n", err)
+		log.Printf("AI analysis error: %v", err)
 		// Still save the count even if AI fails
 	}
 
@@ -528,7 +529,7 @@ If you can't detect something, use null for that field.`, emailSamples.String())
 
 	var persona PersonaData
 	if err := json.Unmarshal([]byte(responseText), &persona); err != nil {
-		fmt.Printf("❌ Failed to parse persona JSON: %v\nResponse: %s\n", err, responseText)
+		log.Printf("Failed to parse persona JSON: %v Response: %s", err, responseText)
 		return nil, err
 	}
 
@@ -551,7 +552,7 @@ func (h *Handler) savePersonaToKnowledge(ctx context.Context, userID string, per
 		h.db.Exec(ctx, `UPDATE public.users SET description = $1 WHERE id = $2`, description, userID)
 	}
 
-	fmt.Printf("✅ Saved persona for user %s\n", userID)
+	log.Printf("Saved persona for user %s", userID)
 }
 
 // Helper to truncate strings

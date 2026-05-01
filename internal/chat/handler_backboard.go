@@ -73,9 +73,9 @@ func (h *Handler) SendMessageV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Render free tier kills requests after ~30s. Set a 25s timeout so we
-	// respond gracefully instead of leaving Backboard runs stuck forever.
-	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	// Tool call flows need two LLM round trips (~10-15s each). Give enough
+	// headroom so block_apps + start_focus_session can complete.
+	ctx, cancel := context.WithTimeout(r.Context(), 55*time.Second)
 	defer cancel()
 
 	// 1. Ensure the user has a Backboard assistant
@@ -101,7 +101,9 @@ func (h *Handler) SendMessageV2(w http.ResponseWriter, r *http.Request) {
 
 		// Thread is likely corrupted (stuck run, 500 error). Delete and recreate.
 		_ = bbClient.DeleteThread(ctx, threadID)
-		h.db.Exec(ctx, "UPDATE public.users SET backboard_thread_id = NULL WHERE id = $1", userID)
+		if _, err := h.db.Exec(ctx, "UPDATE public.users SET backboard_thread_id = NULL WHERE id = $1", userID); err != nil {
+			log.Printf("Failed to clear corrupted backboard_thread_id for user %s: %v", userID, err)
+		}
 		log.Printf("🗑️ Deleted corrupted thread %s for user %s", threadID, userID)
 
 		// Create fresh thread and retry once
@@ -127,8 +129,13 @@ func (h *Handler) SendMessageV2(w http.ResponseWriter, r *http.Request) {
 	reply, sideEffects, err := executor.RunToolLoop(ctx, userID, threadID, assistantID, response, req.DeviceContext)
 	if err != nil {
 		log.Printf("❌ Tool loop failed for user %s: %v", userID, err)
-		// Return what we have
-		reply = "Désolé, j'ai un souci technique. Tu peux réessayer ?"
+		// If tools executed successfully but we timed out waiting for the AI's
+		// text reply, generate a contextual fallback instead of a generic error.
+		if len(sideEffects) > 0 {
+			reply = fallbackReplyFromSideEffects(sideEffects)
+		} else {
+			reply = "Désolé, j'ai un souci technique. Tu peux réessayer ?"
+		}
 	}
 
 	// 5. Return the response
@@ -138,6 +145,32 @@ func (h *Handler) SendMessageV2(w http.ResponseWriter, r *http.Request) {
 		MessageID:   uuid.New().String(),
 		SideEffects: sideEffects,
 	})
+}
+
+// fallbackReplyFromSideEffects generates a contextual reply when the tool loop
+// executed tools successfully but timed out waiting for the AI's text response.
+func fallbackReplyFromSideEffects(effects []backboard.SideEffect) string {
+	hasBlock := false
+	hasFocus := false
+	for _, e := range effects {
+		switch e.Type {
+		case "block_apps":
+			hasBlock = true
+		case "start_focus_session":
+			hasFocus = true
+		}
+	}
+
+	switch {
+	case hasBlock && hasFocus:
+		return "C'est parti ! Tes apps sont bloquées et ta session de focus est lancée. 💪"
+	case hasBlock:
+		return "C'est fait ! Tes apps sont bloquées. Bonne concentration !"
+	case hasFocus:
+		return "Ta session de focus est lancée. Au boulot ! 🎯"
+	default:
+		return "C'est fait !"
+	}
 }
 
 // GetHistoryV2 handles GET /chat/v2/history — returns messages from Backboard thread.
@@ -159,7 +192,9 @@ func (h *Handler) GetHistoryV2(w http.ResponseWriter, r *http.Request) {
 
 	// Get thread ID from user profile
 	var threadID *string
-	h.db.QueryRow(ctx, "SELECT backboard_thread_id FROM public.users WHERE id = $1", userID).Scan(&threadID)
+	if err := h.db.QueryRow(ctx, "SELECT backboard_thread_id FROM public.users WHERE id = $1", userID).Scan(&threadID); err != nil {
+		log.Printf("Failed to fetch backboard_thread_id for user %s: %v", userID, err)
+	}
 
 	if threadID == nil || *threadID == "" {
 		w.Header().Set("Content-Type", "application/json")
@@ -221,7 +256,9 @@ func (h *Handler) ClearHistoryV2(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var threadID *string
-	h.db.QueryRow(ctx, "SELECT backboard_thread_id FROM public.users WHERE id = $1", userID).Scan(&threadID)
+	if err := h.db.QueryRow(ctx, "SELECT backboard_thread_id FROM public.users WHERE id = $1", userID).Scan(&threadID); err != nil {
+		log.Printf("Failed to fetch backboard_thread_id for delete, user %s: %v", userID, err)
+	}
 
 	if threadID != nil && *threadID != "" {
 		if err := bbClient.DeleteThread(ctx, *threadID); err != nil {
@@ -230,7 +267,9 @@ func (h *Handler) ClearHistoryV2(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Clear from user profile
-	h.db.Exec(ctx, "UPDATE public.users SET backboard_thread_id = NULL WHERE id = $1", userID)
+	if _, err := h.db.Exec(ctx, "UPDATE public.users SET backboard_thread_id = NULL WHERE id = $1", userID); err != nil {
+		log.Printf("Failed to clear backboard_thread_id for user %s: %v", userID, err)
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -312,15 +351,22 @@ func (h *Handler) SendVoiceMessageV2(w http.ResponseWriter, r *http.Request) {
 	executor := backboard.NewExecutor(h.db, bbClient)
 	reply, sideEffects, err := executor.RunToolLoop(ctx, userID, threadID, assistantID, response, deviceCtx)
 	if err != nil {
-		reply = "Désolé, j'ai un souci technique. Tu peux réessayer ?"
+		log.Printf("❌ Voice tool loop failed for user %s: %v", userID, err)
+		if len(sideEffects) > 0 {
+			reply = fallbackReplyFromSideEffects(sideEffects)
+		} else {
+			reply = "Désolé, j'ai un souci technique. Tu peux réessayer ?"
+		}
 	}
 
 	// Increment voice counter
 	var updatedCount int
-	h.db.QueryRow(ctx, `
+	if err := h.db.QueryRow(ctx, `
 		UPDATE users SET free_voice_messages_used = COALESCE(free_voice_messages_used, 0) + 1
 		WHERE id = $1 RETURNING free_voice_messages_used
-	`, userID).Scan(&updatedCount)
+	`, userID).Scan(&updatedCount); err != nil {
+		log.Printf("Failed to increment voice counter for user %s: %v", userID, err)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -360,16 +406,20 @@ func SetBackboardAPIKey(key string) {
 func (h *Handler) ensureBackboardAssistant(ctx context.Context, userID string, bbClient *backboard.Client) (string, error) {
 	// Check DB for existing assistant ID
 	var assistantID *string
-	h.db.QueryRow(ctx, "SELECT backboard_assistant_id FROM public.users WHERE id = $1", userID).Scan(&assistantID)
+	if err := h.db.QueryRow(ctx, "SELECT backboard_assistant_id FROM public.users WHERE id = $1", userID).Scan(&assistantID); err != nil {
+		log.Printf("Failed to fetch backboard_assistant_id for user %s: %v", userID, err)
+	}
 
 	if assistantID != nil && *assistantID != "" {
 		// Update the assistant with fresh date/time
 		var companionName, timezone string
 		var harshMode bool
-		h.db.QueryRow(ctx, `
+		if err := h.db.QueryRow(ctx, `
 			SELECT COALESCE(companion_name, 'Kai'), COALESCE(timezone, 'Europe/Paris'), COALESCE(coach_harsh_mode, false)
 			FROM public.users WHERE id = $1
-		`, userID).Scan(&companionName, &timezone, &harshMode)
+		`, userID).Scan(&companionName, &timezone, &harshMode); err != nil {
+			log.Printf("Failed to fetch companion config for user %s: %v", userID, err)
+		}
 
 		// Note: UpdateAssistant (PATCH) returns 405 from Backboard — disabled for now
 		// config := backboard.BuildAssistantConfig(companionName, harshMode, timezone)
@@ -383,10 +433,12 @@ func (h *Handler) ensureBackboardAssistant(ctx context.Context, userID string, b
 	// Create new assistant
 	var companionName, timezone string
 	var harshMode bool
-	h.db.QueryRow(ctx, `
+	if err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(companion_name, 'Kai'), COALESCE(timezone, 'Europe/Paris'), COALESCE(coach_harsh_mode, false)
 		FROM public.users WHERE id = $1
-	`, userID).Scan(&companionName, &timezone, &harshMode)
+	`, userID).Scan(&companionName, &timezone, &harshMode); err != nil {
+		log.Printf("Failed to fetch companion config for new assistant, user %s: %v", userID, err)
+	}
 
 	config := backboard.BuildAssistantConfig(companionName, harshMode, timezone)
 	newID, err := bbClient.CreateAssistant(ctx, config)
@@ -395,7 +447,9 @@ func (h *Handler) ensureBackboardAssistant(ctx context.Context, userID string, b
 	}
 
 	// Save to user profile
-	h.db.Exec(ctx, "UPDATE public.users SET backboard_assistant_id = $1 WHERE id = $2", newID, userID)
+	if _, err := h.db.Exec(ctx, "UPDATE public.users SET backboard_assistant_id = $1 WHERE id = $2", newID, userID); err != nil {
+		log.Printf("Failed to save backboard_assistant_id for user %s: %v", userID, err)
+	}
 	log.Printf("🤖 Created Backboard assistant %s for user %s", newID, userID)
 
 	return newID, nil
@@ -405,7 +459,9 @@ func (h *Handler) ensureBackboardAssistant(ctx context.Context, userID string, b
 func (h *Handler) ensureBackboardThread(ctx context.Context, userID, assistantID string, bbClient *backboard.Client) (string, error) {
 	// Check DB for existing thread ID
 	var threadID *string
-	h.db.QueryRow(ctx, "SELECT backboard_thread_id FROM public.users WHERE id = $1", userID).Scan(&threadID)
+	if err := h.db.QueryRow(ctx, "SELECT backboard_thread_id FROM public.users WHERE id = $1", userID).Scan(&threadID); err != nil {
+		log.Printf("Failed to fetch backboard_thread_id for user %s: %v", userID, err)
+	}
 
 	if threadID != nil && *threadID != "" {
 		return *threadID, nil
@@ -415,7 +471,9 @@ func (h *Handler) ensureBackboardThread(ctx context.Context, userID, assistantID
 	threads, err := bbClient.ListThreads(ctx, assistantID)
 	if err == nil && len(threads) > 0 {
 		tid := threads[0].ThreadID
-		h.db.Exec(ctx, "UPDATE public.users SET backboard_thread_id = $1 WHERE id = $2", tid, userID)
+		if _, err := h.db.Exec(ctx, "UPDATE public.users SET backboard_thread_id = $1 WHERE id = $2", tid, userID); err != nil {
+			log.Printf("Failed to save existing backboard_thread_id for user %s: %v", userID, err)
+		}
 		return tid, nil
 	}
 
@@ -425,7 +483,9 @@ func (h *Handler) ensureBackboardThread(ctx context.Context, userID, assistantID
 		return "", fmt.Errorf("create thread: %w", err)
 	}
 
-	h.db.Exec(ctx, "UPDATE public.users SET backboard_thread_id = $1 WHERE id = $2", newThreadID, userID)
+	if _, err := h.db.Exec(ctx, "UPDATE public.users SET backboard_thread_id = $1 WHERE id = $2", newThreadID, userID); err != nil {
+		log.Printf("Failed to save new backboard_thread_id for user %s: %v", userID, err)
+	}
 	log.Printf("🧵 Created Backboard thread %s for user %s", newThreadID, userID)
 
 	return newThreadID, nil

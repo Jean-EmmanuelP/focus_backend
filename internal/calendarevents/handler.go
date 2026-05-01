@@ -2,7 +2,7 @@ package calendarevents
 
 import (
 	"encoding/json"
-	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -127,7 +127,7 @@ func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(r.Context(), query, userID, startOfDay, endOfDay)
 	if err != nil {
-		fmt.Printf("❌ Calendar events query error: %v\n", err)
+		log.Printf("Calendar events query error: %v", err)
 		http.Error(w, "Failed to fetch events", http.StatusInternalServerError)
 		return
 	}

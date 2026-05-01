@@ -48,6 +48,9 @@ type User struct {
 	BackboardThreadID    *string   `json:"backboard_thread_id"`    // Per-user Backboard thread for conversation persistence
 	VoiceID              *string   `json:"voice_id"`               // Gradium TTS voice preference
 	CoachHarshMode       *bool     `json:"coach_harsh_mode"`       // Opt-in harsh coach mode
+	IsPro                *bool     `json:"is_pro"`                 // StoreKit 2 active subscription
+	SubscriptionPlan     *string   `json:"subscription_plan"`      // Active product ID (com.volta.monthly|yearly)
+	SubscriptionExpiresAt *time.Time `json:"subscription_expires_at"` // Current period end
 }
 
 // 2. The DTO: Represents what a user is ALLOWED to update
@@ -75,6 +78,9 @@ type UpdateUserRequest struct {
 	BackboardThreadID    *string `json:"backboard_thread_id"`
 	VoiceID              *string `json:"voice_id"`
 	CoachHarshMode       *bool   `json:"coach_harsh_mode"`
+	IsPro                *bool   `json:"is_pro"`
+	SubscriptionPlan     *string `json:"subscription_plan"`
+	SubscriptionExpiresAt *string `json:"subscription_expires_at"` // ISO 8601 string
 }
 
 // 3. The Handler: Holds dependencies (the database client)
@@ -111,7 +117,10 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		       backboard_assistant_id,
 		       backboard_thread_id,
 		       voice_id,
-		       COALESCE(coach_harsh_mode, false) as coach_harsh_mode
+		       COALESCE(coach_harsh_mode, false) as coach_harsh_mode,
+		       COALESCE(is_pro, false) as is_pro,
+		       subscription_plan,
+		       subscription_expires_at
 		FROM public.users
 		WHERE id = $1
 	`
@@ -147,6 +156,9 @@ func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		&user.BackboardThreadID,
 		&user.VoiceID,
 		&user.CoachHarshMode,
+		&user.IsPro,
+		&user.SubscriptionPlan,
+		&user.SubscriptionExpiresAt,
 	)
 
 	if err != nil {
@@ -313,6 +325,33 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		argId++
 	}
 
+	if req.IsPro != nil {
+		setParts = append(setParts, fmt.Sprintf("is_pro = $%d", argId))
+		args = append(args, *req.IsPro)
+		argId++
+	}
+
+	if req.SubscriptionPlan != nil {
+		setParts = append(setParts, fmt.Sprintf("subscription_plan = $%d", argId))
+		// Empty string from client → NULL (subscription expired/not set)
+		if *req.SubscriptionPlan == "" {
+			args = append(args, nil)
+		} else {
+			args = append(args, *req.SubscriptionPlan)
+		}
+		argId++
+	}
+
+	if req.SubscriptionExpiresAt != nil {
+		setParts = append(setParts, fmt.Sprintf("subscription_expires_at = $%d", argId))
+		if *req.SubscriptionExpiresAt == "" {
+			args = append(args, nil)
+		} else {
+			args = append(args, *req.SubscriptionExpiresAt)
+		}
+		argId++
+	}
+
 	if len(setParts) == 0 {
 		http.Error(w, "No fields to update", http.StatusBadRequest)
 		return
@@ -331,7 +370,8 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		           COALESCE(current_streak, 0), COALESCE(longest_streak, 0),
 		           COALESCE(free_voice_messages_used, 0), created_at,
 		           backboard_assistant_id, backboard_thread_id, voice_id,
-		           COALESCE(coach_harsh_mode, false)`,
+		           COALESCE(coach_harsh_mode, false),
+		           COALESCE(is_pro, false), subscription_plan, subscription_expires_at`,
 		strings.Join(setParts, ", "),
 		argId,
 	)
@@ -368,6 +408,9 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		&updatedUser.BackboardThreadID,
 		&updatedUser.VoiceID,
 		&updatedUser.CoachHarshMode,
+		&updatedUser.IsPro,
+		&updatedUser.SubscriptionPlan,
+		&updatedUser.SubscriptionExpiresAt,
 	)
 
 	if err != nil {

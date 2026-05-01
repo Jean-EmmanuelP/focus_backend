@@ -2,7 +2,7 @@ package streak
 
 import (
 	"context"
-	"fmt"
+	"log"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -30,6 +30,6 @@ func UpdateUserStreak(ctx context.Context, db *pgxpool.Pool, userID string) {
 		WHERE id = $1
 	`, userID)
 	if err != nil {
-		fmt.Printf("Failed to update streak for user %s: %v\n", userID, err)
+		log.Printf("Failed to update streak for user %s: %v", userID, err)
 	}
 }

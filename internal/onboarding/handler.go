@@ -384,17 +384,23 @@ func (h *Handler) updateUserProfile(r *http.Request, userID string, req SaveOnbo
 	// Update first_name / last_name if provided (step 0)
 	if req.FirstName != nil || req.LastName != nil {
 		if req.FirstName != nil && req.LastName != nil {
-			h.db.Exec(r.Context(),
+			if _, err := h.db.Exec(r.Context(),
 				`UPDATE public.users SET first_name = $1, last_name = $2 WHERE id = $3`,
-				*req.FirstName, *req.LastName, userID)
+				*req.FirstName, *req.LastName, userID); err != nil {
+				log.Printf("Failed to update user name for %s: %v", userID, err)
+			}
 		} else if req.FirstName != nil {
-			h.db.Exec(r.Context(),
+			if _, err := h.db.Exec(r.Context(),
 				`UPDATE public.users SET first_name = $1 WHERE id = $2`,
-				*req.FirstName, userID)
+				*req.FirstName, userID); err != nil {
+				log.Printf("Failed to update first_name for %s: %v", userID, err)
+			}
 		} else if req.LastName != nil {
-			h.db.Exec(r.Context(),
+			if _, err := h.db.Exec(r.Context(),
 				`UPDATE public.users SET last_name = $1 WHERE id = $2`,
-				*req.LastName, userID)
+				*req.LastName, userID); err != nil {
+				log.Printf("Failed to update last_name for %s: %v", userID, err)
+			}
 		}
 	}
 
@@ -409,9 +415,11 @@ func (h *Handler) updateUserProfile(r *http.Request, userID string, req SaveOnbo
 		case "autre":
 			gender = "other"
 		}
-		h.db.Exec(r.Context(),
+		if _, err := h.db.Exec(r.Context(),
 			`UPDATE public.users SET gender = $1 WHERE id = $2`,
-			gender, userID)
+			gender, userID); err != nil {
+			log.Printf("Failed to update gender for %s: %v", userID, err)
+		}
 	} else if req.Pronouns != nil {
 		// Fallback: infer gender from pronouns (legacy)
 		gender := "prefer_not_to_say"
@@ -423,9 +431,11 @@ func (h *Handler) updateUserProfile(r *http.Request, userID string, req SaveOnbo
 		case "iel_iels":
 			gender = "other"
 		}
-		h.db.Exec(r.Context(),
+		if _, err := h.db.Exec(r.Context(),
 			`UPDATE public.users SET gender = $1 WHERE id = $2`,
-			gender, userID)
+			gender, userID); err != nil {
+			log.Printf("Failed to update gender from pronouns for %s: %v", userID, err)
+		}
 	}
 
 	// Update age from age range (step 1)
@@ -441,42 +451,54 @@ func (h *Handler) updateUserProfile(r *http.Request, userID string, req SaveOnbo
 			"65_plus":      70,
 		}
 		if age, ok := ageMap[*req.AgeRange]; ok {
-			h.db.Exec(r.Context(),
+			if _, err := h.db.Exec(r.Context(),
 				`UPDATE public.users SET age = $1 WHERE id = $2`,
-				age, userID)
+				age, userID); err != nil {
+				log.Printf("Failed to update age for %s: %v", userID, err)
+			}
 		}
 	}
 
 	// Update companion name (step 9 - "Nommez votre Focus")
 	if req.CompanionName != nil {
-		h.db.Exec(r.Context(),
+		if _, err := h.db.Exec(r.Context(),
 			`UPDATE public.users SET companion_name = $1 WHERE id = $2`,
-			*req.CompanionName, userID)
-		log.Printf("Saved companion name '%s' for user %s", *req.CompanionName, userID)
+			*req.CompanionName, userID); err != nil {
+			log.Printf("Failed to update companion_name for %s: %v", userID, err)
+		} else {
+			log.Printf("Saved companion name '%s' for user %s", *req.CompanionName, userID)
+		}
 	}
 
 	// Update companion gender (step 8 - "Personnalisez votre Focus")
 	if req.CompanionGender != nil {
-		h.db.Exec(r.Context(),
+		if _, err := h.db.Exec(r.Context(),
 			`UPDATE public.users SET companion_gender = $1 WHERE id = $2`,
-			*req.CompanionGender, userID)
+			*req.CompanionGender, userID); err != nil {
+			log.Printf("Failed to update companion_gender for %s: %v", userID, err)
+		}
 	}
 
 	// Update avatar style (step 8 - "Personnalisez votre Focus")
 	if req.AvatarStyle != nil {
-		h.db.Exec(r.Context(),
+		if _, err := h.db.Exec(r.Context(),
 			`UPDATE public.users SET avatar_style = $1 WHERE id = $2`,
-			*req.AvatarStyle, userID)
+			*req.AvatarStyle, userID); err != nil {
+			log.Printf("Failed to update avatar_style for %s: %v", userID, err)
+		}
 	}
 
 	// Update work place from life_improvements (step 7 - "Où travaillez-vous")
 	if len(req.LifeImprovements) > 0 {
 		// First item is typically the work place
 		workPlace := req.LifeImprovements[0]
-		h.db.Exec(r.Context(),
+		if _, err := h.db.Exec(r.Context(),
 			`UPDATE public.users SET work_place = $1 WHERE id = $2`,
-			workPlace, userID)
-		log.Printf("Saved work place '%s' for user %s", workPlace, userID)
+			workPlace, userID); err != nil {
+			log.Printf("Failed to update work_place for %s: %v", userID, err)
+		} else {
+			log.Printf("Saved work place '%s' for user %s", workPlace, userID)
+		}
 	}
 }
 
@@ -554,9 +576,11 @@ func (h *Handler) Complete(w http.ResponseWriter, r *http.Request) {
 
 	// Also update user productivity_peak
 	if req.ProductivityPeak != "" {
-		h.db.Exec(r.Context(),
+		if _, err := h.db.Exec(r.Context(),
 			`UPDATE public.users SET productivity_peak = $1 WHERE id = $2`,
-			req.ProductivityPeak, userID)
+			req.ProductivityPeak, userID); err != nil {
+			log.Printf("Failed to update productivity_peak for %s: %v", userID, err)
+		}
 	}
 
 	// Parse goals

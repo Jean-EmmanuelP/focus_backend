@@ -31,23 +31,33 @@ func (e *Executor) getUserContext(ctx context.Context, userID string, deviceCtx 
 
 	// Count tasks
 	var tasksTotal, tasksCompleted int
-	e.db.QueryRow(ctx, "SELECT COUNT(*) FROM tasks WHERE user_id = $1 AND date = $2", userID, today).Scan(&tasksTotal)
-	e.db.QueryRow(ctx, "SELECT COUNT(*) FROM tasks WHERE user_id = $1 AND date = $2 AND status = 'completed'", userID, today).Scan(&tasksCompleted)
+	if err := e.db.QueryRow(ctx, "SELECT COUNT(*) FROM tasks WHERE user_id = $1 AND date = $2", userID, today).Scan(&tasksTotal); err != nil {
+		log.Printf("Failed to count tasks for user %s: %v", userID, err)
+	}
+	if err := e.db.QueryRow(ctx, "SELECT COUNT(*) FROM tasks WHERE user_id = $1 AND date = $2 AND status = 'completed'", userID, today).Scan(&tasksCompleted); err != nil {
+		log.Printf("Failed to count completed tasks for user %s: %v", userID, err)
+	}
 
 	// Count rituals
 	var ritualsTotal, ritualsCompleted int
-	e.db.QueryRow(ctx, "SELECT COUNT(*) FROM routines WHERE user_id = $1", userID).Scan(&ritualsTotal)
-	e.db.QueryRow(ctx, `
+	if err := e.db.QueryRow(ctx, "SELECT COUNT(*) FROM routines WHERE user_id = $1", userID).Scan(&ritualsTotal); err != nil {
+		log.Printf("Failed to count routines for user %s: %v", userID, err)
+	}
+	if err := e.db.QueryRow(ctx, `
 		SELECT COUNT(*) FROM routine_completions
 		WHERE user_id = $1 AND completion_date = $2
-	`, userID, today).Scan(&ritualsCompleted)
+	`, userID, today).Scan(&ritualsCompleted); err != nil {
+		log.Printf("Failed to count routine completions for user %s: %v", userID, err)
+	}
 
 	// Focus minutes today
 	var focusMinutes int
-	e.db.QueryRow(ctx, `
+	if err := e.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(duration_minutes), 0) FROM focus_sessions
 		WHERE user_id = $1 AND DATE(started_at) = $2
-	`, userID, today).Scan(&focusMinutes)
+	`, userID, today).Scan(&focusMinutes); err != nil {
+		log.Printf("Failed to sum focus minutes for user %s: %v", userID, err)
+	}
 
 	// Time of day
 	now := time.Now()
@@ -64,16 +74,22 @@ func (e *Executor) getUserContext(ctx context.Context, userID string, deviceCtx 
 
 	// Check-in status
 	var morningCheckinDone, eveningReviewDone bool
-	e.db.QueryRow(ctx, `
+	if err := e.db.QueryRow(ctx, `
 		SELECT EXISTS(SELECT 1 FROM daily_reflections WHERE user_id = $1 AND date = $2 AND mood IS NOT NULL)
-	`, userID, today).Scan(&morningCheckinDone)
-	e.db.QueryRow(ctx, `
+	`, userID, today).Scan(&morningCheckinDone); err != nil {
+		log.Printf("Failed to check morning checkin for user %s: %v", userID, err)
+	}
+	if err := e.db.QueryRow(ctx, `
 		SELECT EXISTS(SELECT 1 FROM daily_reflections WHERE user_id = $1 AND date = $2 AND biggest_win IS NOT NULL)
-	`, userID, today).Scan(&eveningReviewDone)
+	`, userID, today).Scan(&eveningReviewDone); err != nil {
+		log.Printf("Failed to check evening review for user %s: %v", userID, err)
+	}
 
 	// Streak
 	var currentStreak int
-	e.db.QueryRow(ctx, "SELECT COALESCE(current_streak, 0) FROM public.users WHERE id = $1", userID).Scan(&currentStreak)
+	if err := e.db.QueryRow(ctx, "SELECT COALESCE(current_streak, 0) FROM public.users WHERE id = $1", userID).Scan(&currentStreak); err != nil {
+		log.Printf("Failed to fetch streak for user %s: %v", userID, err)
+	}
 
 	// Days since last message
 	var daysSinceLastMessage int
@@ -194,7 +210,9 @@ func (e *Executor) saveProductivityChallenges(ctx context.Context, userID string
 
 func (e *Executor) getCurrentDatetime(ctx context.Context, userID string) string {
 	tz := "Europe/Paris"
-	e.db.QueryRow(ctx, "SELECT COALESCE(timezone, 'Europe/Paris') FROM public.users WHERE id = $1", userID).Scan(&tz)
+	if err := e.db.QueryRow(ctx, "SELECT COALESCE(timezone, 'Europe/Paris') FROM public.users WHERE id = $1", userID).Scan(&tz); err != nil {
+		log.Printf("Failed to fetch timezone for user %s: %v", userID, err)
+	}
 	loc, _ := time.LoadLocation(tz)
 	if loc == nil {
 		loc = time.UTC
@@ -418,7 +436,9 @@ func (e *Executor) createRoutine(ctx context.Context, userID string, args map[st
 
 	// Get first area as default
 	var areaID string
-	e.db.QueryRow(ctx, "SELECT id FROM areas WHERE user_id = $1 LIMIT 1", userID).Scan(&areaID)
+	if err := e.db.QueryRow(ctx, "SELECT id FROM areas WHERE user_id = $1 LIMIT 1", userID).Scan(&areaID); err != nil {
+		log.Printf("Failed to fetch default area for user %s: %v", userID, err)
+	}
 
 	var routineID string
 	var err error
@@ -530,12 +550,16 @@ func (e *Executor) createWeeklyGoals(ctx context.Context, userID string, args ma
 	}
 
 	// Delete old items and insert new
-	e.db.Exec(ctx, "DELETE FROM weekly_goal_items WHERE weekly_goal_id = $1", goalSetID)
+	if _, err := e.db.Exec(ctx, "DELETE FROM weekly_goal_items WHERE weekly_goal_id = $1", goalSetID); err != nil {
+		log.Printf("Failed to delete old weekly goal items for %s: %v", goalSetID, err)
+	}
 	for _, g := range goalsRaw {
 		if content, ok := g.(string); ok {
-			e.db.Exec(ctx, `
+			if _, err := e.db.Exec(ctx, `
 				INSERT INTO weekly_goal_items (weekly_goal_id, content) VALUES ($1, $2)
-			`, goalSetID, content)
+			`, goalSetID, content); err != nil {
+				log.Printf("Failed to insert weekly goal item '%s': %v", content, err)
+			}
 		}
 	}
 
@@ -625,9 +649,11 @@ func (e *Executor) scheduleCalendarBlocking(ctx context.Context, userID string, 
 
 	for _, eid := range eventIDs {
 		if id, ok := eid.(string); ok {
-			e.db.Exec(ctx, `
+			if _, err := e.db.Exec(ctx, `
 				UPDATE calendar_events SET block_apps = $1 WHERE id = $2 AND user_id = $3
-			`, enabled, id, userID)
+			`, enabled, id, userID); err != nil {
+				log.Printf("Failed to update block_apps for event %s: %v", id, err)
+			}
 		}
 	}
 
@@ -644,7 +670,9 @@ func (e *Executor) getPlanningContext(ctx context.Context, userID, scope string,
 	// Determine date range based on scope
 	loc := time.UTC
 	var tz string
-	e.db.QueryRow(ctx, "SELECT COALESCE(timezone, 'Europe/Paris') FROM public.users WHERE id = $1", userID).Scan(&tz)
+	if err := e.db.QueryRow(ctx, "SELECT COALESCE(timezone, 'Europe/Paris') FROM public.users WHERE id = $1", userID).Scan(&tz); err != nil {
+		log.Printf("Failed to fetch timezone for planning context, user %s: %v", userID, err)
+	}
 	if l, err := time.LoadLocation(tz); err == nil {
 		loc = l
 	}
@@ -749,13 +777,25 @@ func (e *Executor) createTasksBatch(ctx context.Context, userID string, args map
 		if v, ok := taskMap["estimated_minutes"].(float64); ok {
 			estimatedMinutes = int(v)
 		}
+		scheduledStart := ""
+		if v, ok := taskMap["scheduled_start"].(string); ok {
+			scheduledStart = v
+		}
+		scheduledEnd := ""
+		if v, ok := taskMap["scheduled_end"].(string); ok {
+			scheduledEnd = v
+		}
+		blockApps := false
+		if v, ok := taskMap["block_apps"].(bool); ok {
+			blockApps = v
+		}
 
 		var taskID string
 		err := e.db.QueryRow(ctx, `
-			INSERT INTO tasks (user_id, title, date, priority, time_block, estimated_minutes, is_ai_generated)
-			VALUES ($1, $2, $3, $4, $5, NULLIF($6, 0), true)
+			INSERT INTO tasks (user_id, title, date, priority, time_block, estimated_minutes, scheduled_start, scheduled_end, block_apps, is_ai_generated)
+			VALUES ($1, $2, $3, $4, $5, NULLIF($6, 0), NULLIF($7, '')::time, NULLIF($8, '')::time, $9, true)
 			RETURNING id
-		`, userID, title, dateStr, priority, timeBlock, estimatedMinutes).Scan(&taskID)
+		`, userID, title, dateStr, priority, timeBlock, estimatedMinutes, scheduledStart, scheduledEnd, blockApps).Scan(&taskID)
 		if err != nil {
 			log.Printf("create_tasks_batch: failed to create task '%s': %v", title, err)
 			continue

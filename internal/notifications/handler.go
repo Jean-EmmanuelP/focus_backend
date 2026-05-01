@@ -103,9 +103,13 @@ func (h *Handler) DeleteToken(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
 		// If no body, delete all tokens for this user
-		h.db.Exec(r.Context(), `DELETE FROM public.device_tokens WHERE user_id = $1`, userID)
+		if _, err := h.db.Exec(r.Context(), `DELETE FROM public.device_tokens WHERE user_id = $1`, userID); err != nil {
+			log.Printf("Failed to delete all device tokens for user %s: %v", userID, err)
+		}
 	} else {
-		h.db.Exec(r.Context(), `DELETE FROM public.device_tokens WHERE user_id = $1 AND token = $2`, userID, req.Token)
+		if _, err := h.db.Exec(r.Context(), `DELETE FROM public.device_tokens WHERE user_id = $1 AND token = $2`, userID, req.Token); err != nil {
+			log.Printf("Failed to delete device token for user %s: %v", userID, err)
+		}
 	}
 
 	log.Printf("Device token deleted for user %s", userID)

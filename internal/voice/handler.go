@@ -51,7 +51,11 @@ type livekitTokenResponse struct {
 // and returns a participant token for iOS.
 // POST /voice/livekit-token
 func (h *Handler) GenerateLiveKitToken(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(auth.UserContextKey).(string)
+	userID, ok := r.Context().Value(auth.UserContextKey).(string)
+	if !ok || userID == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 
 	lkAPIKey := os.Getenv("LIVEKIT_API_KEY")
 	lkAPISecret := os.Getenv("LIVEKIT_API_SECRET")
